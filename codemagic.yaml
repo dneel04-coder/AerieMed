@@ -1,0 +1,87 @@
+workflows:
+
+  # ── Unsigned IPA (no Apple Developer account required) ──────────────────────
+  # Produces an IPA you can install via Sideloadly or AltStore.
+  # Re-sign required every 7 days with a free Apple ID.
+  ios-unsigned:
+    name: iOS — Unsigned (Sideload)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: Flutter packages
+        script: flutter pub get
+
+      - name: CocoaPods install
+        script: cd ios && pod install
+
+      - name: Build unsigned IPA
+        script: flutter build ipa --release --no-codesign
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+
+    publishing:
+      email:
+        recipients:
+          - allamerican82consulting@gmail.com
+        notify:
+          success: true
+          failure: true
+
+  # ── Signed IPA (requires Apple Developer account — $99/yr) ──────────────────
+  # Uncomment this workflow and add the secrets below in Codemagic
+  # Environment > Variables to enable proper signing + TestFlight upload.
+  #
+  # Required secrets:
+  #   APP_STORE_CONNECT_KEY_IDENTIFIER   — API key ID from App Store Connect
+  #   APP_STORE_CONNECT_ISSUER_ID        — Issuer ID from App Store Connect
+  #   APP_STORE_CONNECT_PRIVATE_KEY      — Contents of the .p8 API key file
+  #   CERTIFICATE_PRIVATE_KEY            — Contents of your signing certificate
+  #
+  # ios-signed:
+  #   name: iOS — Signed (TestFlight)
+  #   instance_type: mac_mini_m2
+  #   max_build_duration: 60
+  #
+  #   environment:
+  #     flutter: stable
+  #     xcode: latest
+  #     cocoapods: default
+  #     ios_signing:
+  #       distribution_type: app_store
+  #       bundle_identifier: com.example.aeriemed
+  #     vars:
+  #       APP_STORE_CONNECT_KEY_IDENTIFIER: Encrypted(...)
+  #       APP_STORE_CONNECT_ISSUER_ID: Encrypted(...)
+  #       APP_STORE_CONNECT_PRIVATE_KEY: Encrypted(...)
+  #       CERTIFICATE_PRIVATE_KEY: Encrypted(...)
+  #
+  #   scripts:
+  #     - name: Flutter packages
+  #       script: flutter pub get
+  #
+  #     - name: CocoaPods install
+  #       script: cd ios && pod install
+  #
+  #     - name: Build signed IPA
+  #       script: flutter build ipa --release
+  #
+  #   artifacts:
+  #     - build/ios/ipa/*.ipa
+  #
+  #   publishing:
+  #     app_store_connect:
+  #       auth: integration
+  #       submit_to_testflight: true
+  #     email:
+  #       recipients:
+  #         - allamerican82consulting@gmail.com
+  #       notify:
+  #         success: true
+  #         failure: true
