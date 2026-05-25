@@ -1,45 +1,37 @@
 workflows:
 
   # ── Signed IPA → TestFlight ──────────────────────────────────────────────────
-  # Requires these secrets in Codemagic → Environment → Variables (Group: ios-creds):
-  #   APP_STORE_CONNECT_KEY_IDENTIFIER   — Key ID from App Store Connect API key
-  #   APP_STORE_CONNECT_ISSUER_ID        — Issuer ID from App Store Connect API key
-  #   APP_STORE_CONNECT_PRIVATE_KEY      — Full contents of the .p8 file
-  #   CERTIFICATE_PRIVATE_KEY            — RSA private key for the signing certificate
-  #                                        (Codemagic can auto-generate this)
-  ios-signed:
-    name: iOS — Signed (TestFlight)
-    instance_type: mac_mini_m2
-    max_build_duration: 60
-
-    environment:
-      flutter: stable
-      xcode: latest
-      cocoapods: default
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.aerie.aerimed
-
-    scripts:
-      - name: Flutter packages
-        script: flutter pub get
-
-      - name: Build signed IPA
-        script: flutter build ipa --release
-
-    artifacts:
-      - build/ios/ipa/*.ipa
-
-    publishing:
-      app_store_connect:
-        auth: integration
-        submit_to_testflight: true
-      email:
-        recipients:
-          - allamerican82consulting@gmail.com
-        notify:
-          success: true
-          failure: true
+  # To enable: connect App Store Connect in Codemagic account → Integrations,
+  # then uncomment this entire workflow.
+  #
+  # ios-signed:
+  #   name: iOS — Signed (TestFlight)
+  #   instance_type: mac_mini_m2
+  #   max_build_duration: 60
+  #   environment:
+  #     flutter: stable
+  #     xcode: latest
+  #     cocoapods: default
+  #     ios_signing:
+  #       distribution_type: app_store
+  #       bundle_identifier: com.aerie.aerimed
+  #   scripts:
+  #     - name: Flutter packages
+  #       script: flutter pub get
+  #     - name: Build signed IPA
+  #       script: flutter build ipa --release
+  #   artifacts:
+  #     - build/ios/ipa/*.ipa
+  #   publishing:
+  #     app_store_connect:
+  #       auth: integration
+  #       submit_to_testflight: true
+  #     email:
+  #       recipients:
+  #         - allamerican82consulting@gmail.com
+  #       notify:
+  #         success: true
+  #         failure: true
 
   # ── Unsigned IPA (no Apple Developer account required) ──────────────────────
   # Produces an IPA you can install via Sideloadly or AltStore.
