@@ -1,37 +1,39 @@
 workflows:
 
   # ── Signed IPA → TestFlight ──────────────────────────────────────────────────
-  # To enable: connect App Store Connect in Codemagic account → Integrations,
-  # then uncomment this entire workflow.
-  #
-  # ios-signed:
-  #   name: iOS — Signed (TestFlight)
-  #   instance_type: mac_mini_m2
-  #   max_build_duration: 60
-  #   environment:
-  #     flutter: stable
-  #     xcode: latest
-  #     cocoapods: default
-  #     ios_signing:
-  #       distribution_type: app_store
-  #       bundle_identifier: com.aerie.aerimed
-  #   scripts:
-  #     - name: Flutter packages
-  #       script: flutter pub get
-  #     - name: Build signed IPA
-  #       script: flutter build ipa --release
-  #   artifacts:
-  #     - build/ios/ipa/*.ipa
-  #   publishing:
-  #     app_store_connect:
-  #       auth: integration
-  #       submit_to_testflight: true
-  #     email:
-  #       recipients:
-  #         - allamerican82consulting@gmail.com
-  #       notify:
-  #         success: true
-  #         failure: true
+  ios-signed:
+    name: iOS — Signed (TestFlight)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.aerie.aerimed
+
+    scripts:
+      - name: Flutter packages
+        script: flutter pub get
+
+      - name: Build signed IPA
+        script: flutter build ipa --release
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+      email:
+        recipients:
+          - allamerican82consulting@gmail.com
+        notify:
+          success: true
+          failure: true
 
   # ── Unsigned IPA (no Apple Developer account required) ──────────────────────
   # Produces an IPA you can install via Sideloadly or AltStore.
