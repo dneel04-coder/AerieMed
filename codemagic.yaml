@@ -58,11 +58,18 @@ workflows:
       - name: Flutter packages
         script: flutter pub get
 
-      - name: Build unsigned IPA
-        script: flutter build ipa --release --no-codesign
+      - name: Build iOS (no codesign)
+        script: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        script: |
+          mkdir -p build/ios/unsigned/Payload
+          cp -r build/ios/iphoneos/Runner.app build/ios/unsigned/Payload/
+          cd build/ios/unsigned
+          zip -r AerieMed-unsigned.ipa Payload/
 
     artifacts:
-      - build/ios/ipa/*.ipa
+      - build/ios/unsigned/AerieMed-unsigned.ipa
 
     publishing:
       email:
