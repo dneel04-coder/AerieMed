@@ -34,30 +34,14 @@ workflows:
           keychain add-certificates
           xcode-project use-profiles
 
-      - name: Archive app
+      - name: Build IPA
         script: |
           set -e
-          cd ios && xcodebuild \
-            -workspace Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -archivePath $CM_BUILD_DIR/Runner.xcarchive \
-            PODS_PODFILE_DIR_PATH="$PWD" \
-            PODS_ROOT="$PWD/Pods" \
-            OTHER_CODE_SIGN_FLAGS="--keychain /Users/builder/Library/Keychains/ios-build.keychain-db" \
-            archive
-
-      - name: Export IPA
-        script: |
-          set -e
-          xcodebuild \
-            -exportArchive \
-            -archivePath $CM_BUILD_DIR/Runner.xcarchive \
-            -exportPath $CM_BUILD_DIR/ios/ipa \
-            -exportOptionsPlist /Users/builder/export_options.plist
+          flutter build ipa --release \
+            --export-options-plist /Users/builder/export_options.plist
 
     artifacts:
-      - $CM_BUILD_DIR/ios/ipa/*.ipa
+      - build/ios/ipa/*.ipa
 
     publishing:
       app_store_connect:
