@@ -20,6 +20,7 @@ workflows:
 
       - name: Set up code signing
         script: |
+          set -e
           keychain initialize
           app-store-connect fetch-signing-files \
             com.aerie.aerimed1 \
@@ -29,13 +30,28 @@ workflows:
           keychain add-certificates
           xcode-project use-profiles
 
-      - name: Build signed IPA
+      - name: Archive app
         script: |
-          flutter build ipa --release \
-            --export-options-plist=/Users/builder/export_options.plist
+          set -e
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -archivePath $CM_BUILD_DIR/Runner.xcarchive \
+            OTHER_CODE_SIGN_FLAGS="--keychain /Users/builder/Library/Keychains/ios-build.keychain-db" \
+            archive
+
+      - name: Export IPA
+        script: |
+          set -e
+          xcodebuild \
+            -exportArchive \
+            -archivePath $CM_BUILD_DIR/Runner.xcarchive \
+            -exportPath $CM_BUILD_DIR/ios/ipa \
+            -exportOptionsPlist /Users/builder/export_options.plist
 
     artifacts:
-      - build/ios/ipa/*.ipa
+      - $CM_BUILD_DIR/ios/ipa/*.ipa
 
     publishing:
       app_store_connect:
