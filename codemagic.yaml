@@ -18,6 +18,9 @@ workflows:
       - name: Flutter packages
         script: flutter pub get
 
+      - name: CocoaPods install
+        script: cd ios && pod install
+
       - name: Set up code signing
         script: |
           set -e
