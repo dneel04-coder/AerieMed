@@ -15,7 +15,7 @@ workflows:
       cocoapods: default
       ios_signing:
         distribution_type: app_store
-        bundle_identifier: com.aerie.aerimed1
+        bundle_identifier: AerieMed - com.aerie.aerimed1
 
     scripts:
       - name: Flutter packages
