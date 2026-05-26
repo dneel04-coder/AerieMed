@@ -42,6 +42,7 @@ workflows:
             -scheme Runner \
             -configuration Release \
             -archivePath $CM_BUILD_DIR/Runner.xcarchive \
+            PODS_PODFILE_DIR_PATH="$PWD" \
             OTHER_CODE_SIGN_FLAGS="--keychain /Users/builder/Library/Keychains/ios-build.keychain-db" \
             archive
 
