@@ -37,8 +37,8 @@ workflows:
       - name: Archive app
         script: |
           set -e
-          xcodebuild \
-            -workspace ios/Runner.xcworkspace \
+          cd ios && xcodebuild \
+            -workspace Runner.xcworkspace \
             -scheme Runner \
             -configuration Release \
             -archivePath $CM_BUILD_DIR/Runner.xcarchive \
