@@ -24,6 +24,18 @@ workflows:
       - name: CocoaPods install
         script: cd ios && pod install
 
+      - name: Set up code signing
+        script: |
+          set -e
+          keychain initialize
+          app-store-connect fetch-signing-files \
+            com.aerie.aerimed1 \
+            --platform IOS \
+            --type IOS_APP_STORE \
+            --create
+          keychain add-certificates
+          xcode-project use-profiles
+
       - name: Archive app
         script: |
           set -e
