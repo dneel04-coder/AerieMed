@@ -6,6 +6,18 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import 'patient_report.dart';
+import 'decision_tree.dart';
+import 'drug_reference.dart';
+import 'procedure_checklist.dart';
+import 'differential_dx.dart';
+import 'dosing_calculator.dart';
+import 'protocol_version.dart';
+import 'gps_tools.dart';
+import 'offline_maps.dart';
+import 'lz_assessment.dart';
+import 'sun_weather.dart';
+import 'team_command.dart';
+import 'mci_triage.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -474,62 +486,162 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     final categoriesToShow = allCategories;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('AerieMed • Protocols'),
-        actions: [
-          IconButton(icon: const Icon(Icons.upload_file), onPressed: _uploadFile),
-          IconButton(
-            icon: const Icon(Icons.assignment_outlined),
-            tooltip: 'Patient Reports',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const PatientReportListScreen()),
-            ),
-          ),
-          IconButton(icon: const Icon(Icons.brightness_medium), onPressed: widget.onThemeToggle),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(60),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                hintText: 'Search all protocols...',
-                prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                filled: true,
-                fillColor: Theme.of(context).brightness == Brightness.light ? Colors.white : Colors.grey[800],
+      // ── Drawer now holds the protocol list ───────────────────────────────
+      drawer: Drawer(
+        child: Column(
+          children: [
+            DrawerHeader(
+              decoration: BoxDecoration(color: Theme.of(context).colorScheme.primary),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  const Icon(Icons.menu_book, color: Colors.white, size: 32),
+                  const SizedBox(height: 8),
+                  const Text('Protocols', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                  Text('v$kCurrentVersion', style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 12)),
+                ],
               ),
-              onChanged: (value) => setState(() => searchQuery = value),
             ),
-          ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+              child: TextField(
+                controller: _searchController,
+                decoration: InputDecoration(
+                  hintText: 'Search protocols…',
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  isDense: true,
+                  filled: true,
+                  fillColor: Theme.of(context).brightness == Brightness.light
+                      ? Colors.grey[100]
+                      : Colors.grey[800],
+                ),
+                onChanged: (value) => setState(() => searchQuery = value),
+              ),
+            ),
+            Expanded(
+              child: isSearching
+                  ? ListView.builder(
+                      itemCount: filteredItems.length,
+                      itemBuilder: (context, index) {
+                        final item = filteredItems[index];
+                        final isUser = item['isUserUpload'] == true;
+                        final assetPath = isUser ? (item['path'] ?? '') : (item['asset'] ?? '');
+                        return ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.picture_as_pdf, color: Colors.red, size: 20),
+                          title: Text(item['title'] ?? 'Unknown', style: const TextStyle(fontSize: 14)),
+                          onTap: () {
+                            Navigator.pop(context);
+                            _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser);
+                          },
+                        );
+                      },
+                    )
+                  : ListView.builder(
+                      itemCount: categoriesToShow.length,
+                      itemBuilder: (context, index) =>
+                          _buildCategoryTile(categoriesToShow[index]),
+                    ),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.upload_file),
+              title: const Text('Import PDF'),
+              onTap: () { Navigator.pop(context); _uploadFile(); },
+            ),
+          ],
         ),
       ),
-      body: isSearching
-          ? ListView.builder(
-              itemCount: filteredItems.length,
-              itemBuilder: (context, index) {
-                final item = filteredItems[index];
-                final isUser = item['isUserUpload'] == true;
-                final assetPath = isUser ? (item['path'] ?? '') : (item['asset'] ?? '');
-                return ListTile(
-                  leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
-                  title: Text(item['title'] ?? 'Unknown'),
-                  trailing: IconButton(
-                    icon: Icon(favorites.contains(assetPath) ? Icons.star : Icons.star_border, color: Colors.amber),
-                    onPressed: () => _toggleFavorite(assetPath),
-                  ),
-                  onTap: () => _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser),
-                );
-              },
-            )
-          : ListView.builder(
-              itemCount: categoriesToShow.length,
-              itemBuilder: (context, index) {
-                return _buildCategoryTile(categoriesToShow[index]);
-              },
+
+      // ── AppBar ───────────────────────────────────────────────────────────
+      appBar: AppBar(
+        title: const Text('AerieMed'),
+        actions: [
+          IconButton(icon: const Icon(Icons.brightness_medium), onPressed: widget.onThemeToggle),
+        ],
+      ),
+
+      // ── Body: feature launcher ───────────────────────────────────────────
+      body: _buildHomeLauncher(context),
+    );
+  }
+
+  Widget _buildHomeLauncher(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+      children: [
+        _launcherSection('Clinical Tools'),
+        _launcherGrid(context, const [
+          _FeatureTile(Icons.account_tree, 'Decision Trees', Colors.indigo, DecisionTreeScreen()),
+          _FeatureTile(Icons.medication, 'Drug Reference', Colors.teal, DrugReferenceScreen()),
+          _FeatureTile(Icons.checklist, 'Procedure\nChecklists', Colors.green, ProcedureListScreen()),
+          _FeatureTile(Icons.biotech, 'Differential\nDiagnosis', Colors.purple, DifferentialDxScreen()),
+          _FeatureTile(Icons.calculate, 'Dosing\nCalculator', Colors.orange, DosingCalculatorScreen()),
+          _FeatureTile(Icons.assignment_outlined, 'Patient\nReports', Colors.red, PatientReportListScreen()),
+        ]),
+        _launcherSection('Field & Navigation'),
+        _launcherGrid(context, const [
+          _FeatureTile(Icons.map_outlined, 'Offline Maps', Colors.brown, OfflineMapsScreen()),
+          _FeatureTile(Icons.gps_fixed, 'GPS Tools', Colors.blue, GpsToolsScreen()),
+          _FeatureTile(Icons.flight_land, 'LZ Assessment', Colors.cyan, LzAssessmentScreen()),
+          _FeatureTile(Icons.wb_sunny_outlined, 'Sun & Weather', Colors.amber, SunWeatherScreen()),
+        ]),
+        _launcherSection('Team Coordination'),
+        _launcherGrid(context, const [
+          _FeatureTile(Icons.account_tree_outlined, 'Team\nCommand', Colors.indigo, TeamCommandScreen()),
+          _FeatureTile(Icons.emergency, 'MCI\nTriage', Colors.red, MciTriageScreen()),
+        ]),
+        _launcherSection('Reference'),
+        _launcherGrid(context, const [
+          _FeatureTile(Icons.info_outline, 'Protocol\nVersion', Colors.blueGrey, ProtocolVersionScreen()),
+        ]),
+      ],
+    );
+  }
+
+  Widget _launcherSection(String title) => Padding(
+        padding: const EdgeInsets.only(top: 8, bottom: 10),
+        child: Text(title,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+      );
+
+  Widget _launcherGrid(BuildContext context, List<_FeatureTile> tiles) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 1.0,
+      ),
+      itemCount: tiles.length,
+      itemBuilder: (context, i) {
+        final t = tiles[i];
+        return InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => t.screen)),
+          child: Container(
+            decoration: BoxDecoration(
+              color: t.color.withValues(alpha: 0.12),
+              border: Border.all(color: t.color.withValues(alpha: 0.3)),
+              borderRadius: BorderRadius.circular(12),
             ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(t.icon, color: t.color, size: 32),
+                const SizedBox(height: 6),
+                Text(t.label,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: t.color, height: 1.2)),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -586,6 +698,14 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
       onTap: () => _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser),
     );
   }
+}
+
+class _FeatureTile {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final Widget screen;
+  const _FeatureTile(this.icon, this.label, this.color, this.screen);
 }
 
 class PdfViewerScreen extends StatefulWidget {

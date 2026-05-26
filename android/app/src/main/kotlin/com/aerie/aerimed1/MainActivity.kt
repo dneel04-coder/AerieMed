@@ -1,4 +1,4 @@
-package com.example.aeriemed
+package com.aerie.aerimed1
 
 import io.flutter.embedding.android.FlutterActivity
 

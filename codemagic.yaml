@@ -24,7 +24,6 @@ workflows:
       - name: Set up code signing
         script: |
           set -e
-          export CERTIFICATE_PRIVATE_KEY=$(openssl genrsa 2048)
           keychain initialize
           app-store-connect fetch-signing-files \
             com.aerie.aerimed1 \
@@ -37,8 +36,7 @@ workflows:
       - name: Build IPA
         script: |
           set -e
-          flutter build ipa --release \
-            --export-options-plist /Users/builder/export_options.plist
+          flutter build ipa --release
 
     artifacts:
       - build/ios/ipa/*.ipa
