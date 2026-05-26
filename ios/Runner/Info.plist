@@ -4,6 +4,12 @@
 <dict>
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>AerieMed needs access to your documents to import PDF files.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>AerieMed needs access to your photo library to attach images to patient reports.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>AerieMed needs access to your camera to capture images for patient reports.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>AerieMed uses your location to record the scene location in patient reports.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
