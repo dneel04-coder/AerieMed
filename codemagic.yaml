@@ -21,6 +21,7 @@ workflows:
       - name: Set up code signing
         script: |
           set -e
+          export CERTIFICATE_PRIVATE_KEY=$(openssl genrsa 2048)
           keychain initialize
           app-store-connect fetch-signing-files \
             com.aerie.aerimed1 \
