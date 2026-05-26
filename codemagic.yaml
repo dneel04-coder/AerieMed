@@ -13,9 +13,6 @@ workflows:
       flutter: stable
       xcode: latest
       cocoapods: default
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.aerie.aerimed1
 
     scripts:
       - name: Flutter packages
@@ -27,6 +24,7 @@ workflows:
       - name: Set up code signing
         script: |
           set -e
+          export CERTIFICATE_PRIVATE_KEY=$(openssl genrsa 2048)
           keychain initialize
           app-store-connect fetch-signing-files \
             com.aerie.aerimed1 \
