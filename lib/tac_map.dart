@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'protocol_admin.dart' show SupabaseService;
 
 // ─── Supabase config keys ────────────────────────────────────────────────────
 const _kSupabaseUrl = 'tac_supabase_url';
@@ -129,11 +130,7 @@ class _TacMapScreenState extends State<TacMapScreen> {
       return;
     }
 
-    try {
-      await Supabase.initialize(url: url, anonKey: key);
-    } catch (_) {
-      // already initialized
-    }
+    await SupabaseService.ensureInitialized();
 
     final callsign = prefs.getString(_kCallsign) ?? '';
     final mission = prefs.getString(_kMissionCode) ?? '';

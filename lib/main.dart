@@ -20,6 +20,7 @@ import 'team_command.dart';
 import 'mci_triage.dart';
 import 'cert_vault.dart';
 import 'tac_map.dart';
+import 'protocol_admin.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -92,6 +93,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
   final TextEditingController _searchController = TextEditingController();
   Set<String> favorites = {};
   List<Map<String, String>> userUploads = [];
+  bool _isAdmin = false;
 
   final Map<String, Map<String, dynamic>> medicationData = {
     'Acetaminophen': {'types': ['Pain Management'], 'abc': []},
@@ -171,6 +173,41 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     super.initState();
     _initRootProtocols();
     _loadData();
+    _checkAdminMode();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkNewProtocols());
+  }
+
+  Future<void> _checkAdminMode() async {
+    final isAdmin = await ProtocolSyncService.instance.isAdminMode;
+    if (mounted) setState(() => _isAdmin = isAdmin);
+  }
+
+  Future<void> _checkNewProtocols() async {
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok || !mounted) return;
+    final pending = await ProtocolSyncService.instance.pendingProtocols();
+    if (pending.isEmpty || !mounted) return;
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => ProtocolUpdateDialog(protocols: pending),
+    );
+  }
+
+  Future<void> _toggleAdminMode() async {
+    if (_isAdmin) {
+      await ProtocolSyncService.instance.setAdminMode(false);
+      if (mounted) setState(() => _isAdmin = false);
+      return;
+    }
+    if (!mounted) return;
+    final ok = await showAdminPinDialog(context);
+    if (!ok || !mounted) return;
+    await ProtocolSyncService.instance.setAdminMode(true);
+    if (!mounted) return;
+    setState(() => _isAdmin = true);
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Admin mode activated')));
   }
 
   void _initRootProtocols() {
@@ -549,6 +586,15 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
             ),
             const Divider(height: 1),
             ListTile(
+              leading: Icon(
+                _isAdmin ? Icons.admin_panel_settings : Icons.lock_outline,
+                color: _isAdmin ? Colors.orange : null,
+              ),
+              title: Text(_isAdmin ? 'Admin Mode: ON' : 'Admin Mode'),
+              subtitle: _isAdmin ? const Text('Tap to deactivate') : null,
+              onTap: () { Navigator.pop(context); _toggleAdminMode(); },
+            ),
+            ListTile(
               leading: const Icon(Icons.upload_file),
               title: const Text('Import PDF'),
               onTap: () { Navigator.pop(context); _uploadFile(); },
@@ -596,10 +642,13 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
           _FeatureTile(Icons.account_tree_outlined, 'Team\nCommand', Colors.indigo, TeamCommandScreen()),
           _FeatureTile(Icons.emergency, 'MCI\nTriage', Colors.red, MciTriageScreen()),
           _FeatureTile(Icons.radar, 'Tac\nMap', Colors.teal, TacMapScreen()),
+          _FeatureTile(Icons.description_outlined, 'Team\nProtocols', Colors.deepOrange, TeamProtocolsScreen()),
         ]),
         _launcherSection('Reference'),
-        _launcherGrid(context, const [
-          _FeatureTile(Icons.info_outline, 'Protocol\nVersion', Colors.blueGrey, ProtocolVersionScreen()),
+        _launcherGrid(context, [
+          const _FeatureTile(Icons.info_outline, 'Protocol\nVersion', Colors.blueGrey, ProtocolVersionScreen()),
+          if (_isAdmin)
+            const _FeatureTile(Icons.admin_panel_settings, 'Admin\nPanel', Colors.red, AdminPanelScreen()),
         ]),
       ],
     );

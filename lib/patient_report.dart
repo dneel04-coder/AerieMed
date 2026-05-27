@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'report_transfer.dart';
 
 // ── VitalSet ──────────────────────────────────────────────────────────────────
@@ -143,6 +144,8 @@ class PatientReport {
   List<String> photoPaths;
   // Pediatric extras
   String broselowColor;
+  // Sync state
+  bool isSynced;
 
   PatientReport({
     required this.id,
@@ -169,6 +172,7 @@ class PatientReport {
     List<BodyMarker>? bodyMarkers,
     List<String>? photoPaths,
     this.broselowColor = '',
+    this.isSynced = false,
   })  : vitalSets = vitalSets ?? [],
         bodyMarkers = bodyMarkers ?? [],
         photoPaths = photoPaths ?? [];
@@ -290,6 +294,7 @@ class PatientReport {
         'bodyMarkers': bodyMarkers.map((m) => m.toJson()).toList(),
         'photoPaths': photoPaths,
         'broselowColor': broselowColor,
+        'isSynced': isSynced,
       };
 
   factory PatientReport.fromJson(Map<String, dynamic> j) {
@@ -348,6 +353,7 @@ class PatientReport {
           .toList(),
       photoPaths: (j['photoPaths'] as List? ?? []).cast<String>(),
       broselowColor: j['broselowColor'] as String? ?? '',
+      isSynced: j['isSynced'] as bool? ?? false,
     );
   }
 }
@@ -388,6 +394,57 @@ class ReportStorage {
   }
 }
 
+// ── Report syncer (auto-send to Supabase when available) ─────────────────────
+
+class ReportSyncer {
+  static const _urlKey = 'tac_supabase_url';
+  static const _anonKey = 'tac_supabase_anon_key';
+  static const _userIdKey = 'tac_user_id';
+  static const _callsignKey = 'tac_callsign';
+
+  static Future<void> trySyncReport(PatientReport report) async {
+    if (report.isSynced) return;
+    final prefs = await SharedPreferences.getInstance();
+    final url = prefs.getString(_urlKey) ?? '';
+    final key = prefs.getString(_anonKey) ?? '';
+    if (url.isEmpty || key.isEmpty) return;
+
+    SupabaseClient client;
+    try {
+      await Supabase.initialize(url: url, anonKey: key);
+      client = Supabase.instance.client;
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('already') || msg.contains('initialized')) {
+        client = Supabase.instance.client;
+      } else {
+        return;
+      }
+    }
+
+    try {
+      final userId = prefs.getString(_userIdKey) ?? 'unknown';
+      final callsign = prefs.getString(_callsignKey) ?? 'Unknown';
+      await client.from('patient_reports').upsert({
+        'id': report.id,
+        'user_id': userId,
+        'callsign': callsign,
+        'report_data': report.toJson(),
+        'submitted_at': DateTime.now().toIso8601String(),
+      });
+      report.isSynced = true;
+      await ReportStorage.save(report);
+    } catch (_) {}
+  }
+
+  static Future<void> syncPending() async {
+    final reports = await ReportStorage.load();
+    for (final r in reports.where((r) => !r.isSynced)) {
+      await trySyncReport(r);
+    }
+  }
+}
+
 // ── Share helper ──────────────────────────────────────────────────────────────
 
 void _shareReport(PatientReport r) {
@@ -417,6 +474,7 @@ class _PatientReportListScreenState extends State<PatientReportListScreen> {
   }
 
   Future<void> _refresh() async {
+    ReportSyncer.syncPending();
     final r = await ReportStorage.load();
     if (mounted) setState(() { _reports = r; _loading = false; });
   }
@@ -532,6 +590,14 @@ class _PatientReportListScreenState extends State<PatientReportListScreen> {
         ]),
         isThreeLine: r.chiefComplaint.isNotEmpty,
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (r.isSynced)
+            const Tooltip(
+              message: 'Sent to admin',
+              child: Padding(
+                padding: EdgeInsets.only(right: 2),
+                child: Icon(Icons.cloud_done, color: Colors.green, size: 16),
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.send_outlined),
             tooltip: 'Send / Export',
@@ -683,7 +749,9 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
   }
 
   Future<void> _save({bool silent = false}) async {
-    await ReportStorage.save(_compile());
+    final compiled = _compile();
+    await ReportStorage.save(compiled);
+    ReportSyncer.trySyncReport(compiled);
     if (!silent && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Report saved'), duration: Duration(seconds: 2)),
