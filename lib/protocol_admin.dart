@@ -83,10 +83,12 @@ class ProtocolSyncService {
   ProtocolSyncService._();
 
   static const _adminModeKey = 'proto_admin_mode';
-  static const _adminPinKey = 'proto_admin_pin';
+  static const _adminUsernameKey = 'proto_admin_username';
+  static const _adminPasswordKey = 'proto_admin_password';
   static const _userIdKey = 'tac_user_id';
   static const _callsignKey = 'tac_callsign';
-  static const _defaultPin = 'aerimed';
+  static const _defaultUsername = 't2ops';
+  static const _defaultPassword = 'Lucas22!';
 
   Future<bool> get isAdminMode async =>
       (await SharedPreferences.getInstance()).getBool(_adminModeKey) ?? false;
@@ -94,11 +96,17 @@ class ProtocolSyncService {
   Future<void> setAdminMode(bool value) async =>
       (await SharedPreferences.getInstance()).setBool(_adminModeKey, value);
 
-  Future<String> getPin() async =>
-      (await SharedPreferences.getInstance()).getString(_adminPinKey) ?? _defaultPin;
+  Future<String> getAdminUsername() async =>
+      (await SharedPreferences.getInstance()).getString(_adminUsernameKey) ?? _defaultUsername;
 
-  Future<void> setPin(String pin) async =>
-      (await SharedPreferences.getInstance()).setString(_adminPinKey, pin);
+  Future<String> getAdminPassword() async =>
+      (await SharedPreferences.getInstance()).getString(_adminPasswordKey) ?? _defaultPassword;
+
+  Future<void> setAdminCredentials(String username, String password) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_adminUsernameKey, username);
+    await prefs.setString(_adminPasswordKey, password);
+  }
 
   Future<String> _userId() async {
     final prefs = await SharedPreferences.getInstance();
@@ -284,27 +292,51 @@ class ProtocolSyncService {
       return [];
     }
   }
+
+  Future<List<Map<String, dynamic>>> adminGetCerts() async {
+    final client = SupabaseService.client;
+    if (client == null) return [];
+    try {
+      return (await client
+              .from('team_certs')
+              .select()
+              .order('callsign') as List)
+          .cast<Map<String, dynamic>>();
+    } catch (_) {
+      return [];
+    }
+  }
 }
 
-// ─── Admin PIN dialog ─────────────────────────────────────────────────────────
+// ─── Admin login dialog ───────────────────────────────────────────────────────
 
 Future<bool> showAdminPinDialog(BuildContext context) async {
-  final pinCtrl = TextEditingController();
+  final userCtrl = TextEditingController();
+  final passCtrl = TextEditingController();
   final ok = await showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
       title: const Text('Admin Access'),
-      content: TextField(
-        controller: pinCtrl,
-        obscureText: true,
-        autofocus: true,
-        decoration: const InputDecoration(
-          labelText: 'PIN',
-          hintText: 'Default: aerimed',
-          border: OutlineInputBorder(),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(
+          controller: userCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Username',
+            border: OutlineInputBorder(),
+          ),
         ),
-        onSubmitted: (_) => Navigator.pop(context, true),
-      ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: passCtrl,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Password',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => Navigator.pop(context, true),
+        ),
+      ]),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
         FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Enter')),
@@ -312,8 +344,9 @@ Future<bool> showAdminPinDialog(BuildContext context) async {
     ),
   );
   if (ok != true) return false;
-  final correct = await ProtocolSyncService.instance.getPin();
-  return pinCtrl.text.trim() == correct;
+  final correctUser = await ProtocolSyncService.instance.getAdminUsername();
+  final correctPass = await ProtocolSyncService.instance.getAdminPassword();
+  return userCtrl.text.trim() == correctUser && passCtrl.text == correctPass;
 }
 
 // ─── Protocol update dialog (startup) ────────────────────────────────────────
@@ -601,37 +634,68 @@ class AdminPanelScreen extends StatelessWidget {
                 context, MaterialPageRoute(builder: (_) => const AdminReportsScreen())),
           ),
           const Divider(indent: 72, endIndent: 16),
+          const Divider(indent: 72, endIndent: 16),
+          ListTile(
+            leading: const CircleAvatar(
+                backgroundColor: Colors.purple,
+                child: Icon(Icons.workspace_premium, color: Colors.white)),
+            title: const Text('Team Certifications'),
+            subtitle: const Text('View certifications for all team members'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const AdminCertsScreen())),
+          ),
+          const Divider(indent: 72, endIndent: 16),
           ListTile(
             leading: const CircleAvatar(
                 backgroundColor: Colors.grey, child: Icon(Icons.lock_outline, color: Colors.white)),
-            title: const Text('Change Admin PIN'),
-            onTap: () => _changePinDialog(context),
+            title: const Text('Change Admin Credentials'),
+            onTap: () => _changeCredentialsDialog(context),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _changePinDialog(BuildContext context) async {
-    final currentCtrl = TextEditingController();
-    final newCtrl = TextEditingController();
+  Future<void> _changeCredentialsDialog(BuildContext context) async {
+    final curUserCtrl = TextEditingController();
+    final curPassCtrl = TextEditingController();
+    final newUserCtrl = TextEditingController();
+    final newPassCtrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Change Admin PIN'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(
-            controller: currentCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'Current PIN', border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: newCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'New PIN', border: OutlineInputBorder()),
-          ),
-        ]),
+        title: const Text('Change Admin Credentials'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+              controller: curUserCtrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                  labelText: 'Current Username', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: curPassCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                  labelText: 'Current Password', border: OutlineInputBorder()),
+            ),
+            const Divider(height: 24),
+            TextField(
+              controller: newUserCtrl,
+              decoration: const InputDecoration(
+                  labelText: 'New Username', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: newPassCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                  labelText: 'New Password', border: OutlineInputBorder()),
+            ),
+          ]),
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
@@ -639,19 +703,22 @@ class AdminPanelScreen extends StatelessWidget {
       ),
     );
     if (ok != true) return;
-    final current = await ProtocolSyncService.instance.getPin();
-    if (currentCtrl.text.trim() != current) {
+    final correctUser = await ProtocolSyncService.instance.getAdminUsername();
+    final correctPass = await ProtocolSyncService.instance.getAdminPassword();
+    if (curUserCtrl.text.trim() != correctUser || curPassCtrl.text != correctPass) {
       if (context.mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Current PIN incorrect')));
+            .showSnackBar(const SnackBar(content: Text('Current credentials incorrect')));
       }
       return;
     }
-    final newPin = newCtrl.text.trim();
-    if (newPin.isEmpty) return;
-    await ProtocolSyncService.instance.setPin(newPin);
+    final newUser = newUserCtrl.text.trim();
+    final newPass = newPassCtrl.text;
+    if (newUser.isEmpty || newPass.isEmpty) return;
+    await ProtocolSyncService.instance.setAdminCredentials(newUser, newPass);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PIN updated')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Credentials updated')));
     }
   }
 }
@@ -936,12 +1003,12 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Supabase SQL — Run in SQL Editor'),
-        content: SizedBox(
+        content: const SizedBox(
           width: double.maxFinite,
           child: SingleChildScrollView(
             child: SelectableText(
               _kAdditionalSql,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+              style: TextStyle(fontFamily: 'monospace', fontSize: 11),
             ),
           ),
         ),
@@ -1129,6 +1196,187 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
   }
 }
 
+// ─── Admin: Team certifications ──────────────────────────────────────────────
+
+class AdminCertsScreen extends StatefulWidget {
+  const AdminCertsScreen({super.key});
+
+  @override
+  State<AdminCertsScreen> createState() => _AdminCertsScreenState();
+}
+
+class _AdminCertsScreenState extends State<AdminCertsScreen> {
+  List<Map<String, dynamic>> _rows = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final rows = await ProtocolSyncService.instance.adminGetCerts();
+    if (mounted) setState(() { _rows = rows; _loading = false; });
+  }
+
+  Map<String, List<Map<String, dynamic>>> _grouped() {
+    final Map<String, List<Map<String, dynamic>>> groups = {};
+    for (final row in _rows) {
+      final callsign = row['callsign'] as String? ?? 'Unknown';
+      groups.putIfAbsent(callsign, () => []).add(row);
+    }
+    return groups;
+  }
+
+  Future<void> _viewCert(Map<String, dynamic> row) async {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    final filePath = row['file_path'] as String? ?? '';
+    if (filePath.isEmpty) return;
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: SizedBox(
+          height: 60,
+          child: Row(children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('Loading…'),
+          ]),
+        ),
+      ),
+    );
+
+    try {
+      final bytes = await client.storage.from('certs').download(filePath);
+      if (!mounted) return;
+      Navigator.pop(context); // close loading dialog
+
+      final isPdf = filePath.toLowerCase().endsWith('.pdf');
+      if (isPdf) {
+        final dir = await getTemporaryDirectory();
+        final tempFile = File('${dir.path}/cert_${row['id']}.pdf');
+        await tempFile.writeAsBytes(bytes);
+        if (!mounted) return;
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => Scaffold(
+              appBar: AppBar(
+                title: Text('${row['license_type']} — ${row['callsign']}',
+                    style: const TextStyle(fontSize: 14)),
+              ),
+              body: PdfViewer.file(tempFile.path),
+            ),
+          ),
+        );
+      } else {
+        await showDialog(
+          context: context,
+          builder: (_) => Dialog(
+            insetPadding: const EdgeInsets.all(8),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              AppBar(
+                automaticallyImplyLeading: false,
+                title: Text('${row['license_type']} — ${row['callsign']}',
+                    style: const TextStyle(fontSize: 14)),
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+              InteractiveViewer(child: Image.memory(bytes)),
+            ]),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not load cert: $e')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+
+    final groups = _grouped();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Team Certifications (${_rows.length})'),
+        actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _load)],
+      ),
+      body: _rows.isEmpty
+          ? const Center(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.workspace_premium_outlined, size: 64, color: Colors.grey),
+                SizedBox(height: 16),
+                Text('No certifications synced yet.', style: TextStyle(color: Colors.grey)),
+                SizedBox(height: 8),
+                Text('Certs are uploaded when team members add them in Cert Vault.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+              ]),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: groups.length,
+              itemBuilder: (_, i) {
+                final callsign = groups.keys.elementAt(i);
+                final certs = groups[callsign]!;
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  child: ExpansionTile(
+                    leading: CircleAvatar(
+                      backgroundColor: Colors.deepOrange.withValues(alpha: 0.15),
+                      child: const Icon(Icons.person, color: Colors.deepOrange),
+                    ),
+                    title: Text(callsign,
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text('${certs.length} cert${certs.length != 1 ? 's' : ''}'),
+                    initiallyExpanded: true,
+                    children: certs.map((cert) {
+                      final dt =
+                          DateTime.tryParse(cert['uploaded_at'] as String? ?? '');
+                      return ListTile(
+                        leading:
+                            const Icon(Icons.workspace_premium, color: Colors.amber),
+                        title: Text(cert['license_type'] as String? ?? '',
+                            style: const TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(cert['state'] as String? ?? ''),
+                              if (dt != null)
+                                Text('Uploaded ${_fmt(dt)}',
+                                    style: const TextStyle(
+                                        fontSize: 11, color: Colors.grey)),
+                            ]),
+                        isThreeLine: true,
+                        trailing: TextButton(
+                          onPressed: () => _viewCert(cert),
+                          child: const Text('View'),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
 // ─── SQL schema constant ──────────────────────────────────────────────────────
 
 const _kAdditionalSql = '''
@@ -1180,6 +1428,31 @@ insert into storage.buckets (id, name, public)
 create policy "public_protocols" on storage.objects
   for all using (bucket_id = 'protocols')
   with check (bucket_id = 'protocols');
+
+-- Team certifications (run these if adding cert sync)
+
+create table team_certs (
+  id text primary key,
+  user_id text not null,
+  callsign text not null,
+  license_type text not null,
+  state text not null,
+  original_file_name text not null,
+  uploaded_at timestamptz not null,
+  file_path text not null
+);
+
+alter table team_certs enable row level security;
+create policy "public_access" on team_certs
+  for all using (true) with check (true);
+
+insert into storage.buckets (id, name, public)
+  values ('certs', 'certs', false)
+  on conflict (id) do nothing;
+
+create policy "public_certs" on storage.objects
+  for all using (bucket_id = 'certs')
+  with check (bucket_id = 'certs');
 ''';
 
 // ─── Shared date formatter ────────────────────────────────────────────────────

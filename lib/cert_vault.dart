@@ -1,12 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'protocol_admin.dart' show SupabaseService;
 
 // ── Model ──────────────────────────────────────────────────────────────────
 
@@ -124,6 +127,55 @@ class _CertStorage {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(
         _key, certs.map((c) => jsonEncode(c.toJson())).toList());
+  }
+}
+
+// ── Cert Syncer ────────────────────────────────────────────────────────────
+
+class CertSyncer {
+  static Future<void> _trySyncCert(
+      UserCert cert, String userId, String callsign) async {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    try {
+      final ext = cert.filePath.contains('.')
+          ? cert.filePath.split('.').last.toLowerCase()
+          : 'jpg';
+      final storagePath = '$userId/${cert.id}.$ext';
+      final bytes = await File(cert.filePath).readAsBytes();
+      final contentType =
+          cert.isPdf ? 'application/pdf' : 'image/jpeg';
+      await client.storage.from('certs').uploadBinary(
+        storagePath,
+        bytes,
+        fileOptions: FileOptions(upsert: true, contentType: contentType),
+      );
+      await client.from('team_certs').upsert({
+        'id': cert.id,
+        'user_id': userId,
+        'callsign': callsign,
+        'license_type': cert.licenseType,
+        'state': cert.state,
+        'original_file_name': cert.originalFileName,
+        'uploaded_at': cert.uploadedAt.toIso8601String(),
+        'file_path': storagePath,
+      }, onConflict: 'id');
+    } catch (_) {}
+  }
+
+  static Future<void> syncAll(List<UserCert> certs) async {
+    final prefs = await SharedPreferences.getInstance();
+    var userId = prefs.getString('tac_user_id');
+    if (userId == null) {
+      final rng = Random.secure();
+      userId =
+          List.generate(12, (_) => rng.nextInt(16).toRadixString(16)).join();
+      await prefs.setString('tac_user_id', userId);
+    }
+    final callsign = prefs.getString('tac_callsign') ?? 'Unknown';
+    for (final cert in certs) {
+      await _trySyncCert(cert, userId, callsign);
+    }
   }
 }
 
@@ -334,6 +386,7 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
         );
         setState(() => _certs.add(cert));
         await _CertStorage.save(_certs);
+        CertSyncer.syncAll(_certs); // fire-and-forget
       } else {
         try { await File(dest).delete(); } catch (_) {}
       }
