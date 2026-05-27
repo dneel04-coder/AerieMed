@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
@@ -7,9 +8,18 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'protocol_admin.dart' show SupabaseService;
+
+// ftp.wildfire.gov uses a government CA not in Dart's default trust store.
+// Returns an http.Client that skips cert verification for that host only.
+http.Client _wildfireClient() => IOClient(
+      HttpClient()
+        ..badCertificateCallback =
+            (cert, host, port) => host.endsWith('wildfire.gov'),
+    );
 
 // ─── Tile layer options ───────────────────────────────────────────────────────
 
@@ -83,6 +93,7 @@ enum TacMarkerType {
 class TacUser {
   final String id;
   final String callsign;
+  final String missionCode;
   final double lat;
   final double lng;
   final bool isAdmin;
@@ -91,6 +102,7 @@ class TacUser {
   TacUser({
     required this.id,
     required this.callsign,
+    required this.missionCode,
     required this.lat,
     required this.lng,
     required this.isAdmin,
@@ -100,6 +112,7 @@ class TacUser {
   factory TacUser.fromMap(Map<String, dynamic> m) => TacUser(
         id: m['id'] as String,
         callsign: m['callsign'] as String,
+        missionCode: m['mission_code'] as String? ?? '',
         lat: (m['lat'] as num).toDouble(),
         lng: (m['lng'] as num).toDouble(),
         isAdmin: m['is_admin'] as bool? ?? false,
@@ -507,6 +520,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         _users[_userId] = TacUser(
           id: _userId,
           callsign: _callsign,
+          missionCode: _missionCode,
           lat: _myLocation!.latitude,
           lng: _myLocation!.longitude,
           isAdmin: _isAdmin,
@@ -534,10 +548,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             event: PostgresChangeEvent.all,
             schema: 'public',
             table: 'tac_users',
-            filter: PostgresChangeFilter(
-                type: PostgresChangeFilterType.eq,
-                column: 'mission_code',
-                value: _missionCode),
+            // No filter — receive all users across all missions
             callback: (payload) {
               if (!mounted) return;
               if (payload.eventType == PostgresChangeEvent.delete) {
@@ -576,8 +587,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     try {
       final users = await _supabase
           .from('tac_users')
-          .select()
-          .eq('mission_code', _missionCode);
+          .select(); // all missions
       final markers = await _supabase
           .from('tac_markers')
           .select()
@@ -648,11 +658,18 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
     for (final user in _users.values) {
       final isMe = user.id == _userId;
-      final color = isMe ? Colors.teal : Colors.blue;
+      final sameMission = user.missionCode == _missionCode;
+      final color = isMe
+          ? Colors.teal
+          : sameMission
+              ? Colors.blue
+              : Colors.deepOrange;
+      // Label: callsign + mission code for users on other missions
+      final label = sameMission ? user.callsign : '${user.callsign}\n${user.missionCode}';
       markers.add(Marker(
         point: LatLng(user.lat, user.lng),
-        width: 80,
-        height: 60,
+        width: 88,
+        height: sameMission ? 60 : 72,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -664,9 +681,10 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 borderRadius: BorderRadius.circular(4),
                 boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 3, offset: Offset(1, 1))],
               ),
-              child: Text(user.callsign,
+              child: Text(label,
+                  textAlign: TextAlign.center,
                   style: const TextStyle(
-                      color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                      color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
             ),
             Icon(isMe ? Icons.person_pin : Icons.person_pin_circle,
                 color: color, size: 34,
@@ -787,9 +805,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   _mapReady = true;
                   if (_myLocation != null) _mapCtrl.move(_myLocation!, 14);
                 },
-                onTap: _placingType != null
-                    ? (_, point) => _placeMarker(point, _placingType!)
-                    : null,
+                onTap: (_, point) {
+                  if (_placingType != null) _placeMarker(point, _placingType!);
+                },
               ),
               children: [
                 TileLayer(
@@ -875,7 +893,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         content: Text('Downloading $name…'),
         duration: const Duration(seconds: 30)));
     try {
-      final resp = await http.get(Uri.parse(url));
+      final client = _wildfireClient();
+      final resp = await client.get(Uri.parse(url));
+      client.close();
       if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
 
       final archive = ZipDecoder().decodeBytes(resp.bodyBytes);
@@ -1093,7 +1113,9 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
   Future<void> _fetchDirectory(String url) async {
     if (mounted) setState(() { _entries = null; _error = null; });
     try {
-      final resp = await http.get(Uri.parse(url));
+      final client = _wildfireClient();
+      final resp = await client.get(Uri.parse(url));
+      client.close();
       if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
       final parsed = _parseApacheIndex(resp.body, url);
       if (mounted) setState(() { _entries = parsed; _currentUrl = url; });
