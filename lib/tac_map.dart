@@ -396,9 +396,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   final Map<String, TacUser> _users = {};
   final Map<String, TacMarker> _markers = {};
 
-  StreamSubscription<List<Map<String, dynamic>>>? _userSub;
-  StreamSubscription<List<Map<String, dynamic>>>? _markerSub;
+  RealtimeChannel? _realtimeChannel;
   Timer? _locationTimer;
+  Timer? _refreshTimer;
 
   bool _mapReady = false;
   LatLng? _myLocation;
@@ -474,35 +474,48 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   }
 
   void _subscribeRealtime() {
-    _userSub = _supabase
-        .from('tac_users')
-        .stream(primaryKey: ['id', 'mission_code'])
-        .eq('mission_code', _missionCode)
-        .listen((rows) {
-          if (!mounted) return;
-          setState(() {
-            _users.clear();
-            for (final r in rows) {
-              final u = TacUser.fromMap(r);
-              _users[u.id] = u;
-            }
-          });
-        });
-
-    _markerSub = _supabase
-        .from('tac_markers')
-        .stream(primaryKey: ['id'])
-        .eq('mission_code', _missionCode)
-        .listen((rows) {
-          if (!mounted) return;
-          setState(() {
-            _markers.clear();
-            for (final r in rows) {
-              final m = TacMarker.fromMap(r);
-              _markers[m.id] = m;
-            }
-          });
-        });
+    _realtimeChannel = _supabase
+        .channel('tac_${_missionCode}_$_userId')
+        .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'tac_users',
+            filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: 'mission_code',
+                value: _missionCode),
+            callback: (payload) {
+              if (!mounted) return;
+              if (payload.eventType == PostgresChangeEvent.delete) {
+                final id = payload.oldRecord['id'] as String?;
+                if (id != null) setState(() => _users.remove(id));
+              } else {
+                final u = TacUser.fromMap(payload.newRecord);
+                setState(() => _users[u.id] = u);
+              }
+            })
+        .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'tac_markers',
+            filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: 'mission_code',
+                value: _missionCode),
+            callback: (payload) {
+              if (!mounted) return;
+              if (payload.eventType == PostgresChangeEvent.delete) {
+                final id = payload.oldRecord['id'] as String?;
+                if (id != null) setState(() => _markers.remove(id));
+              } else {
+                final m = TacMarker.fromMap(payload.newRecord);
+                setState(() => _markers[m.id] = m);
+              }
+            })
+        .subscribe();
+    // Periodic fallback re-fetch in case any realtime events are missed
+    _refreshTimer = Timer.periodic(
+        const Duration(seconds: 30), (_) => _loadInitialData());
   }
 
   Future<void> _loadInitialData() async {
@@ -552,8 +565,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
   Future<void> _leaveMission() async {
     _locationTimer?.cancel();
-    _userSub?.cancel();
-    _markerSub?.cancel();
+    _refreshTimer?.cancel();
+    _realtimeChannel?.unsubscribe();
     try {
       await _supabase
           .from('tac_users')
@@ -571,8 +584,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   @override
   void dispose() {
     _locationTimer?.cancel();
-    _userSub?.cancel();
-    _markerSub?.cancel();
+    _refreshTimer?.cancel();
+    _realtimeChannel?.unsubscribe();
     super.dispose();
   }
 
