@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
@@ -24,17 +24,17 @@ import 'protocol_admin.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const AerieMedApp());
+  runApp(const AustereMedApp());
 }
 
-class AerieMedApp extends StatefulWidget {
-  const AerieMedApp({super.key});
+class AustereMedApp extends StatefulWidget {
+  const AustereMedApp({super.key});
 
   @override
-  State<AerieMedApp> createState() => _AerieMedAppState();
+  State<AustereMedApp> createState() => _AustereMedAppState();
 }
 
-class _AerieMedAppState extends State<AerieMedApp> {
+class _AustereMedAppState extends State<AustereMedApp> {
   ThemeMode _themeMode = ThemeMode.system;
 
   @override
@@ -64,7 +64,7 @@ class _AerieMedAppState extends State<AerieMedApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AerieMed',
+      title: 'AustereMed',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo, brightness: Brightness.light),
@@ -605,7 +605,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
 
       // ── AppBar ───────────────────────────────────────────────────────────
       appBar: AppBar(
-        title: const Text('AerieMed'),
+        title: const Text('AustereMed'),
         actions: [
           IconButton(icon: const Icon(Icons.brightness_medium), onPressed: widget.onThemeToggle),
         ],

@@ -8,7 +8,7 @@ import 'patient_report.dart';
 // ── Public API ────────────────────────────────────────────────────────────────
 
 Future<Uint8List> buildReportPdf(PatientReport r) async {
-  final doc = pw.Document(title: 'AeriMed PCR', creator: 'AeriMed');
+  final doc = pw.Document(title: 'AustereMed PCR', creator: 'AustereMed');
 
   final photos = <pw.MemoryImage>[];
   for (final path in r.photoPaths) {
@@ -84,7 +84,7 @@ pw.Widget _pageFooter(pw.Context ctx) => pw.Container(
       ),
       padding: const pw.EdgeInsets.only(top: 4),
       child: pw.Row(children: [
-        pw.Text('AeriMed Patient Care Report', style: _sSmall),
+        pw.Text('AustereMed Patient Care Report', style: _sSmall),
         pw.Spacer(),
         pw.Text('Page ${ctx.pageNumber} of ${ctx.pagesCount}', style: _sSmall),
       ]),

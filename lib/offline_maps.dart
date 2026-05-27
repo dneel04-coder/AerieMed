@@ -46,7 +46,7 @@ class _CachedNetworkImageProvider extends ImageProvider<_CachedNetworkImageProvi
     } else {
       try {
         final response = await http
-            .get(Uri.parse(key.url), headers: {'User-Agent': 'AeriMed/1.3 Flutter'})
+            .get(Uri.parse(key.url), headers: {'User-Agent': 'AustereMed/1.3 Flutter'})
             .timeout(const Duration(seconds: 15));
         if (response.statusCode == 200) {
           bytes = response.bodyBytes;
@@ -130,7 +130,7 @@ Future<int> downloadRegion({
           .replaceAll('{y}', '$y');
       try {
         final response = await http
-            .get(Uri.parse(url), headers: {'User-Agent': 'AeriMed/1.3 Flutter'})
+            .get(Uri.parse(url), headers: {'User-Agent': 'AustereMed/1.3 Flutter'})
             .timeout(const Duration(seconds: 10));
         if (response.statusCode == 200) {
           await file.parent.create(recursive: true);
@@ -270,7 +270,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                       TileLayer(
                         urlTemplate: kTileSources[_tileSource]!,
                         tileProvider: _CachedTileProvider(_cacheDir!),
-                        userAgentPackageName: 'com.aerie.aerimed1',
+                        userAgentPackageName: 'com.aerie.AustereMed1',
                       ),
                       MarkerLayer(markers: [
                         Marker(

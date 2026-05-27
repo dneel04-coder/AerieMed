@@ -15,7 +15,7 @@ import 'report_pdf.dart';
 // 20 000 iterations of SHA-256 hash-chain keyed on a fixed app salt.
 // Produces a 256-bit key from an arbitrary passphrase.
 
-const _kSalt = 'aerimed_field_v1_2026_salt';
+const _kSalt = 'AustereMed_field_v1_2026_salt';
 
 Uint8List _deriveKey(String passphrase) {
   List<int> material = utf8.encode('$_kSalt:$passphrase');
@@ -97,15 +97,15 @@ Future<void> exportEncryptedBundle(BuildContext context, PatientReport report) a
 
     final dir = await getTemporaryDirectory();
     final safeId = report.id.length > 8 ? report.id.substring(report.id.length - 8) : report.id;
-    final filename = 'aerimed_$safeId.aerimed';
+    final filename = 'AustereMed_$safeId.AustereMed';
     final file = File('${dir.path}/$filename');
     await file.writeAsString(bundle);
 
-    final subject = 'AeriMed — ${report.patientId.isEmpty ? "Patient Report" : report.patientId}';
+    final subject = 'AustereMed — ${report.patientId.isEmpty ? "Patient Report" : report.patientId}';
     await SharePlus.instance.share(ShareParams(
       files: [XFile(file.path, mimeType: 'application/octet-stream', name: filename)],
       subject: subject,
-      text: 'Encrypted patient report from AeriMed. Open with AeriMed to import.',
+      text: 'Encrypted patient report from AustereMed. Open with AustereMed to import.',
     ));
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text('Export failed: $e')));
@@ -364,7 +364,7 @@ Future<void> generateAndSharePdf(BuildContext context, PatientReport report) asy
   final messenger = ScaffoldMessenger.of(context);
   try {
     final bytes = await buildReportPdf(report);
-    final filename = 'aerimed_${report.patientId.isEmpty ? report.id : report.patientId.replaceAll(' ', '_')}.pdf';
+    final filename = 'AustereMed_${report.patientId.isEmpty ? report.id : report.patientId.replaceAll(' ', '_')}.pdf';
     await _printingSharePdf(bytes, filename);
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text('PDF generation failed: $e')));
