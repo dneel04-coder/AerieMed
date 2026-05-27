@@ -10,6 +10,8 @@ workflows:
       app_store_connect: Codemagic
 
     environment:
+      groups:
+        - AerieMed
       flutter: stable
       xcode: latest
       cocoapods: default
@@ -21,22 +23,21 @@ workflows:
       - name: CocoaPods install
         script: cd ios && pod install
 
-      - name: Set up code signing
+      - name: Install certificate and profile
         script: |
           set -e
+          echo "$CM_CERTIFICATE" | base64 --decode > /tmp/cert.p12
           keychain initialize
-          app-store-connect fetch-signing-files \
-            com.aerie.aerimed1 \
-            --platform IOS \
-            --type IOS_APP_STORE \
-            --create
-          keychain add-certificates
+          keychain add-certificates --certificate /tmp/cert.p12 \
+            --certificate-password "$CM_CERTIFICATE_PASSWORD"
+          PROFILES_HOME="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILES_HOME"
+          echo "$CM_PROVISIONING_PROFILE" | base64 --decode \
+            > "$PROFILES_HOME/aerimed_appstore.mobileprovision"
           xcode-project use-profiles
 
       - name: Build IPA
-        script: |
-          set -e
-          flutter build ipa --release
+        script: flutter build ipa --release
 
     artifacts:
       - build/ios/ipa/*.ipa
@@ -53,8 +54,6 @@ workflows:
           failure: true
 
   # ── Unsigned IPA (no Apple Developer account required) ──────────────────────
-  # Produces an IPA you can install via Sideloadly or AltStore.
-  # Re-sign required every 7 days with a free Apple ID.
   ios-unsigned:
     name: iOS — Unsigned (Sideload)
     instance_type: mac_mini_m2
