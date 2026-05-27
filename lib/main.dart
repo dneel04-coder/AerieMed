@@ -18,6 +18,7 @@ import 'lz_assessment.dart';
 import 'sun_weather.dart';
 import 'team_command.dart';
 import 'mci_triage.dart';
+import 'cert_vault.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -580,6 +581,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
           _FeatureTile(Icons.biotech, 'Differential\nDiagnosis', Colors.purple, DifferentialDxScreen()),
           _FeatureTile(Icons.calculate, 'Dosing\nCalculator', Colors.orange, DosingCalculatorScreen()),
           _FeatureTile(Icons.assignment_outlined, 'Patient\nReports', Colors.red, PatientReportListScreen()),
+          _FeatureTile(Icons.workspace_premium, 'Cert\nVault', Colors.deepPurple, CertVaultScreen()),
         ]),
         _launcherSection('Field & Navigation'),
         _launcherGrid(context, const [
