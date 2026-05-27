@@ -34,25 +34,23 @@ workflows:
           mkdir -p "$PROFILES_HOME"
           echo "$CM_PROVISIONING_PROFILE" | base64 --decode > /tmp/profile.mobileprovision
           cp /tmp/profile.mobileprovision "$PROFILES_HOME/6727e394-14e7-4417-a096-52a50685b782.mobileprovision"
-          cat > /tmp/ExportOptions.plist << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>app-store</string>
-            <key>teamID</key>
-            <string>F593S84V48</string>
-            <key>signingStyle</key>
-            <string>manual</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>com.aerie.aerimed1</key>
-              <string>AeriMed AppStore</string>
-            </dict>
-          </dict>
-          </plist>
-          EOF
+          printf '\nCODE_SIGN_STYLE = Manual\nDEVELOPMENT_TEAM = F593S84V48\nCODE_SIGN_IDENTITY = Apple Distribution\nPROVISIONING_PROFILE_SPECIFIER = AeriMed AppStore\n' >> ios/Flutter/Release.xcconfig
+          python3 -c "
+open('/tmp/ExportOptions.plist','w').write('''<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>method</key><string>app-store</string>
+  <key>teamID</key><string>F593S84V48</string>
+  <key>signingStyle</key><string>manual</string>
+  <key>provisioningProfiles</key>
+  <dict>
+    <key>com.aerie.aerimed1</key><string>AeriMed AppStore</string>
+  </dict>
+</dict>
+</plist>''')
+print('ExportOptions.plist written')
+"
 
       - name: Build IPA
         script: flutter build ipa --release --export-options-plist=/tmp/ExportOptions.plist
