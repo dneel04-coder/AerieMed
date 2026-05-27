@@ -1,12 +1,51 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'protocol_admin.dart' show SupabaseService;
+
+// ─── Tile layer options ───────────────────────────────────────────────────────
+
+enum _BaseLayer {
+  osm,
+  usgsTopo,
+  usgsImagery,
+  satellite;
+
+  String get label => switch (this) {
+        osm => 'OpenStreetMap',
+        usgsTopo => 'USGS Topo',
+        usgsImagery => 'USGS Imagery+Topo',
+        satellite => 'Satellite',
+      };
+
+  String get urlTemplate => switch (this) {
+        osm => 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        usgsTopo =>
+          'https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}',
+        usgsImagery =>
+          'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}',
+        satellite =>
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      };
+}
+
+// ─── Incident overlay model ───────────────────────────────────────────────────
+
+class _IncidentOverlay {
+  final String name;
+  final Uint8List imageBytes;
+  final LatLngBounds bounds;
+  const _IncidentOverlay(
+      {required this.name, required this.imageBytes, required this.bounds});
+}
 
 // ─── Supabase config keys ────────────────────────────────────────────────────
 const _kSupabaseUrl = 'tac_supabase_url';
@@ -271,7 +310,7 @@ alter publication supabase_realtime add table tac_markers;''';
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: SelectableText(_sql, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+      child: const SelectableText(_sql, style: TextStyle(fontFamily: 'monospace', fontSize: 11)),
     );
   }
 }
@@ -403,6 +442,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   bool _mapReady = false;
   LatLng? _myLocation;
   TacMarkerType? _placingType;
+  _BaseLayer _baseLayer = _BaseLayer.osm;
+  _IncidentOverlay? _incidentOverlay;
 
   @override
   void initState() {
@@ -460,6 +501,19 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       } catch (_) {}
     }
     if (_myLocation == null) return;
+    // Optimistically show ourselves immediately without waiting for the channel
+    if (mounted) {
+      setState(() {
+        _users[_userId] = TacUser(
+          id: _userId,
+          callsign: _callsign,
+          lat: _myLocation!.latitude,
+          lng: _myLocation!.longitude,
+          isAdmin: _isAdmin,
+          updatedAt: DateTime.now(),
+        );
+      });
+    }
     try {
       await _supabase.from('tac_users').upsert({
         'id': _userId,
@@ -594,23 +648,29 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
     for (final user in _users.values) {
       final isMe = user.id == _userId;
+      final color = isMe ? Colors.teal : Colors.blue;
       markers.add(Marker(
         point: LatLng(user.lat, user.lng),
-        width: 56,
-        height: 56,
+        width: 80,
+        height: 60,
         child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
               decoration: BoxDecoration(
-                color: isMe ? Colors.teal : Colors.blue,
+                color: color,
                 borderRadius: BorderRadius.circular(4),
+                boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 3, offset: Offset(1, 1))],
               ),
               child: Text(user.callsign,
-                  style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
             ),
             Icon(isMe ? Icons.person_pin : Icons.person_pin_circle,
-                color: isMe ? Colors.teal : Colors.blue, size: 28),
+                color: color, size: 34,
+                shadows: const [Shadow(color: Colors.black45, blurRadius: 4)]),
           ],
         ),
       ));
@@ -619,11 +679,12 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     for (final m in _markers.values) {
       markers.add(Marker(
         point: LatLng(m.lat, m.lng),
-        width: 44,
-        height: 44,
+        width: 48,
+        height: 48,
         child: GestureDetector(
           onLongPress: () => _confirmDeleteMarker(m),
-          child: Icon(m.type.icon, color: m.type.color, size: 36),
+          child: Icon(m.type.icon, color: m.type.color, size: 40,
+              shadows: const [Shadow(color: Colors.black54, blurRadius: 4)]),
         ),
       ));
     }
@@ -692,12 +753,25 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 backgroundColor: Colors.orange,
               ),
             ),
+          IconButton(
+            icon: const Icon(Icons.layers),
+            tooltip: 'Map Layers',
+            onPressed: _showLayerPicker,
+          ),
+          IconButton(
+            icon: const Icon(Icons.local_fire_department),
+            tooltip: 'Wildfire Incident Maps',
+            onPressed: _showIncidentBrowser,
+          ),
           PopupMenuButton(itemBuilder: (_) => [
             const PopupMenuItem(value: 'leave', child: Text('Leave Mission')),
             const PopupMenuItem(value: 'recenter', child: Text('Re-center')),
+            if (_incidentOverlay != null)
+              const PopupMenuItem(value: 'clear_overlay', child: Text('Clear Incident Overlay')),
           ], onSelected: (v) {
             if (v == 'leave') _leaveMission();
             if (v == 'recenter' && _myLocation != null) _mapCtrl.move(_myLocation!, 14);
+            if (v == 'clear_overlay') setState(() => _incidentOverlay = null);
           }),
         ],
       ),
@@ -713,15 +787,25 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   _mapReady = true;
                   if (_myLocation != null) _mapCtrl.move(_myLocation!, 14);
                 },
-                onLongPress: _placingType != null
+                onTap: _placingType != null
                     ? (_, point) => _placeMarker(point, _placingType!)
                     : null,
               ),
               children: [
                 TileLayer(
-                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                  userAgentPackageName: 'com.aerie.aerimed1',
+                  urlTemplate: _baseLayer.urlTemplate,
+                  userAgentPackageName: 'com.aerie.aerimed',
                 ),
+                if (_incidentOverlay != null)
+                  OverlayImageLayer(
+                    overlayImages: [
+                      OverlayImage(
+                        bounds: _incidentOverlay!.bounds,
+                        imageProvider: MemoryImage(_incidentOverlay!.imageBytes),
+                        opacity: 0.7,
+                      ),
+                    ],
+                  ),
                 PolylineLayer(polylines: polylines),
                 MarkerLayer(markers: _buildMapMarkers()),
               ],
@@ -736,6 +820,132 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         ],
       ),
     );
+  }
+
+  void _showLayerPicker() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(
+              title: Text('Base Map Layer', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            ..._BaseLayer.values.map((layer) => ListTile(
+                  title: Text(layer.label),
+                  leading: Icon(
+                    _baseLayer == layer
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                  ),
+                  onTap: () {
+                    setState(() => _baseLayer = layer);
+                    Navigator.pop(context);
+                  },
+                )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showIncidentBrowser() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        maxChildSize: 0.9,
+        builder: (_, ctrl) => _IncidentBrowser(
+          scrollController: ctrl,
+          onLoad: (url, name) {
+            Navigator.pop(context);
+            _loadKmz(url, name);
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _loadKmz(String url, String name) async {
+    final snack = ScaffoldMessenger.of(context);
+    snack.showSnackBar(SnackBar(
+        content: Text('Downloading $name…'),
+        duration: const Duration(seconds: 30)));
+    try {
+      final resp = await http.get(Uri.parse(url));
+      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
+
+      final archive = ZipDecoder().decodeBytes(resp.bodyBytes);
+
+      String? kmlContent;
+      Uint8List? imgBytes;
+
+      for (final file in archive.files) {
+        if (!file.isFile) continue;
+        final n = file.name.toLowerCase();
+        if (n.endsWith('.kml') && kmlContent == null) {
+          kmlContent = String.fromCharCodes(file.content as List<int>);
+        } else if ((n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg')) &&
+            imgBytes == null) {
+          imgBytes = Uint8List.fromList(file.content as List<int>);
+        }
+      }
+
+      if (kmlContent == null) throw Exception('No KML found in KMZ');
+
+      // Look up the overlay image via href if we didn't find one by extension
+      if (imgBytes == null) {
+        final hrefMatch = RegExp(r'<href>(.*?)</href>').firstMatch(kmlContent);
+        if (hrefMatch != null) {
+          final hrefName = hrefMatch.group(1)?.trim();
+          for (final file in archive.files) {
+            if (file.isFile && file.name == hrefName) {
+              imgBytes = Uint8List.fromList(file.content as List<int>);
+              break;
+            }
+          }
+        }
+      }
+
+      final northM = RegExp(r'<north>\s*([\d.\-]+)\s*</north>').firstMatch(kmlContent);
+      final southM = RegExp(r'<south>\s*([\d.\-]+)\s*</south>').firstMatch(kmlContent);
+      final eastM  = RegExp(r'<east>\s*([\d.\-]+)\s*</east>').firstMatch(kmlContent);
+      final westM  = RegExp(r'<west>\s*([\d.\-]+)\s*</west>').firstMatch(kmlContent);
+
+      final north = double.tryParse(northM?.group(1) ?? '');
+      final south = double.tryParse(southM?.group(1) ?? '');
+      final east  = double.tryParse(eastM?.group(1)  ?? '');
+      final west  = double.tryParse(westM?.group(1)  ?? '');
+
+      if (north == null || south == null || east == null || west == null) {
+        throw Exception('Could not parse map bounds from KML');
+      }
+      if (imgBytes == null) throw Exception('No overlay image found in KMZ');
+
+      final bounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
+
+      if (mounted) {
+        snack.hideCurrentSnackBar();
+        setState(() => _incidentOverlay =
+            _IncidentOverlay(name: name, imageBytes: imgBytes!, bounds: bounds));
+        _mapCtrl.fitCamera(
+            CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(16)));
+        snack.showSnackBar(SnackBar(
+            content: Text('Loaded: $name'),
+            duration: const Duration(seconds: 3)));
+      }
+    } catch (e) {
+      if (mounted) {
+        snack.hideCurrentSnackBar();
+        snack.showSnackBar(SnackBar(
+            content: Text('Failed to load KMZ: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4)));
+      }
+    }
   }
 }
 
@@ -757,7 +967,7 @@ class _TeamPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       color: Theme.of(context).colorScheme.surface,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -796,41 +1006,219 @@ class _TeamPanel extends StatelessWidget {
             children: [
               const Text('PLACE:', style: TextStyle(fontSize: 11)),
               const SizedBox(width: 8),
-              ...TacMarkerType.values.map((t) {
-                final active = placingType == t;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: FilterChip(
-                    label: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(t.icon, size: 14, color: active ? Colors.white : t.color),
-                        const SizedBox(width: 4),
-                        Text(t.label, style: TextStyle(fontSize: 11, color: active ? Colors.white : null)),
-                      ],
-                    ),
-                    selected: active,
-                    onSelected: (_) => onPlaceType(t),
-                    selectedColor: t.color,
-                    checkmarkColor: Colors.white,
-                    showCheckmark: false,
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: TacMarkerType.values.map((t) {
+                      final active = placingType == t;
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: FilterChip(
+                          label: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(t.icon, size: 14, color: active ? Colors.white : t.color),
+                              const SizedBox(width: 4),
+                              Text(t.label,
+                                  style: TextStyle(
+                                      fontSize: 11, color: active ? Colors.white : null)),
+                            ],
+                          ),
+                          selected: active,
+                          onSelected: (_) => onPlaceType(t),
+                          selectedColor: t.color,
+                          checkmarkColor: Colors.white,
+                          showCheckmark: false,
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      );
+                    }).toList(),
                   ),
-                );
-              }),
+                ),
+              ),
             ],
           ),
           if (placingType != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                'Long-press on the map to place ${placingType!.label} marker. Tap chip again to cancel.',
-                style: TextStyle(fontSize: 11, color: placingType!.color, fontStyle: FontStyle.italic),
+                'Tap the map to place ${placingType!.label} marker. Tap chip again to cancel.',
+                style: TextStyle(
+                    fontSize: 11, color: placingType!.color, fontStyle: FontStyle.italic),
               ),
             ),
         ],
       ),
+    );
+  }
+}
+
+// ─── Incident browser ─────────────────────────────────────────────────────────
+class _IncidentEntry {
+  final String name;
+  final String url;
+  final bool isDirectory;
+  const _IncidentEntry(
+      {required this.name, required this.url, required this.isDirectory});
+}
+
+class _IncidentBrowser extends StatefulWidget {
+  final ScrollController scrollController;
+  final void Function(String url, String name) onLoad;
+
+  const _IncidentBrowser(
+      {required this.scrollController, required this.onLoad});
+
+  @override
+  State<_IncidentBrowser> createState() => _IncidentBrowserState();
+}
+
+class _IncidentBrowserState extends State<_IncidentBrowser> {
+  static const _rootUrl =
+      'https://ftp.wildfire.gov/public/incident_specific_maps/';
+
+  List<_IncidentEntry>? _entries;
+  String? _error;
+  String _currentUrl = _rootUrl;
+  final List<String> _breadcrumbs = [_rootUrl];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchDirectory(_rootUrl);
+  }
+
+  Future<void> _fetchDirectory(String url) async {
+    if (mounted) setState(() { _entries = null; _error = null; });
+    try {
+      final resp = await http.get(Uri.parse(url));
+      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
+      final parsed = _parseApacheIndex(resp.body, url);
+      if (mounted) setState(() { _entries = parsed; _currentUrl = url; });
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    }
+  }
+
+  List<_IncidentEntry> _parseApacheIndex(String html, String baseUrl) {
+    final entries = <_IncidentEntry>[];
+    final base = baseUrl.endsWith('/') ? baseUrl : '$baseUrl/';
+    final pattern = RegExp(r'href="([^"?#][^"]*?)"', caseSensitive: false);
+    for (final m in pattern.allMatches(html)) {
+      final href = m.group(1)!;
+      if (href.startsWith('..') || href.startsWith('/')) continue;
+      final isDir = href.endsWith('/');
+      final isKmz = href.toLowerCase().endsWith('.kmz');
+      if (!isDir && !isKmz) continue;
+      entries.add(_IncidentEntry(
+        name: Uri.decodeComponent(href.replaceAll('/', '')),
+        url: '$base$href',
+        isDirectory: isDir,
+      ));
+    }
+    return entries;
+  }
+
+  void _navigate(String url) {
+    _breadcrumbs.add(url);
+    _fetchDirectory(url);
+  }
+
+  void _back() {
+    if (_breadcrumbs.length > 1) {
+      _breadcrumbs.removeLast();
+      _fetchDirectory(_breadcrumbs.last);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = _currentUrl.length > _rootUrl.length
+        ? _currentUrl.substring(_rootUrl.length)
+        : '';
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 10, 8, 0),
+          child: Row(
+            children: [
+              if (_breadcrumbs.length > 1)
+                IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: _back,
+                  constraints: const BoxConstraints(),
+                  padding: EdgeInsets.zero,
+                ),
+              const SizedBox(width: 4),
+              const Expanded(
+                child: Text('Wildfire Incident Maps',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: () => _fetchDirectory(_currentUrl),
+              ),
+            ],
+          ),
+        ),
+        if (subtitle.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(subtitle,
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                  overflow: TextOverflow.ellipsis),
+            ),
+          ),
+        const Divider(height: 8),
+        Expanded(
+          child: _error != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text('Error: $_error',
+                        style: const TextStyle(color: Colors.red)),
+                  ),
+                )
+              : _entries == null
+                  ? const Center(child: CircularProgressIndicator())
+                  : _entries!.isEmpty
+                      ? const Center(
+                          child: Text('No maps or subdirectories found.'))
+                      : ListView.builder(
+                          controller: widget.scrollController,
+                          itemCount: _entries!.length,
+                          itemBuilder: (_, i) {
+                            final e = _entries![i];
+                            return ListTile(
+                              dense: true,
+                              leading: Icon(
+                                e.isDirectory ? Icons.folder : Icons.map,
+                                color: e.isDirectory
+                                    ? Colors.amber
+                                    : Colors.green,
+                              ),
+                              title: Text(e.name,
+                                  style: const TextStyle(fontSize: 13)),
+                              trailing: e.isDirectory
+                                  ? const Icon(Icons.chevron_right)
+                                  : FilledButton.tonal(
+                                      onPressed: () =>
+                                          widget.onLoad(e.url, e.name),
+                                      child: const Text('Load'),
+                                    ),
+                              onTap: e.isDirectory
+                                  ? () => _navigate(e.url)
+                                  : null,
+                            );
+                          },
+                        ),
+        ),
+      ],
     );
   }
 }
