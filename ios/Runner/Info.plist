@@ -5,25 +5,25 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSDocumentsFolderUsageDescription</key>
-	<string>AerieMed needs access to your documents to import PDF files.</string>
+	<string>AustereMed needs access to your documents to import PDF files.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>AerieMed needs access to your photo library to attach images to patient reports.</string>
+	<string>AustereMed needs access to your photo library to attach images to patient reports.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>AerieMed needs access to your camera to capture images for patient reports.</string>
+	<string>AustereMed needs access to your camera to capture images for patient reports.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>AerieMed uses the microphone for voice-to-text documentation in the field.</string>
+	<string>AustereMed uses the microphone for voice-to-text documentation in the field.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>AerieMed uses speech recognition to allow hands-free field documentation.</string>
+	<string>AustereMed uses speech recognition to allow hands-free field documentation.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>AerieMed uses your location to record the scene location in patient reports and on the map.</string>
+	<string>AustereMed uses your location to record the scene location in patient reports and on the map.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>AerieMed uses your location to record the scene location in patient reports and on the map.</string>
+	<string>AustereMed uses your location to record the scene location in patient reports and on the map.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Aeriemed</string>
+	<string>AustereMed</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -31,7 +31,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>aeriemed</string>
+	<string>AustereMed</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
