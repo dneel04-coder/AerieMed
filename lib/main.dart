@@ -19,6 +19,7 @@ import 'sun_weather.dart';
 import 'team_command.dart';
 import 'mci_triage.dart';
 import 'cert_vault.dart';
+import 'tac_map.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -594,6 +595,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
         _launcherGrid(context, const [
           _FeatureTile(Icons.account_tree_outlined, 'Team\nCommand', Colors.indigo, TeamCommandScreen()),
           _FeatureTile(Icons.emergency, 'MCI\nTriage', Colors.red, MciTriageScreen()),
+          _FeatureTile(Icons.radar, 'Tac\nMap', Colors.teal, TacMapScreen()),
         ]),
         _launcherSection('Reference'),
         _launcherGrid(context, const [
