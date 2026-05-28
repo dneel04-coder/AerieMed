@@ -286,7 +286,7 @@ class _SupabaseConfigScreenState extends State<_SupabaseConfigScreen> {
 
 class _SqlBlock extends StatelessWidget {
   static const _sql = '''
-create table tac_users (
+create table if not exists tac_users (
   id text not null,
   mission_code text not null,
   callsign text not null,
@@ -296,7 +296,7 @@ create table tac_users (
   updated_at timestamptz default now(),
   primary key (id, mission_code)
 );
-create table tac_markers (
+create table if not exists tac_markers (
   id uuid default gen_random_uuid() primary key,
   mission_code text not null,
   type text not null,
@@ -308,12 +308,20 @@ create table tac_markers (
 );
 alter table tac_users enable row level security;
 alter table tac_markers enable row level security;
-create policy "public_access" on tac_users
-  for all using (true) with check (true);
-create policy "public_access" on tac_markers
-  for all using (true) with check (true);
-alter publication supabase_realtime add table tac_users;
-alter publication supabase_realtime add table tac_markers;''';
+do \$\$ begin
+  create policy "public_access" on tac_users
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+do \$\$ begin
+  create policy "public_access" on tac_markers
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+do \$\$ begin
+  alter publication supabase_realtime add table tac_users;
+exception when others then null; end \$\$;
+do \$\$ begin
+  alter publication supabase_realtime add table tac_markers;
+exception when others then null; end \$\$;''';
 
   @override
   Widget build(BuildContext context) {

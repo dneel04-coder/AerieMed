@@ -122,6 +122,11 @@ class ProtocolSyncService {
   Future<String> _callsign() async =>
       (await SharedPreferences.getInstance()).getString(_callsignKey) ?? 'Unknown';
 
+  Future<SupabaseClient?> _client() async {
+    await SupabaseService.ensureInitialized();
+    return SupabaseService.client;
+  }
+
   String _newUuid() {
     final rng = Random.secure();
     final bytes = List.generate(16, (_) => rng.nextInt(256));
@@ -133,7 +138,7 @@ class ProtocolSyncService {
   }
 
   Future<List<ProtocolEntry>> pendingProtocols() async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return [];
     try {
       final userId = await _userId();
@@ -153,7 +158,7 @@ class ProtocolSyncService {
   }
 
   Future<List<ProtocolEntry>> activeProtocols() async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return [];
     try {
       return (await client.from('protocols').select().eq('is_active', true).order('name') as List)
@@ -165,7 +170,7 @@ class ProtocolSyncService {
   }
 
   Future<List<ProtocolEntry>> allProtocols() async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return [];
     try {
       return (await client
@@ -180,7 +185,7 @@ class ProtocolSyncService {
   }
 
   Future<File?> downloadProtocol(ProtocolEntry entry) async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return null;
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -196,7 +201,7 @@ class ProtocolSyncService {
   }
 
   Future<void> acknowledgeProtocol(String protocolId) async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return;
     try {
       await client.from('protocol_acknowledgments').upsert({
@@ -209,7 +214,7 @@ class ProtocolSyncService {
   }
 
   Future<List<Map<String, dynamic>>> getAcknowledgments(String protocolId) async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return [];
     try {
       return (await client
@@ -230,7 +235,7 @@ class ProtocolSyncService {
     required String uploadedBy,
     String? existingId,
   }) async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) throw Exception('Supabase not configured');
     final id = existingId ?? _newUuid();
     final filePath = '$id.pdf';
@@ -267,11 +272,12 @@ class ProtocolSyncService {
   }
 
   Future<void> toggleActive(String id, bool active) async {
-    await SupabaseService.client?.from('protocols').update({'is_active': active}).eq('id', id);
+    final client = await _client();
+    await client?.from('protocols').update({'is_active': active}).eq('id', id);
   }
 
   Future<void> deleteProtocol(ProtocolEntry entry) async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return;
     try {
       await client.storage.from('protocols').remove([entry.filePath]);
@@ -280,7 +286,7 @@ class ProtocolSyncService {
   }
 
   Future<List<Map<String, dynamic>>> adminGetReports() async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return [];
     try {
       return (await client
@@ -294,7 +300,7 @@ class ProtocolSyncService {
   }
 
   Future<List<Map<String, dynamic>>> adminGetCerts() async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return [];
     try {
       return (await client
@@ -344,7 +350,7 @@ class DeploymentOrder {
 
 extension DeploymentOrderService on ProtocolSyncService {
   Future<List<DeploymentOrder>> allDeploymentOrders() async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return [];
     try {
       return (await client
@@ -359,7 +365,7 @@ extension DeploymentOrderService on ProtocolSyncService {
   }
 
   Future<List<DeploymentOrder>> pendingDeploymentOrders() async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return [];
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -384,7 +390,7 @@ extension DeploymentOrderService on ProtocolSyncService {
   }
 
   Future<void> markDeploymentOrderViewed(String orderId) async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return;
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -398,7 +404,7 @@ extension DeploymentOrderService on ProtocolSyncService {
   }
 
   Future<File?> downloadDeploymentOrder(DeploymentOrder order) async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return null;
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -420,7 +426,7 @@ extension DeploymentOrderService on ProtocolSyncService {
     required String fileName,
     required String uploadedBy,
   }) async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) throw Exception('Supabase not configured');
     final id = _newUuid();
     final ext = fileName.contains('.') ? fileName.split('.').last : 'pdf';
@@ -456,7 +462,7 @@ extension DeploymentOrderService on ProtocolSyncService {
   }
 
   Future<void> deleteDeploymentOrder(DeploymentOrder order) async {
-    final client = SupabaseService.client;
+    final client = await _client();
     if (client == null) return;
     try {
       await client.storage.from('deployment_orders').remove([order.filePath]);
@@ -1805,9 +1811,12 @@ class _DeploymentUploadButtonState extends State<_DeploymentUploadButton> {
 // ─── SQL schema constant ──────────────────────────────────────────────────────
 
 const _kAdditionalSql = '''
--- Run in Supabase SQL Editor (separate from Tac Map schema)
+-- AeriMed — Supabase SQL schema
+-- Safe to run multiple times (idempotent).
 
-create table protocols (
+-- ── Core tables ───────────────────────────────────────────────────────────────
+
+create table if not exists protocols (
   id uuid default gen_random_uuid() primary key,
   name text not null,
   version int not null default 1,
@@ -1818,7 +1827,7 @@ create table protocols (
   notes text default ''
 );
 
-create table protocol_acknowledgments (
+create table if not exists protocol_acknowledgments (
   id uuid default gen_random_uuid() primary key,
   user_id text not null,
   callsign text not null,
@@ -1827,7 +1836,7 @@ create table protocol_acknowledgments (
   unique(user_id, protocol_id)
 );
 
-create table patient_reports (
+create table if not exists patient_reports (
   id text primary key,
   user_id text not null,
   callsign text not null,
@@ -1839,24 +1848,34 @@ alter table protocols enable row level security;
 alter table protocol_acknowledgments enable row level security;
 alter table patient_reports enable row level security;
 
-create policy "public_access" on protocols
-  for all using (true) with check (true);
-create policy "public_access" on protocol_acknowledgments
-  for all using (true) with check (true);
-create policy "public_access" on patient_reports
-  for all using (true) with check (true);
+do \$\$ begin
+  create policy "public_access" on protocols
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+
+do \$\$ begin
+  create policy "public_access" on protocol_acknowledgments
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+
+do \$\$ begin
+  create policy "public_access" on patient_reports
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
 
 insert into storage.buckets (id, name, public)
   values ('protocols', 'protocols', true)
   on conflict (id) do nothing;
 
-create policy "public_protocols" on storage.objects
-  for all using (bucket_id = 'protocols')
-  with check (bucket_id = 'protocols');
+do \$\$ begin
+  create policy "public_protocols" on storage.objects
+    for all using (bucket_id = 'protocols')
+    with check (bucket_id = 'protocols');
+exception when duplicate_object then null; end \$\$;
 
--- Team certifications (run these if adding cert sync)
+-- ── Team certifications ───────────────────────────────────────────────────────
 
-create table team_certs (
+create table if not exists team_certs (
   id text primary key,
   user_id text not null,
   callsign text not null,
@@ -1868,20 +1887,25 @@ create table team_certs (
 );
 
 alter table team_certs enable row level security;
-create policy "public_access" on team_certs
-  for all using (true) with check (true);
+
+do \$\$ begin
+  create policy "public_access" on team_certs
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
 
 insert into storage.buckets (id, name, public)
   values ('certs', 'certs', false)
   on conflict (id) do nothing;
 
-create policy "public_certs" on storage.objects
-  for all using (bucket_id = 'certs')
-  with check (bucket_id = 'certs');
+do \$\$ begin
+  create policy "public_certs" on storage.objects
+    for all using (bucket_id = 'certs')
+    with check (bucket_id = 'certs');
+exception when duplicate_object then null; end \$\$;
 
--- Deployment Orders (run after existing schema)
+-- ── Deployment orders ─────────────────────────────────────────────────────────
 
-create table deployment_orders (
+create table if not exists deployment_orders (
   id uuid default gen_random_uuid() primary key,
   title text not null,
   notes text default '',
@@ -1891,7 +1915,7 @@ create table deployment_orders (
   uploaded_by text default ''
 );
 
-create table deployment_order_views (
+create table if not exists deployment_order_views (
   user_id text not null,
   order_id uuid references deployment_orders(id) on delete cascade,
   viewed_at timestamptz default now(),
@@ -1901,22 +1925,29 @@ create table deployment_order_views (
 alter table deployment_orders enable row level security;
 alter table deployment_order_views enable row level security;
 
-create policy "public_access" on deployment_orders
-  for all using (true) with check (true);
-create policy "public_access" on deployment_order_views
-  for all using (true) with check (true);
+do \$\$ begin
+  create policy "public_access" on deployment_orders
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+
+do \$\$ begin
+  create policy "public_access" on deployment_order_views
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
 
 insert into storage.buckets (id, name, public)
   values ('deployment_orders', 'deployment_orders', true)
   on conflict (id) do nothing;
 
-create policy "public_orders" on storage.objects
-  for all using (bucket_id = 'deployment_orders')
-  with check (bucket_id = 'deployment_orders');
+do \$\$ begin
+  create policy "public_orders" on storage.objects
+    for all using (bucket_id = 'deployment_orders')
+    with check (bucket_id = 'deployment_orders');
+exception when duplicate_object then null; end \$\$;
 
--- Team Availability
+-- ── Team availability ─────────────────────────────────────────────────────────
 
-create table team_availability (
+create table if not exists team_availability (
   user_id text not null,
   callsign text not null,
   date date not null,
@@ -1927,8 +1958,11 @@ create table team_availability (
 );
 
 alter table team_availability enable row level security;
-create policy "public_access" on team_availability
-  for all using (true) with check (true);
+
+do \$\$ begin
+  create policy "public_access" on team_availability
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
 ''';
 
 // ─── Shared date formatter ────────────────────────────────────────────────────
