@@ -607,6 +607,20 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   }
 
   Future<void> _placeMarker(LatLng pos, TacMarkerType type) async {
+    // Show immediately — don't wait for Supabase round-trip
+    final tempId = 'tmp_${DateTime.now().millisecondsSinceEpoch}';
+    setState(() {
+      _markers[tempId] = TacMarker(
+        id: tempId,
+        type: type,
+        label: '',
+        lat: pos.latitude,
+        lng: pos.longitude,
+        placedBy: _callsign,
+        createdAt: DateTime.now(),
+      );
+      _placingType = null;
+    });
     try {
       await _supabase.from('tac_markers').insert({
         'mission_code': _missionCode,
@@ -615,10 +629,18 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         'lat': pos.latitude,
         'lng': pos.longitude,
         'placed_by': _callsign,
-        'created_at': DateTime.now().toIso8601String(),
       });
-    } catch (_) {}
-    setState(() => _placingType = null);
+      // Real marker arrives via realtime; remove temp
+      if (mounted) setState(() => _markers.remove(tempId));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Marker saved locally — sync failed: $e'),
+          backgroundColor: Colors.orange,
+          duration: const Duration(seconds: 4),
+        ));
+      }
+    }
   }
 
   Future<void> _deleteMarker(String id) async {
@@ -796,36 +818,81 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       body: Column(
         children: [
           Expanded(
-            child: FlutterMap(
-              mapController: _mapCtrl,
-              options: MapOptions(
-                initialCenter: _myLocation ?? const LatLng(37.0902, -95.7129),
-                initialZoom: _myLocation != null ? 14 : 4,
-                onMapReady: () {
-                  _mapReady = true;
-                  if (_myLocation != null) _mapCtrl.move(_myLocation!, 14);
-                },
-                onTap: (_, point) {
-                  if (_placingType != null) _placeMarker(point, _placingType!);
-                },
-              ),
+            child: Stack(
               children: [
-                TileLayer(
-                  urlTemplate: _baseLayer.urlTemplate,
-                  userAgentPackageName: 'com.aerie.aerimed',
-                ),
-                if (_incidentOverlay != null)
-                  OverlayImageLayer(
-                    overlayImages: [
-                      OverlayImage(
-                        bounds: _incidentOverlay!.bounds,
-                        imageProvider: MemoryImage(_incidentOverlay!.imageBytes),
-                        opacity: 0.7,
-                      ),
-                    ],
+                FlutterMap(
+                  mapController: _mapCtrl,
+                  options: MapOptions(
+                    initialCenter: _myLocation ?? const LatLng(37.0902, -95.7129),
+                    initialZoom: _myLocation != null ? 14 : 4,
+                    onMapReady: () {
+                      _mapReady = true;
+                      if (_myLocation != null) _mapCtrl.move(_myLocation!, 14);
+                    },
                   ),
-                PolylineLayer(polylines: polylines),
-                MarkerLayer(markers: _buildMapMarkers()),
+                  children: [
+                    TileLayer(
+                      urlTemplate: _baseLayer.urlTemplate,
+                      userAgentPackageName: 'com.aerie.aerimed',
+                    ),
+                    if (_incidentOverlay != null)
+                      OverlayImageLayer(
+                        overlayImages: [
+                          OverlayImage(
+                            bounds: _incidentOverlay!.bounds,
+                            imageProvider: MemoryImage(_incidentOverlay!.imageBytes),
+                            opacity: 0.7,
+                          ),
+                        ],
+                      ),
+                    PolylineLayer(polylines: polylines),
+                    MarkerLayer(markers: _buildMapMarkers()),
+                  ],
+                ),
+                // Placement overlay — sits above the map and captures taps
+                // directly, bypassing flutter_map's gesture arena entirely.
+                if (_placingType != null)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapUp: (details) {
+                        if (!_mapReady) return;
+                        final point = _mapCtrl.camera.pointToLatLng(
+                          Point(
+                            details.localPosition.dx,
+                            details.localPosition.dy,
+                          ),
+                        );
+                        _placeMarker(point, _placingType!);
+                      },
+                      child: Container(
+                        color: Colors.black12,
+                        alignment: Alignment.center,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(_placingType!.icon,
+                                color: _placingType!.color, size: 52),
+                            const SizedBox(height: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 7),
+                              decoration: BoxDecoration(
+                                color: _placingType!.color,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                'Tap map to place ${_placingType!.label}',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
