@@ -633,13 +633,16 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       // Real marker arrives via realtime; remove temp
       if (mounted) setState(() => _markers.remove(tempId));
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Marker saved locally — sync failed: $e'),
-          backgroundColor: Colors.orange,
-          duration: const Duration(seconds: 4),
-        ));
-      }
+      if (!mounted) return;
+      final msg = (e is PostgrestException && e.code == 'PGRST125')
+          ? 'tac_markers table not found — open Tac Map Settings and re-run the setup SQL in your Supabase project'
+          : 'Marker saved locally — sync failed (${e is PostgrestException ? e.message : e})';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(msg),
+        backgroundColor: Colors.orange,
+        duration: const Duration(seconds: 6),
+      ));
+      // Keep temp marker visible locally even though sync failed
     }
   }
 
