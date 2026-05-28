@@ -11,7 +11,6 @@ import 'package:speech_to_text/speech_to_text.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'report_transfer.dart';
 
-// ── VitalSet ──────────────────────────────────────────────────────────────────
 
 class VitalSet {
   final String id;
@@ -94,7 +93,6 @@ class VitalSet {
       );
 }
 
-// ── BodyMarker ────────────────────────────────────────────────────────────────
 
 class BodyMarker {
   final double x;
@@ -119,7 +117,6 @@ class BodyMarker {
       );
 }
 
-// ── PatientReport ─────────────────────────────────────────────────────────────
 
 class PatientReport {
   final String id;
@@ -358,7 +355,6 @@ class PatientReport {
   }
 }
 
-// ── Storage ───────────────────────────────────────────────────────────────────
 
 class ReportStorage {
   static const _key = 'patient_reports_v1';
@@ -394,7 +390,6 @@ class ReportStorage {
   }
 }
 
-// ── Report syncer (auto-send to Supabase when available) ─────────────────────
 
 class ReportSyncer {
   static const _urlKey = 'tac_supabase_url';
@@ -445,7 +440,6 @@ class ReportSyncer {
   }
 }
 
-// ── Share helper ──────────────────────────────────────────────────────────────
 
 void _shareReport(PatientReport r) {
   SharePlus.instance.share(ShareParams(
@@ -454,7 +448,6 @@ void _shareReport(PatientReport r) {
   ));
 }
 
-// ── List Screen ───────────────────────────────────────────────────────────────
 
 class PatientReportListScreen extends StatefulWidget {
   const PatientReportListScreen({super.key});
@@ -623,7 +616,6 @@ class _PatientReportListScreenState extends State<PatientReportListScreen> {
   }
 }
 
-// ── Form Screen ───────────────────────────────────────────────────────────────
 
 class PatientReportFormScreen extends StatefulWidget {
   final PatientReport? existing;
@@ -1457,7 +1449,6 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
   }
 }
 
-// ── Vitals Entry Bottom Sheet ─────────────────────────────────────────────────
 
 class _VitalsEntrySheet extends StatefulWidget {
   final VitalSet? existing;
@@ -1590,7 +1581,6 @@ class _VitalsEntrySheetState extends State<_VitalsEntrySheet> {
   }
 }
 
-// ── Body Diagram Widget ───────────────────────────────────────────────────────
 
 class BodyDiagramWidget extends StatefulWidget {
   final List<BodyMarker> markers;
@@ -1809,7 +1799,6 @@ class _BodyPainter extends CustomPainter {
   bool shouldRepaint(_BodyPainter old) => old.markers != markers || old.figureColor != figureColor;
 }
 
-// ── View Screen ───────────────────────────────────────────────────────────────
 
 class PatientReportViewScreen extends StatelessWidget {
   final PatientReport report;

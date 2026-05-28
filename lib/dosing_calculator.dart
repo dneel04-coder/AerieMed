@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-// ── Data Model ────────────────────────────────────────────────────────────────
 
 class DoseFormula {
   final String route;
@@ -34,7 +33,6 @@ class CalcDrug {
   });
 }
 
-// ── Static Data ───────────────────────────────────────────────────────────────
 
 const List<CalcDrug> kCalcDrugs = [
   CalcDrug(
@@ -189,7 +187,6 @@ const List<CalcDrug> kCalcDrugs = [
   ),
 ];
 
-// ── Pediatric Weight Estimation ───────────────────────────────────────────────
 
 int _broslow(double heightCm) {
   if (heightCm < 46.1) return 3;
@@ -217,7 +214,6 @@ int _broslow(double heightCm) {
   return 36;
 }
 
-// ── Screen ────────────────────────────────────────────────────────────────────
 
 class DosingCalculatorScreen extends StatefulWidget {
   const DosingCalculatorScreen({super.key});

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-// ── Data Model ────────────────────────────────────────────────────────────────
 
 class VersionEntry {
   final String version;
@@ -15,7 +14,6 @@ class VersionEntry {
   });
 }
 
-// ── Version History ───────────────────────────────────────────────────────────
 
 const String kCurrentVersion = '1.3.0';
 const String kReleaseDate = '2026-05-26';
@@ -74,7 +72,6 @@ const List<VersionEntry> kVersionHistory = [
   ),
 ];
 
-// ── Screen ────────────────────────────────────────────────────────────────────
 
 class ProtocolVersionScreen extends StatelessWidget {
   const ProtocolVersionScreen({super.key});

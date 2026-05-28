@@ -21,7 +21,6 @@ http.Client _wildfireClient() => IOClient(
             (cert, host, port) => host.endsWith('wildfire.gov'),
     );
 
-// ─── Tile layer options ───────────────────────────────────────────────────────
 
 enum _BaseLayer {
   osm,
@@ -47,7 +46,6 @@ enum _BaseLayer {
       };
 }
 
-// ─── Incident overlay model ───────────────────────────────────────────────────
 
 class _IncidentOverlay {
   final String name;
@@ -57,7 +55,6 @@ class _IncidentOverlay {
       {required this.name, required this.imageBytes, required this.bounds});
 }
 
-// ─── Supabase config keys ────────────────────────────────────────────────────
 const _kSupabaseUrl = 'tac_supabase_url';
 const _kSupabaseKey = 'tac_supabase_anon_key';
 const _kCallsign = 'tac_callsign';
@@ -65,7 +62,6 @@ const _kMissionCode = 'tac_mission_code';
 const _kIsAdmin = 'tac_is_admin';
 const _kUserId = 'tac_user_id';
 
-// ─── Models ──────────────────────────────────────────────────────────────────
 enum TacMarkerType {
   patient,
   extractionStart,
@@ -153,7 +149,6 @@ class TacMarker {
       );
 }
 
-// ─── Entry point ─────────────────────────────────────────────────────────────
 class TacMapScreen extends StatefulWidget {
   const TacMapScreen({super.key});
 
@@ -207,7 +202,6 @@ class _TacMapScreenState extends State<TacMapScreen> {
       };
 }
 
-// ─── Supabase config screen ───────────────────────────────────────────────────
 class _SupabaseConfigScreen extends StatefulWidget {
   final VoidCallback onSaved;
   const _SupabaseConfigScreen({required this.onSaved});
@@ -336,7 +330,6 @@ exception when others then null; end \$\$;''';
   }
 }
 
-// ─── Mission setup screen ─────────────────────────────────────────────────────
 class _MissionSetupScreen extends StatefulWidget {
   final VoidCallback onJoined;
   const _MissionSetupScreen({required this.onJoined});
@@ -435,7 +428,6 @@ class _MissionSetupScreenState extends State<_MissionSetupScreen> {
   }
 }
 
-// ─── Active map screen ────────────────────────────────────────────────────────
 class _ActiveMapScreen extends StatefulWidget {
   final VoidCallback onLeft;
   const _ActiveMapScreen({required this.onLeft});
@@ -1080,7 +1072,6 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   }
 }
 
-// ─── Team panel ───────────────────────────────────────────────────────────────
 class _TeamPanel extends StatelessWidget {
   final List<TacUser> users;
   final String myId;
@@ -1186,7 +1177,6 @@ class _TeamPanel extends StatelessWidget {
   }
 }
 
-// ─── Incident browser ─────────────────────────────────────────────────────────
 class _IncidentEntry {
   final String name;
   final String url;

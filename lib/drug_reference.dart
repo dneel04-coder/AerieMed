@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-// ── Data Model ────────────────────────────────────────────────────────────────
 
 class DrugDose {
   final String route;
@@ -33,7 +32,6 @@ class Drug {
   });
 }
 
-// ── Static Drug Data ──────────────────────────────────────────────────────────
 
 const List<Drug> kDrugs = [
   // ── Pain Management ──────────────────────────────────────────────────────
@@ -268,7 +266,6 @@ const List<Drug> kDrugs = [
   ),
 ];
 
-// ── Screens ───────────────────────────────────────────────────────────────────
 
 class DrugReferenceScreen extends StatefulWidget {
   const DrugReferenceScreen({super.key});

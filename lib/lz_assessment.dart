@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// ── Model ─────────────────────────────────────────────────────────────────────
 
 class LzAssessment {
   final String id;
@@ -71,7 +70,6 @@ class LzAssessment {
   }
 }
 
-// ── List Screen ───────────────────────────────────────────────────────────────
 
 class LzAssessmentScreen extends StatefulWidget {
   const LzAssessmentScreen({super.key});
@@ -194,7 +192,6 @@ class _LzAssessmentScreenState extends State<LzAssessmentScreen> {
   }
 }
 
-// ── Form Screen ───────────────────────────────────────────────────────────────
 
 class _LzFormScreen extends StatefulWidget {
   final LzAssessment? existing;

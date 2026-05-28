@@ -11,7 +11,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService;
 
-// ── Constants ─────────────────────────────────────────────────────────────────
 
 const _kCerts = ['WFA', 'WFR', 'WEMT', 'EMT-B', 'AEMT', 'Paramedic', 'RN', 'MD/DO', 'Other'];
 const _kMemberStatuses = ['Available', 'On Task', 'Rest', 'Off-Op'];
@@ -25,7 +24,6 @@ const _kDefaultRoles = [
   'Communications (COMMS)', 'Triage Officer', 'Treatment Officer', 'Base Camp',
 ];
 
-// ── Colour helpers ────────────────────────────────────────────────────────────
 
 Color _certColor(String c) {
   switch (c) {
@@ -71,7 +69,6 @@ Color _memberStatusColor(String s) {
   }
 }
 
-// ── Models ────────────────────────────────────────────────────────────────────
 
 class IcRole {
   String title;
@@ -328,7 +325,6 @@ class ShiftHandoff {
       );
 }
 
-// ── Storage ───────────────────────────────────────────────────────────────────
 
 class IncidentStorage {
   static const _k = 'tc_incidents_v1';
@@ -422,7 +418,6 @@ class HandoffStorage {
   }
 }
 
-// ── Main Screen ───────────────────────────────────────────────────────────────
 
 class TeamCommandScreen extends StatelessWidget {
   const TeamCommandScreen({super.key});
@@ -460,7 +455,6 @@ class TeamCommandScreen extends StatelessWidget {
   }
 }
 
-// ── Incident Tab ──────────────────────────────────────────────────────────────
 
 class _IncidentTab extends StatefulWidget {
   const _IncidentTab();
@@ -757,7 +751,6 @@ class _IncidentTabState extends State<_IncidentTab> with AutomaticKeepAliveClien
   }
 }
 
-// ── Incident Form Sheet ───────────────────────────────────────────────────────
 
 class _IncidentFormSheet extends StatefulWidget {
   final Incident? existing;
@@ -845,7 +838,6 @@ class _IncidentFormSheetState extends State<_IncidentFormSheet> {
   }
 }
 
-// ── Roster Tab ────────────────────────────────────────────────────────────────
 
 class _RosterTab extends StatefulWidget {
   const _RosterTab();
@@ -998,7 +990,6 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
   }
 }
 
-// ── Member Form Sheet ─────────────────────────────────────────────────────────
 
 class _MemberFormSheet extends StatefulWidget {
   final TeamMember? existing;
@@ -1116,7 +1107,6 @@ class _MemberFormSheetState extends State<_MemberFormSheet> {
   }
 }
 
-// ── Tasks Tab ─────────────────────────────────────────────────────────────────
 
 class _TasksTab extends StatefulWidget {
   const _TasksTab();
@@ -1278,7 +1268,6 @@ class _TasksTabState extends State<_TasksTab> with AutomaticKeepAliveClientMixin
   }
 }
 
-// ── Task Form Sheet ───────────────────────────────────────────────────────────
 
 class _TaskFormSheet extends StatefulWidget {
   final OpTask? existing;
@@ -1397,7 +1386,6 @@ class _TaskFormSheetState extends State<_TaskFormSheet> {
   }
 }
 
-// ── Handoff Tab ───────────────────────────────────────────────────────────────
 
 class _HandoffTab extends StatefulWidget {
   const _HandoffTab();
@@ -1500,7 +1488,6 @@ class _HandoffTabState extends State<_HandoffTab> with AutomaticKeepAliveClientM
   }
 }
 
-// ── Handoff Form Screen ───────────────────────────────────────────────────────
 
 class _HandoffFormScreen extends StatefulWidget {
   final ShiftHandoff? existing;
@@ -1661,7 +1648,6 @@ class _HandoffFormScreenState extends State<_HandoffFormScreen> {
   }
 }
 
-// ── Deployment Orders Tab ─────────────────────────────────────────────────────
 
 class _DeploymentOrdersTab extends StatefulWidget {
   const _DeploymentOrdersTab();
@@ -1922,7 +1908,6 @@ class _OrderUploadButtonState extends State<_OrderUploadButton> {
   }
 }
 
-// ── Availability Tab ──────────────────────────────────────────────────────────
 
 class _AvailabilityTab extends StatefulWidget {
   const _AvailabilityTab();
@@ -1942,11 +1927,12 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
   String _myUserId = '';
   String _myCallsign = '';
 
-  static const _statuses = ['Available', 'Unavailable', 'Partial'];
+  static const _statuses = ['Available', 'Unavailable', 'Partial', 'Deployed'];
   static const Map<String, Color> _statusColors = {
-    'Available': Colors.green,
-    'Unavailable': Colors.red,
-    'Partial': Colors.orange,
+    'Available': Color(0xFF2E7D32),
+    'Unavailable': Color(0xFFC62828),
+    'Partial': Color(0xFFE65100),
+    'Deployed': Color(0xFF1565C0),
   };
 
   @override
@@ -1995,61 +1981,134 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
           'notes': r['notes'] as String? ?? '',
         });
       }
-      if (mounted) setState(() { _dayEntries
-        ..clear()
-        ..addAll(entries);
-        _loading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _dayEntries..clear()..addAll(entries);
+          _loading = false;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  Future<void> _setAvailability(String dateStr) async {
+  Future<void> _showDaySheet(String dateStr, bool isPast) async {
     final ok = await SupabaseService.ensureInitialized();
     if (!ok || !mounted) return;
-    final existing = (_dayEntries[dateStr] ?? [])
-        .where((e) => e['user_id'] == _myUserId)
-        .firstOrNull;
-    final result = await showDialog<String>(
+    final entries = List<Map<String, String>>.from(_dayEntries[dateStr] ?? []);
+    final myEntry = entries.where((e) => e['user_id'] == _myUserId).firstOrNull;
+
+    final parts = dateStr.split('-');
+    final dt = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+    const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    final label = '${dayNames[dt.weekday - 1]}, ${monthNames[dt.month]} ${dt.day}';
+
+    if (!mounted) return;
+    await showModalBottomSheet(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text(dateStr),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: _statuses.map((s) {
-            final selected = existing?['status'] == s;
-            return InkWell(
-              onTap: () => Navigator.pop(context, s),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+            left: 16, right: 16, top: 12),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+          Center(child: Container(width: 36, height: 4,
+              decoration: BoxDecoration(color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(2)))),
+          const SizedBox(height: 12),
+          Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 12),
+          if (entries.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text('No availability set for this day.',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+            )
+          else
+            ...entries.map((e) {
+              final color = _statusColors[e['status']] ?? Colors.grey;
+              final isMe = e['user_id'] == _myUserId;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
                 child: Row(children: [
-                  Icon(selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-                      size: 20, color: _statusColors[s] ?? Colors.grey),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(6)),
+                    child: Text(e['status']!,
+                        style: const TextStyle(color: Colors.white, fontSize: 12,
+                            fontWeight: FontWeight.w600)),
+                  ),
                   const SizedBox(width: 10),
-                  Container(width: 12, height: 12,
-                      decoration: BoxDecoration(color: _statusColors[s], shape: BoxShape.circle)),
-                  const SizedBox(width: 8),
-                  Text(s, style: TextStyle(fontWeight: selected ? FontWeight.bold : FontWeight.normal)),
+                  Text(isMe ? '${e['callsign']} (me)' : e['callsign']!,
+                      style: TextStyle(
+                          fontWeight: isMe ? FontWeight.bold : FontWeight.normal,
+                          fontSize: 14)),
+                  if ((e['notes'] ?? '').isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    Expanded(child: Text(e['notes']!,
+                        style: const TextStyle(color: Colors.grey, fontSize: 12),
+                        overflow: TextOverflow.ellipsis)),
+                  ],
                 ]),
-              ),
-            );
-          }).toList(),
-        ),
-        actions: [
-          if (existing != null)
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'remove'),
-              child: const Text('Clear', style: TextStyle(color: Colors.red)),
+              );
+            }),
+          if (!isPast) ...[
+            const Divider(height: 24),
+            Text('Set your status:',
+                style: TextStyle(fontWeight: FontWeight.w600, color: Colors.grey[700],
+                    fontSize: 13)),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8, runSpacing: 8,
+              children: _statuses.map((s) {
+                final selected = myEntry?['status'] == s;
+                final color = _statusColors[s]!;
+                return GestureDetector(
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await _saveStatus(dateStr, s);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: selected ? color : color.withValues(alpha: 0.10),
+                      border: Border.all(color: color, width: 1.5),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(s, style: TextStyle(
+                        color: selected ? Colors.white : color,
+                        fontWeight: FontWeight.w600, fontSize: 13)),
+                  ),
+                );
+              }).toList(),
             ),
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-        ],
+            if (myEntry != null) ...[
+              const SizedBox(height: 12),
+              GestureDetector(
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await _saveStatus(dateStr, 'remove');
+                },
+                child: Text('Clear my status',
+                    style: TextStyle(color: Colors.red[400], fontSize: 13)),
+              ),
+            ],
+            const SizedBox(height: 8),
+          ],
+        ]),
       ),
     );
-    if (result == null) return;
+  }
+
+  Future<void> _saveStatus(String dateStr, String status) async {
     try {
       final client = SupabaseService.client!;
-      if (result == 'remove') {
+      if (status == 'remove') {
         await client.from('team_availability')
             .delete().eq('user_id', _myUserId).eq('date', dateStr);
       } else {
@@ -2057,12 +2116,17 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
           'user_id': _myUserId,
           'callsign': _myCallsign,
           'date': dateStr,
-          'status': result,
+          'status': status,
           'updated_at': DateTime.now().toIso8601String(),
         }, onConflict: 'user_id,date');
       }
       await _load();
-    } catch (_) {}
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Error saving: $e'), backgroundColor: Colors.red));
+      }
+    }
   }
 
   @override
@@ -2075,15 +2139,15 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
     final firstDay = DateTime(_displayMonth.year, _displayMonth.month, 1);
     final daysInMonth = DateTime(_displayMonth.year, _displayMonth.month + 1, 0).day;
     final startWeekday = firstDay.weekday % 7;
-    final rows = ((startWeekday + daysInMonth) / 7).ceil();
+    final numWeeks = ((startWeekday + daysInMonth) / 7).ceil();
 
     return Column(children: [
-      // Month navigation
       Row(children: [
         IconButton(
           icon: const Icon(Icons.chevron_left),
           onPressed: () {
-            setState(() => _displayMonth = DateTime(_displayMonth.year, _displayMonth.month - 1));
+            setState(() => _displayMonth =
+                DateTime(_displayMonth.year, _displayMonth.month - 1));
             _load();
           },
         ),
@@ -2103,12 +2167,12 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
         IconButton(
           icon: const Icon(Icons.chevron_right),
           onPressed: () {
-            setState(() => _displayMonth = DateTime(_displayMonth.year, _displayMonth.month + 1));
+            setState(() => _displayMonth =
+                DateTime(_displayMonth.year, _displayMonth.month + 1));
             _load();
           },
         ),
       ]),
-      // Weekday headers
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4),
         child: Row(
@@ -2121,77 +2185,137 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
         ),
       ),
       const Divider(height: 6),
-      // Calendar grid
       Expanded(
-        child: GridView.builder(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 4),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 7, childAspectRatio: 0.82),
-          itemCount: rows * 7,
-          itemBuilder: (_, idx) {
-            final dayNum = idx - startWeekday + 1;
-            if (dayNum < 1 || dayNum > daysInMonth) return const SizedBox.shrink();
-            final date = DateTime(_displayMonth.year, _displayMonth.month, dayNum);
-            final dateStr = '${date.year}-${_pad(date.month)}-${_pad(date.day)}';
-            final entries = _dayEntries[dateStr] ?? [];
-            final myEntry = entries.where((e) => e['user_id'] == _myUserId).firstOrNull;
-            final isToday = date.year == now.year && date.month == now.month && date.day == now.day;
-            final isPast = date.isBefore(DateTime(now.year, now.month, now.day));
-            return GestureDetector(
-              onTap: isPast ? null : () => _setAvailability(dateStr),
-              child: Container(
-                margin: const EdgeInsets.all(1.5),
-                decoration: BoxDecoration(
-                  color: myEntry != null
-                      ? (_statusColors[myEntry['status']] ?? Colors.grey).withValues(alpha: 0.15)
-                      : null,
-                  border: isToday
-                      ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2)
-                      : null,
-                  borderRadius: BorderRadius.circular(6),
+          child: Column(
+            children: List.generate(numWeeks, (week) {
+              return IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: List.generate(7, (col) {
+                    final idx = week * 7 + col;
+                    final dayNum = idx - startWeekday + 1;
+                    if (dayNum < 1 || dayNum > daysInMonth) {
+                      return const Expanded(child: SizedBox(height: 64));
+                    }
+                    final date =
+                        DateTime(_displayMonth.year, _displayMonth.month, dayNum);
+                    final dateStr =
+                        '${date.year}-${_pad(date.month)}-${_pad(date.day)}';
+                    final entries = _dayEntries[dateStr] ?? [];
+                    final myEntry = entries
+                        .where((e) => e['user_id'] == _myUserId)
+                        .firstOrNull;
+                    final isToday = date.year == now.year &&
+                        date.month == now.month &&
+                        date.day == now.day;
+                    final isPast = date.isBefore(
+                        DateTime(now.year, now.month, now.day));
+
+                    return Expanded(
+                      child: GestureDetector(
+                        onTap: () => _showDaySheet(dateStr, isPast),
+                        child: Container(
+                          margin: const EdgeInsets.all(1),
+                          constraints: const BoxConstraints(minHeight: 64),
+                          decoration: BoxDecoration(
+                            color: myEntry != null
+                                ? (_statusColors[myEntry['status']] ??
+                                        Colors.grey)
+                                    .withValues(alpha: 0.10)
+                                : null,
+                            border: Border.all(
+                              color: isToday
+                                  ? Theme.of(context).colorScheme.primary
+                                  : Colors.grey.withValues(alpha: 0.2),
+                              width: isToday ? 2 : 0.5,
+                            ),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(3, 2, 2, 1),
+                                child: Text('$dayNum',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: isToday
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                      color: isToday
+                                          ? Theme.of(context)
+                                              .colorScheme
+                                              .primary
+                                          : isPast
+                                              ? Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurface
+                                                  .withValues(alpha: 0.35)
+                                              : null,
+                                    )),
+                              ),
+                              ...entries.map((e) {
+                                final color =
+                                    _statusColors[e['status']] ?? Colors.grey;
+                                final name = (e['callsign']?.isNotEmpty == true)
+                                    ? e['callsign']!
+                                    : e['status']!;
+                                return Container(
+                                  margin: const EdgeInsets.only(
+                                      left: 1, right: 1, bottom: 1),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 2, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: color.withValues(
+                                        alpha: isPast ? 0.45 : 0.90),
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
+                                  child: Text(name,
+                                      style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 8,
+                                          fontWeight: FontWeight.w600),
+                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: 1),
+                                );
+                              }),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
                 ),
-                child: Column(mainAxisAlignment: MainAxisAlignment.start, children: [
-                  const SizedBox(height: 3),
-                  Text('$dayNum', style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: isToday ? FontWeight.bold : FontWeight.normal,
-                    color: isPast ? Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.35) : null,
-                  )),
-                  if (entries.isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Wrap(spacing: 2, runSpacing: 2, alignment: WrapAlignment.center,
-                      children: entries.take(4).map((e) => Tooltip(
-                        message: '${e['callsign']}: ${e['status']}',
-                        child: Container(width: 7, height: 7,
-                            decoration: BoxDecoration(
-                                color: _statusColors[e['status']] ?? Colors.grey,
-                                shape: BoxShape.circle)),
-                      )).toList(),
-                    ),
-                  ],
-                ]),
-              ),
-            );
-          },
+              );
+            }),
+          ),
         ),
       ),
-      // Legend
       Padding(
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          ..._statusColors.entries.map((e) => Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Container(width: 10, height: 10,
-                  decoration: BoxDecoration(color: e.value, shape: BoxShape.circle)),
-              const SizedBox(width: 4),
-              Text(e.key, style: const TextStyle(fontSize: 11)),
-            ]),
-          )),
-          const SizedBox(width: 12),
-          const Text('Tap a date to set your status',
-              style: TextStyle(fontSize: 10, color: Colors.grey)),
-        ]),
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 10,
+          runSpacing: 4,
+          children: [
+            ..._statusColors.entries.map((e) => Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(width: 10, height: 10,
+                    decoration: BoxDecoration(
+                        color: e.value, borderRadius: BorderRadius.circular(2))),
+                const SizedBox(width: 4),
+                Text(e.key, style: const TextStyle(fontSize: 11)),
+              ],
+            )),
+            Text('Tap any day to view or set your status',
+                style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+          ],
+        ),
       ),
     ]);
   }
@@ -2203,7 +2327,6 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
   }
 }
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
 
 Widget _notConfiguredWidget() => const Center(
   child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -2221,7 +2344,6 @@ String _fmtTc(DateTime dt) =>
 
 String _pad(int n) => n.toString().padLeft(2, '0');
 
-// ── Shared widgets ────────────────────────────────────────────────────────────
 
 class _CertBadge extends StatelessWidget {
   final String cert;

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-// ── Data Model ────────────────────────────────────────────────────────────────
 
 class DxCondition {
   final String name;
@@ -25,7 +24,6 @@ class DxCondition {
   });
 }
 
-// ── Static Data ───────────────────────────────────────────────────────────────
 
 const List<DxCondition> kConditions = [
   // ── Altitude Illness ──────────────────────────────────────────────────────
@@ -160,7 +158,6 @@ const List<DxCondition> kConditions = [
   ),
 ];
 
-// ── Screens ───────────────────────────────────────────────────────────────────
 
 class DifferentialDxScreen extends StatefulWidget {
   const DifferentialDxScreen({super.key});

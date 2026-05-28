@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// ── Model ─────────────────────────────────────────────────────────────────────
 
 // START triage tags
 const _kImmediate = 'Immediate';  // Red
@@ -89,7 +88,6 @@ class McasCasualty {
       );
 }
 
-// ── Storage ───────────────────────────────────────────────────────────────────
 
 class MciStorage {
   static const _k = 'mci_casualties_v1';
@@ -124,7 +122,6 @@ class MciStorage {
   }
 }
 
-// ── Tag colours / labels ──────────────────────────────────────────────────────
 
 Color _tagColor(String tag) {
   switch (tag) {
@@ -146,7 +143,6 @@ IconData _tagIcon(String tag) {
   }
 }
 
-// ── Main MCI Screen ───────────────────────────────────────────────────────────
 
 class MciTriageScreen extends StatefulWidget {
   const MciTriageScreen({super.key});
@@ -399,7 +395,6 @@ class _MciTriageScreenState extends State<MciTriageScreen> {
   }
 }
 
-// ── Summary bar ───────────────────────────────────────────────────────────────
 
 class _SummaryBar extends StatelessWidget {
   final int immediate, delayed, minor, deceased, total;
@@ -433,7 +428,6 @@ class _SummaryBar extends StatelessWidget {
       );
 }
 
-// ── Mini tag chip (AppBar) ────────────────────────────────────────────────────
 
 class _MiniTagChip extends StatelessWidget {
   final String tag;
@@ -454,7 +448,6 @@ class _MiniTagChip extends StatelessWidget {
   }
 }
 
-// ── START Triage guided dialog ────────────────────────────────────────────────
 
 class _StartTriageDialog extends StatefulWidget {
   const _StartTriageDialog();
@@ -666,7 +659,6 @@ class _StartTriageDialogState extends State<_StartTriageDialog> {
   }
 }
 
-// ── Casualty detail sheet ─────────────────────────────────────────────────────
 
 class _CasualtyDetailSheet extends StatefulWidget {
   final String? initialTag;

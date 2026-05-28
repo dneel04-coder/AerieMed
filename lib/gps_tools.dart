@@ -5,7 +5,6 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 String _toDMS(double decimal, bool isLat) {
   final dir = isLat ? (decimal >= 0 ? 'N' : 'S') : (decimal >= 0 ? 'E' : 'W');
@@ -60,7 +59,6 @@ Future<Position?> _getLocation(BuildContext context) async {
   );
 }
 
-// ── What3Words ────────────────────────────────────────────────────────────────
 
 Future<String?> _coordsToW3W(double lat, double lon, String apiKey) async {
   try {
@@ -76,7 +74,6 @@ Future<String?> _coordsToW3W(double lat, double lon, String apiKey) async {
   return null;
 }
 
-// ── Saved Location Model ──────────────────────────────────────────────────────
 
 class SavedLocation {
   final String label;
@@ -107,7 +104,6 @@ class SavedLocation {
   }
 }
 
-// ── Screen ────────────────────────────────────────────────────────────────────
 
 class GpsToolsScreen extends StatefulWidget {
   const GpsToolsScreen({super.key});

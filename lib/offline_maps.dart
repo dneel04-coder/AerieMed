@@ -9,7 +9,6 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:path_provider/path_provider.dart';
 
-// ── Cached Tile Provider ──────────────────────────────────────────────────────
 
 class _CachedTileProvider extends TileProvider {
   final Directory cacheDir;
@@ -84,7 +83,6 @@ final Uint8List _kTransparent = Uint8List.fromList(const [
   0x42, 0x60, 0x82,
 ]);
 
-// ── Tile Sources ──────────────────────────────────────────────────────────────
 
 const Map<String, String> kTileSources = {
   'OpenTopoMap': 'https://tile.opentopomap.org/{z}/{x}/{y}.png',
@@ -92,7 +90,6 @@ const Map<String, String> kTileSources = {
   'ESRI Imagery': 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
 };
 
-// ── Tile Coordinate Helper ────────────────────────────────────────────────────
 
 ({int x, int y}) _latLonToTile(double lat, double lon, int zoom) {
   final n = 1 << zoom;
@@ -102,7 +99,6 @@ const Map<String, String> kTileSources = {
   return (x: x, y: y);
 }
 
-// ── Region Downloader ─────────────────────────────────────────────────────────
 
 Future<int> downloadRegion({
   required LatLng center,
@@ -144,7 +140,6 @@ Future<int> downloadRegion({
   return done;
 }
 
-// ── Screen ────────────────────────────────────────────────────────────────────
 
 class OfflineMapsScreen extends StatefulWidget {
   const OfflineMapsScreen({super.key});

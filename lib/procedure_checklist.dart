@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-// ── Data Model ────────────────────────────────────────────────────────────────
 
 class CheckStep {
   final String text;
@@ -28,7 +27,6 @@ class Procedure {
   });
 }
 
-// ── Static Data ───────────────────────────────────────────────────────────────
 
 const List<Procedure> kProcedures = [
   Procedure(
@@ -233,7 +231,6 @@ const List<Procedure> kProcedures = [
   ),
 ];
 
-// ── Screens ───────────────────────────────────────────────────────────────────
 
 class ProcedureListScreen extends StatelessWidget {
   const ProcedureListScreen({super.key});

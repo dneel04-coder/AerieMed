@@ -9,7 +9,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'patient_report.dart';
 
-// ─── Shared Supabase singleton ────────────────────────────────────────────────
 
 class SupabaseService {
   static const _urlKey = 'tac_supabase_url';
@@ -39,7 +38,6 @@ class SupabaseService {
   static SupabaseClient? get client => _initialized ? Supabase.instance.client : null;
 }
 
-// ─── Protocol model ───────────────────────────────────────────────────────────
 
 class ProtocolEntry {
   final String id;
@@ -76,7 +74,6 @@ class ProtocolEntry {
   String get localCacheName => '${id}_v$version.pdf';
 }
 
-// ─── Sync service ─────────────────────────────────────────────────────────────
 
 class ProtocolSyncService {
   static final instance = ProtocolSyncService._();
@@ -314,7 +311,6 @@ class ProtocolSyncService {
   }
 }
 
-// ─── Deployment order model ───────────────────────────────────────────────────
 
 class DeploymentOrder {
   final String id;
@@ -346,7 +342,6 @@ class DeploymentOrder {
       );
 }
 
-// ─── Deployment order service methods (added to ProtocolSyncService extension) ─
 
 extension DeploymentOrderService on ProtocolSyncService {
   Future<List<DeploymentOrder>> allDeploymentOrders() async {
@@ -471,7 +466,6 @@ extension DeploymentOrderService on ProtocolSyncService {
   }
 }
 
-// ─── Admin login dialog ───────────────────────────────────────────────────────
 
 Future<bool> showAdminPinDialog(BuildContext context) async {
   final userCtrl = TextEditingController();
@@ -512,7 +506,6 @@ Future<bool> showAdminPinDialog(BuildContext context) async {
   return userCtrl.text.trim() == correctUser && passCtrl.text == correctPass;
 }
 
-// ─── Protocol update dialog (startup) ────────────────────────────────────────
 
 class ProtocolUpdateDialog extends StatefulWidget {
   final List<ProtocolEntry> protocols;
@@ -598,7 +591,6 @@ class _ProtocolUpdateDialogState extends State<ProtocolUpdateDialog> {
   }
 }
 
-// ─── Team Protocols screen (user view) ───────────────────────────────────────
 
 class TeamProtocolsScreen extends StatefulWidget {
   const TeamProtocolsScreen({super.key});
@@ -766,7 +758,6 @@ class _ProtocolViewScreen extends StatelessWidget {
   }
 }
 
-// ─── Admin panel ─────────────────────────────────────────────────────────────
 
 class AdminPanelScreen extends StatelessWidget {
   const AdminPanelScreen({super.key});
@@ -895,7 +886,6 @@ class AdminPanelScreen extends StatelessWidget {
   }
 }
 
-// ─── Admin: Protocol management ───────────────────────────────────────────────
 
 class AdminProtocolScreen extends StatefulWidget {
   const AdminProtocolScreen({super.key});
@@ -1261,7 +1251,6 @@ class _UploadButtonState extends State<_UploadButton> {
   }
 }
 
-// ─── Admin: Patient reports ───────────────────────────────────────────────────
 
 class AdminReportsScreen extends StatefulWidget {
   const AdminReportsScreen({super.key});
@@ -1368,7 +1357,6 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
   }
 }
 
-// ─── Admin: Team certifications ──────────────────────────────────────────────
 
 class AdminCertsScreen extends StatefulWidget {
   const AdminCertsScreen({super.key});
@@ -1557,7 +1545,6 @@ class _AdminCertsScreenState extends State<AdminCertsScreen> {
   }
 }
 
-// ─── Admin: Deployment orders ─────────────────────────────────────────────────
 
 class AdminDeploymentOrdersScreen extends StatefulWidget {
   const AdminDeploymentOrdersScreen({super.key});
@@ -1808,7 +1795,6 @@ class _DeploymentUploadButtonState extends State<_DeploymentUploadButton> {
   }
 }
 
-// ─── SQL schema constant ──────────────────────────────────────────────────────
 
 const _kAdditionalSql = '''
 -- AeriMed — Supabase SQL schema
@@ -1965,7 +1951,6 @@ do \$\$ begin
 exception when duplicate_object then null; end \$\$;
 ''';
 
-// ─── Shared date formatter ────────────────────────────────────────────────────
 
 String _fmt(DateTime dt) =>
     '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';

@@ -832,7 +832,6 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   }
 }
 
-// ── Deployment orders startup dialog ──────────────────────────────────────────
 
 class _DeploymentOrdersDialog extends StatefulWidget {
   final List<DeploymentOrder> orders;

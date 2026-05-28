@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-// ── Data Model ────────────────────────────────────────────────────────────────
 
 enum NodeType { question, action, terminal }
 
@@ -46,7 +45,6 @@ class DecisionTree {
   });
 }
 
-// ── Static Data ───────────────────────────────────────────────────────────────
 
 final List<DecisionTree> kDecisionTrees = [
   // MARCH Protocol
@@ -512,7 +510,6 @@ final List<DecisionTree> kDecisionTrees = [
   ),
 ];
 
-// ── Screens ───────────────────────────────────────────────────────────────────
 
 class DecisionTreeScreen extends StatelessWidget {
   const DecisionTreeScreen({super.key});

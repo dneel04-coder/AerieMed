@@ -5,7 +5,6 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-// ── Sunrise/Sunset (NOAA algorithm, pure Dart) ────────────────────────────────
 
 class SunTimes {
   final DateTime sunrise;
@@ -87,7 +86,6 @@ double _acosd(double x) => math.acos(x) * 180 / math.pi;
 double _atan2d(double y, double x) => math.atan2(y, x) * 180 / math.pi;
 double _wrap(double v, double max) => v - max * (v / max).floor();
 
-// ── Weather Model ─────────────────────────────────────────────────────────────
 
 class WeatherData {
   final String condition;
@@ -137,7 +135,6 @@ class WeatherData {
   }
 }
 
-// ── Screen ────────────────────────────────────────────────────────────────────
 
 class SunWeatherScreen extends StatefulWidget {
   const SunWeatherScreen({super.key});

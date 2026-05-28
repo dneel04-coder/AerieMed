@@ -5,7 +5,6 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'patient_report.dart';
 
-// ── Public API ────────────────────────────────────────────────────────────────
 
 Future<Uint8List> buildReportPdf(PatientReport r) async {
   final doc = pw.Document(title: 'AustereMed PCR', creator: 'AustereMed');
@@ -38,7 +37,6 @@ class ReportPdfGenerator {
       Printing.layoutPdf(onLayout: (_) async => bytes);
 }
 
-// ── Colour / style constants ──────────────────────────────────────────────────
 
 const _kAccent = PdfColors.indigo700;
 const _kAccentLight = PdfColors.indigo50;
@@ -52,7 +50,6 @@ const _sSmall = pw.TextStyle(fontSize: 8, color: PdfColors.grey700);
 final _sWhiteBold = pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: PdfColors.white);
 final _sLabelCell = pw.TextStyle(fontSize: 8, color: PdfColors.grey600, fontWeight: pw.FontWeight.bold);
 
-// ── Header / footer ───────────────────────────────────────────────────────────
 
 pw.Widget _pageHeader(PatientReport r) => pw.Container(
       margin: const pw.EdgeInsets.only(bottom: 8),
@@ -90,7 +87,6 @@ pw.Widget _pageFooter(pw.Context ctx) => pw.Container(
       ]),
     );
 
-// ── Content ───────────────────────────────────────────────────────────────────
 
 List<pw.Widget> _buildContent(PatientReport r, List<pw.MemoryImage> photos) {
   String v(String s, [String fb = '—']) => s.isEmpty ? fb : s;
@@ -142,7 +138,6 @@ List<pw.Widget> _buildContent(PatientReport r, List<pw.MemoryImage> photos) {
   ];
 }
 
-// ── Section building blocks ───────────────────────────────────────────────────
 
 final _gap = pw.SizedBox(height: 10);
 
@@ -158,7 +153,6 @@ pw.Widget _bodyText(String text) => pw.Container(
       child: pw.Text(text, style: _sBody),
     );
 
-// ── Patient info table ────────────────────────────────────────────────────────
 
 pw.Widget _patientTable(PatientReport r) {
   String v(String s, [String fb = '—']) => s.isEmpty ? fb : s;
@@ -198,7 +192,6 @@ pw.Widget _patientTable(PatientReport r) {
   );
 }
 
-// ── Vitals table ──────────────────────────────────────────────────────────────
 
 pw.Widget _vitalsTable(PatientReport r) {
   const cols = ['Time', 'AVPU', 'GCS', 'BP', 'HR', 'RR', 'SpO2', 'Temp', 'BGL', 'Pain'];
@@ -239,7 +232,6 @@ pw.Widget _vitalsTable(PatientReport r) {
   );
 }
 
-// ── Notes (MIST / SOAP) ───────────────────────────────────────────────────────
 
 List<pw.Widget> _notesWidgets(PatientReport r) {
   String v(String s) => s.isEmpty ? '(not documented)' : s;
@@ -261,7 +253,6 @@ List<pw.Widget> _notesWidgets(PatientReport r) {
   ];
 }
 
-// ── Body diagram markers ──────────────────────────────────────────────────────
 
 pw.Widget _markersWidget(PatientReport r) => pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -277,7 +268,6 @@ pw.Widget _markersWidget(PatientReport r) => pw.Column(
       }).toList(),
     );
 
-// ── Photos ────────────────────────────────────────────────────────────────────
 
 pw.Widget _photosWidget(List<pw.MemoryImage> photos) {
   const perRow = 2;

@@ -11,7 +11,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'protocol_admin.dart' show SupabaseService;
 
-// ── Model ──────────────────────────────────────────────────────────────────
 
 class UserCert {
   final String id;
@@ -51,7 +50,6 @@ class UserCert {
       );
 }
 
-// ── Constants ──────────────────────────────────────────────────────────────
 
 const List<String> kCertTypes = [
   'CPR/AED',
@@ -103,7 +101,6 @@ const Map<String, String> _stateAbbr = {
   'WI': 'Wisconsin', 'WY': 'Wyoming', 'DC': 'District of Columbia',
 };
 
-// ── Storage ────────────────────────────────────────────────────────────────
 
 class _CertStorage {
   static const _key = 'user_certs_v1';
@@ -130,7 +127,6 @@ class _CertStorage {
   }
 }
 
-// ── Cert Syncer ────────────────────────────────────────────────────────────
 
 class CertSyncer {
   static Future<void> _trySyncCert(
@@ -186,7 +182,6 @@ class CertSyncer {
   }
 }
 
-// ── OCR ────────────────────────────────────────────────────────────────────
 // Only called on Android/iOS — Windows falls back to manual entry.
 
 Future<String?> _runOcr(String imagePath) async {
@@ -202,7 +197,6 @@ Future<String?> _runOcr(String imagePath) async {
   }
 }
 
-// ── Text Parser ────────────────────────────────────────────────────────────
 
 class _CertParser {
   static String? parseType(String text) {
@@ -263,7 +257,6 @@ class _CertParser {
       .join(' ');
 }
 
-// ── Main Screen ────────────────────────────────────────────────────────────
 
 class CertVaultScreen extends StatefulWidget {
   const CertVaultScreen({super.key});
@@ -506,7 +499,6 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
       );
 }
 
-// ── Cert Card ──────────────────────────────────────────────────────────────
 
 class _CertCard extends StatelessWidget {
   final UserCert cert;
@@ -597,7 +589,6 @@ class _CertCard extends StatelessWidget {
   String _fmt(DateTime d) => '${d.month}/${d.day}/${d.year}';
 }
 
-// ── Detail Screen ──────────────────────────────────────────────────────────
 
 class _DetailScreen extends StatelessWidget {
   final UserCert cert;
@@ -664,7 +655,6 @@ class _DetailScreen extends StatelessWidget {
   }
 }
 
-// ── Confirm Dialog ─────────────────────────────────────────────────────────
 
 class _ConfirmDialog extends StatefulWidget {
   final String filePath;

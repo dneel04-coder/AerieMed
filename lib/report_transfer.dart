@@ -11,7 +11,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'patient_report.dart';
 import 'report_pdf.dart';
 
-// ── Key derivation ────────────────────────────────────────────────────────────
 // 20 000 iterations of SHA-256 hash-chain keyed on a fixed app salt.
 // Produces a 256-bit key from an arbitrary passphrase.
 
@@ -25,7 +24,6 @@ Uint8List _deriveKey(String passphrase) {
   return Uint8List.fromList(material);
 }
 
-// ── TeamEncryption ────────────────────────────────────────────────────────────
 
 class TeamEncryption {
   /// Encrypt [plaintext] with AES-256-GCM. Returns a JSON bundle string.
@@ -55,7 +53,6 @@ class TeamEncryption {
   }
 }
 
-// ── Team-key helpers ──────────────────────────────────────────────────────────
 
 const _kTeamKeyPref = 'team_encryption_key';
 
@@ -69,7 +66,6 @@ Future<void> _saveTeamKey(String key) async {
   await prefs.setString(_kTeamKeyPref, key);
 }
 
-// ── Prompt for team key (shows dialog if not set) ─────────────────────────────
 
 Future<String?> _requireTeamKey(BuildContext context) async {
   final existing = await _loadTeamKey();
@@ -82,7 +78,6 @@ Future<String?> _requireTeamKey(BuildContext context) async {
   );
 }
 
-// ── Export encrypted bundle ───────────────────────────────────────────────────
 
 Future<void> exportEncryptedBundle(BuildContext context, PatientReport report) async {
   final teamKey = await _requireTeamKey(context);
@@ -112,7 +107,6 @@ Future<void> exportEncryptedBundle(BuildContext context, PatientReport report) a
   }
 }
 
-// ── Import encrypted bundle ───────────────────────────────────────────────────
 
 Future<void> importEncryptedBundle(BuildContext context, {required VoidCallback onImported}) async {
   final result = await FilePicker.platform.pickFiles(
@@ -154,7 +148,6 @@ Future<void> importEncryptedBundle(BuildContext context, {required VoidCallback 
   }
 }
 
-// ── Transfer options bottom sheet ─────────────────────────────────────────────
 
 class TransferOptionsSheet extends StatelessWidget {
   final PatientReport report;
@@ -237,7 +230,6 @@ class TransferOptionsSheet extends StatelessWidget {
   }
 }
 
-// ── Team Key dialog ───────────────────────────────────────────────────────────
 
 class _TeamKeyDialog extends StatefulWidget {
   final bool isFirstTime;
@@ -312,7 +304,6 @@ class _TeamKeyDialogState extends State<_TeamKeyDialog> {
   }
 }
 
-// ── Team Key settings tile (for use anywhere in app) ─────────────────────────
 
 class TeamKeyTile extends StatefulWidget {
   const TeamKeyTile({super.key});
@@ -356,7 +347,6 @@ class _TeamKeyTileState extends State<TeamKeyTile> {
   }
 }
 
-// ── PDF generation ────────────────────────────────────────────────────────────
 
 // Import separately to avoid loading pdf/printing until needed
 
