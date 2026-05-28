@@ -49,6 +49,29 @@ Color _priorityColor(String p) {
   }
 }
 
+Color _vaultCertColor(String type) {
+  switch (type) {
+    case 'CPR/AED': return const Color(0xFF1976D2);
+    case 'BLS':     return const Color(0xFF0288D1);
+    case 'ACLS':    return const Color(0xFFE65100);
+    case 'PALS':    return const Color(0xFFF57C00);
+    case 'PHTLS':
+    case 'ITLS':
+    case 'TCCC':    return const Color(0xFF6D4C41);
+    case 'EMR':     return const Color(0xFF388E3C);
+    case 'EMT':     return const Color(0xFF2E7D32);
+    case 'AEMT':    return const Color(0xFF00695C);
+    case 'Paramedic': return const Color(0xFFC62828);
+    case 'NREMT':   return const Color(0xFF00897B);
+    case 'RN':      return const Color(0xFF7B1FA2);
+    case 'LPN':     return const Color(0xFF9C27B0);
+    case 'NP':      return const Color(0xFF512DA8);
+    case 'PA':      return const Color(0xFF4527A0);
+    case 'MD/DO':   return const Color(0xFF283593);
+    default:        return Colors.grey;
+  }
+}
+
 Color _taskStatusColor(String s) {
   switch (s) {
     case 'Pending': return Colors.grey;
@@ -848,15 +871,39 @@ class _RosterTab extends StatefulWidget {
 class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
+
+  // Members view
   List<TeamMember> _members = [];
   bool _loading = true;
+
+  // Team Certs view
+  List<Map<String, dynamic>> _certRows = [];
+  bool _certLoading = false;
+  bool _certNotConfigured = false;
+  final _stateSearch = TextEditingController();
+  int _viewIdx = 0;
 
   @override
   void initState() { super.initState(); _load(); }
 
+  @override
+  void dispose() { _stateSearch.dispose(); super.dispose(); }
+
   Future<void> _load() async {
     final d = await RosterStorage.load();
     if (mounted) setState(() { _members = d; _loading = false; });
+  }
+
+  Future<void> _loadCerts() async {
+    if (_certLoading) return;
+    setState(() { _certLoading = true; _certNotConfigured = false; });
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) {
+      if (mounted) setState(() { _certLoading = false; _certNotConfigured = true; });
+      return;
+    }
+    final rows = await ProtocolSyncService.instance.adminGetCerts();
+    if (mounted) setState(() { _certRows = rows; _certLoading = false; });
   }
 
   Future<void> _openForm([TeamMember? existing]) async {
@@ -872,110 +919,305 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+        child: SegmentedButton<int>(
+          segments: const [
+            ButtonSegment(value: 0,
+                icon: Icon(Icons.people_outline, size: 16), label: Text('Members')),
+            ButtonSegment(value: 1,
+                icon: Icon(Icons.badge_outlined, size: 16), label: Text('Team Certs')),
+          ],
+          selected: {_viewIdx},
+          onSelectionChanged: (s) {
+            setState(() => _viewIdx = s.first);
+            if (s.first == 1 && _certRows.isEmpty && !_certLoading) _loadCerts();
+          },
+          style: const ButtonStyle(visualDensity: VisualDensity.compact),
+        ),
+      ),
+      Expanded(child: _viewIdx == 0 ? _buildMembersView() : _buildCertsView()),
+    ]);
+  }
 
-    // Summary header: count per cert level
+  Widget _buildMembersView() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
     final certCounts = <String, int>{};
     for (final m in _members) {
       certCounts[m.certification] = (certCounts[m.certification] ?? 0) + 1;
     }
-
-    return Stack(
-      children: [
-        _members.isEmpty
-            ? Center(
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.people_outline, size: 64, color: Colors.grey[300]),
-                  const SizedBox(height: 12),
-                  const Text('No team members', style: TextStyle(color: Colors.grey)),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add Member'),
-                    onPressed: () => _openForm(),
-                  ),
-                ]),
-              )
-            : ListView(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
-                children: [
-                  // Cert summary chips
-                  Wrap(
-                    spacing: 6, runSpacing: 4,
-                    children: certCounts.entries.map((e) => Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(color: _certColor(e.key).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(12)),
-                      child: Text('${e.key}: ${e.value}', style: TextStyle(fontSize: 11, color: _certColor(e.key), fontWeight: FontWeight.w600)),
-                    )).toList(),
-                  ),
-                  const SizedBox(height: 8),
-                  ..._members.map((m) => _memberTile(m)),
-                ],
+    return Stack(children: [
+      _members.isEmpty
+          ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.people_outline, size: 64, color: Colors.grey[300]),
+              const SizedBox(height: 12),
+              const Text('No team members', style: TextStyle(color: Colors.grey)),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                icon: const Icon(Icons.add),
+                label: const Text('Add Member'),
+                onPressed: () => _openForm(),
               ),
-        Positioned(
-          bottom: 16, right: 16,
-          child: FloatingActionButton.extended(
-            heroTag: 'roster_fab',
-            onPressed: () => _openForm(),
-            icon: const Icon(Icons.person_add),
-            label: const Text('Add Member'),
+            ]))
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
+              children: [
+                Wrap(
+                  spacing: 6, runSpacing: 4,
+                  children: certCounts.entries.map((e) => Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                        color: _certColor(e.key).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(12)),
+                    child: Text('${e.key}: ${e.value}',
+                        style: TextStyle(fontSize: 11, color: _certColor(e.key),
+                            fontWeight: FontWeight.w600)),
+                  )).toList(),
+                ),
+                const SizedBox(height: 8),
+                ..._members.map((m) => _memberTile(m)),
+              ],
+            ),
+      Positioned(
+        bottom: 16, right: 16,
+        child: FloatingActionButton.extended(
+          heroTag: 'roster_fab',
+          onPressed: () => _openForm(),
+          icon: const Icon(Icons.person_add),
+          label: const Text('Add Member'),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _buildCertsView() {
+    if (_certLoading) return const Center(child: CircularProgressIndicator());
+    if (_certNotConfigured) return _notConfiguredWidget();
+
+    final query = _stateSearch.text.trim().toLowerCase();
+    final filtered = query.isEmpty
+        ? _certRows
+        : _certRows.where((r) =>
+            (r['state'] as String? ?? '').toLowerCase().contains(query) ||
+            (r['callsign'] as String? ?? '').toLowerCase().contains(query)).toList();
+
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    final callsignMap = <String, String>{};
+    for (final r in filtered) {
+      final uid = r['user_id'] as String? ?? '';
+      grouped.putIfAbsent(uid, () => []).add(r);
+      callsignMap[uid] = r['callsign'] as String? ?? 'Unknown';
+    }
+    final sortedUids = grouped.keys.toList()
+      ..sort((a, b) => (callsignMap[a] ?? '').compareTo(callsignMap[b] ?? ''));
+
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        child: TextField(
+          controller: _stateSearch,
+          onChanged: (_) => setState(() {}),
+          decoration: InputDecoration(
+            hintText: 'Search by state or callsign…',
+            prefixIcon: const Icon(Icons.search, size: 20),
+            suffixIcon: _stateSearch.text.isNotEmpty
+                ? IconButton(
+                    icon: const Icon(Icons.clear, size: 18),
+                    onPressed: () { _stateSearch.clear(); setState(() {}); })
+                : null,
+            isDense: true,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
           ),
         ),
-      ],
+      ),
+      if (_certRows.isEmpty && !_certLoading)
+        Expanded(child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.badge_outlined, size: 64, color: Colors.grey[300]),
+          const SizedBox(height: 12),
+          const Text('No certs uploaded yet', style: TextStyle(color: Colors.grey)),
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.refresh),
+            label: const Text('Refresh'),
+            onPressed: _loadCerts,
+          ),
+        ])))
+      else if (grouped.isEmpty)
+        const Expanded(child: Center(
+            child: Text('No results', style: TextStyle(color: Colors.grey))))
+      else
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _loadCerts,
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+              itemCount: sortedUids.length,
+              itemBuilder: (_, i) {
+                final uid = sortedUids[i];
+                return _userCertCard(callsignMap[uid] ?? 'Unknown', grouped[uid]!);
+              },
+            ),
+          ),
+        ),
+    ]);
+  }
+
+  Widget _userCertCard(String callsign, List<Map<String, dynamic>> certs) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            CircleAvatar(
+              radius: 16,
+              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+              child: Text(
+                callsign.isNotEmpty ? callsign[0].toUpperCase() : '?',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13,
+                    color: Theme.of(context).colorScheme.onPrimaryContainer),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Text(callsign,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+            Text('${certs.length} cert${certs.length == 1 ? '' : 's'}',
+                style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+          ]),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 6, runSpacing: 6,
+            children: certs.map((cert) {
+              final type = cert['license_type'] as String? ?? 'Unknown';
+              final state = cert['state'] as String? ?? '';
+              final color = _vaultCertColor(type);
+              return GestureDetector(
+                onTap: () => _showCertDetail(cert),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.12),
+                    border: Border.all(color: color.withValues(alpha: 0.5)),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Text(type,
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold,
+                            color: color)),
+                    if (state.isNotEmpty)
+                      Text(state,
+                          style: TextStyle(fontSize: 10,
+                              color: color.withValues(alpha: 0.8))),
+                  ]),
+                ),
+              );
+            }).toList(),
+          ),
+        ]),
+      ),
     );
   }
+
+  void _showCertDetail(Map<String, dynamic> cert) {
+    final type = cert['license_type'] as String? ?? 'Unknown';
+    final state = cert['state'] as String? ?? '';
+    final callsign = cert['callsign'] as String? ?? '';
+    final fileName = cert['original_file_name'] as String? ?? '';
+    final uploadedAt = cert['uploaded_at'] as String? ?? '';
+    DateTime? dt;
+    try { dt = DateTime.parse(uploadedAt).toLocal(); } catch (_) {}
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(type),
+        content: Column(mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _detailRow(Icons.person_outline, 'Callsign', callsign),
+          if (state.isNotEmpty) _detailRow(Icons.location_on_outlined, 'State', state),
+          if (fileName.isNotEmpty)
+            _detailRow(Icons.insert_drive_file_outlined, 'File', fileName),
+          if (dt != null)
+            _detailRow(Icons.calendar_today_outlined, 'Uploaded',
+                '${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}'),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  Widget _detailRow(IconData icon, String label, String value) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Row(children: [
+      Icon(icon, size: 16, color: Colors.grey),
+      const SizedBox(width: 8),
+      Text('$label: ', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+      Expanded(child: Text(value, style: const TextStyle(fontSize: 13))),
+    ]),
+  );
 
   Widget _memberTile(TeamMember m) {
     final certCol = _certColor(m.certification);
     final statusCol = _memberStatusColor(m.status);
     final expiring = m.isCertExpired || m.isCertExpiringSoon;
-
     return Card(
       margin: const EdgeInsets.only(bottom: 6),
       child: ListTile(
-        leading: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            CircleAvatar(
-              backgroundColor: certCol.withValues(alpha: 0.15),
-              child: Text(
-                m.certification.length > 4 ? m.certification.substring(0, 3) : m.certification,
-                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: certCol),
-              ),
+        leading: Stack(clipBehavior: Clip.none, children: [
+          CircleAvatar(
+            backgroundColor: certCol.withValues(alpha: 0.15),
+            child: Text(
+              m.certification.length > 4
+                  ? m.certification.substring(0, 3)
+                  : m.certification,
+              style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: certCol),
             ),
-            Positioned(
-              right: -2, bottom: -2,
-              child: Container(
-                width: 10, height: 10,
-                decoration: BoxDecoration(color: statusCol, shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 1.5)),
-              ),
+          ),
+          Positioned(
+            right: -2, bottom: -2,
+            child: Container(
+              width: 10, height: 10,
+              decoration: BoxDecoration(color: statusCol, shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.5)),
             ),
-          ],
-        ),
+          ),
+        ]),
         title: Row(children: [
-          Expanded(child: Text(m.displayName, style: const TextStyle(fontWeight: FontWeight.w600))),
-          if (m.callsign.isNotEmpty) Text(m.callsign, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          Expanded(child: Text(m.displayName,
+              style: const TextStyle(fontWeight: FontWeight.w600))),
+          if (m.callsign.isNotEmpty)
+            Text(m.callsign, style: const TextStyle(fontSize: 11, color: Colors.grey)),
         ]),
         subtitle: Row(children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-            decoration: BoxDecoration(color: statusCol.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(4)),
-            child: Text(m.status, style: TextStyle(fontSize: 10, color: statusCol, fontWeight: FontWeight.w600)),
+            decoration: BoxDecoration(color: statusCol.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(4)),
+            child: Text(m.status,
+                style: TextStyle(fontSize: 10, color: statusCol, fontWeight: FontWeight.w600)),
           ),
           if (expiring) ...[
             const SizedBox(width: 6),
             Icon(m.isCertExpired ? Icons.error : Icons.warning_amber, size: 14,
                 color: m.isCertExpired ? Colors.red : Colors.orange),
             Text(m.isCertExpired ? ' Expired' : ' Expiring soon',
-                style: TextStyle(fontSize: 10, color: m.isCertExpired ? Colors.red : Colors.orange)),
+                style: TextStyle(fontSize: 10,
+                    color: m.isCertExpired ? Colors.red : Colors.orange)),
           ],
         ]),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-          IconButton(icon: const Icon(Icons.edit_outlined, size: 18), onPressed: () => _openForm(m)),
-          IconButton(icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red), onPressed: () async {
-            await RosterStorage.delete(m.id);
-            _load();
-          }),
+          IconButton(
+              icon: const Icon(Icons.edit_outlined, size: 18),
+              onPressed: () => _openForm(m)),
+          IconButton(
+              icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+              onPressed: () async {
+                await RosterStorage.delete(m.id);
+                _load();
+              }),
         ]),
         onTap: () => _cycleStatus(m),
       ),
