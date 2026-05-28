@@ -137,19 +137,25 @@ class CertSyncer {
       UserCert cert, String userId, String callsign) async {
     final client = SupabaseService.client;
     if (client == null) return;
+    final ext = cert.filePath.contains('.')
+        ? cert.filePath.split('.').last.toLowerCase()
+        : 'jpg';
+    final storagePath = '$userId/${cert.id}.$ext';
+
+    // Storage upload is best-effort — if the bucket doesn't exist yet the
+    // metadata row still gets written so the cert appears in the admin panel.
     try {
-      final ext = cert.filePath.contains('.')
-          ? cert.filePath.split('.').last.toLowerCase()
-          : 'jpg';
-      final storagePath = '$userId/${cert.id}.$ext';
       final bytes = await File(cert.filePath).readAsBytes();
-      final contentType =
-          cert.isPdf ? 'application/pdf' : 'image/jpeg';
+      final contentType = cert.isPdf ? 'application/pdf' : 'image/jpeg';
       await client.storage.from('certs').uploadBinary(
         storagePath,
         bytes,
         fileOptions: FileOptions(upsert: true, contentType: contentType),
       );
+    } catch (_) {}
+
+    // Always upsert metadata regardless of storage outcome.
+    try {
       await client.from('team_certs').upsert({
         'id': cert.id,
         'user_id': userId,

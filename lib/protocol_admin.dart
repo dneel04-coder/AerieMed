@@ -426,11 +426,24 @@ extension DeploymentOrderService on ProtocolSyncService {
     final ext = fileName.contains('.') ? fileName.split('.').last : 'pdf';
     final storagePath = '$id.$ext';
     final contentType = ext == 'pdf' ? 'application/pdf' : 'application/octet-stream';
-    await client.storage.from('deployment_orders').uploadBinary(
-      storagePath,
-      bytes,
-      fileOptions: FileOptions(upsert: true, contentType: contentType),
-    );
+    try {
+      await client.storage.from('deployment_orders').uploadBinary(
+        storagePath,
+        bytes,
+        fileOptions: FileOptions(upsert: true, contentType: contentType),
+      );
+    } on StorageException catch (e) {
+      final code = e.statusCode ?? '';
+      final msg = e.message.toLowerCase();
+      if (code == '404' || msg.contains('invalid path') || msg.contains('not found')) {
+        throw Exception(
+          'Storage bucket "deployment_orders" not found.\n'
+          'Go to Admin Panel → Protocol Management, tap the </> SQL button, '
+          'and run the schema in your Supabase project.',
+        );
+      }
+      rethrow;
+    }
     await client.from('deployment_orders').insert({
       'id': id,
       'title': title,
