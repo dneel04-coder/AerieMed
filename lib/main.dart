@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import 'patient_report.dart';
@@ -24,6 +24,8 @@ import 'protocol_admin.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Draw behind the Android navigation bar (edge-to-edge)
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   runApp(const AustereMedApp());
 }
 
@@ -75,6 +77,8 @@ class _AustereMedAppState extends State<AustereMedApp> {
         useMaterial3: true,
       ),
       themeMode: _themeMode,
+      // Prevent content from going under the Android navigation bar on all screens
+      builder: (context, child) => SafeArea(top: false, child: child!),
       home: TableOfContentsScreen(onThemeToggle: toggleTheme),
     );
   }
