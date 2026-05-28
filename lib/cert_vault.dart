@@ -164,6 +164,7 @@ class CertSyncer {
   }
 
   static Future<void> syncAll(List<UserCert> certs) async {
+    await SupabaseService.ensureInitialized();
     final prefs = await SharedPreferences.getInstance();
     var userId = prefs.getString('tac_user_id');
     if (userId == null) {
@@ -428,6 +429,20 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
       appBar: AppBar(
         title: const Text('Cert Vault'),
         actions: [
+          if (_certs.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.cloud_upload_outlined),
+              tooltip: 'Sync to Team',
+              onPressed: _loading ? null : () async {
+                final messenger = ScaffoldMessenger.of(context);
+                await CertSyncer.syncAll(_certs);
+                if (mounted) {
+                  messenger.showSnackBar(
+                    const SnackBar(content: Text('Certs synced to team')),
+                  );
+                }
+              },
+            ),
           IconButton(
             icon: const Icon(Icons.add),
             tooltip: 'Add Certification',

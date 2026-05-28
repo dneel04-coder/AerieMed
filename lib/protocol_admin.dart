@@ -308,6 +308,150 @@ class ProtocolSyncService {
   }
 }
 
+// ─── Deployment order model ───────────────────────────────────────────────────
+
+class DeploymentOrder {
+  final String id;
+  final String title;
+  final String notes;
+  final String filePath;
+  final String fileName;
+  final DateTime uploadedAt;
+  final String uploadedBy;
+
+  const DeploymentOrder({
+    required this.id,
+    required this.title,
+    required this.notes,
+    required this.filePath,
+    required this.fileName,
+    required this.uploadedAt,
+    required this.uploadedBy,
+  });
+
+  factory DeploymentOrder.fromMap(Map<String, dynamic> m) => DeploymentOrder(
+        id: m['id'] as String,
+        title: m['title'] as String,
+        notes: m['notes'] as String? ?? '',
+        filePath: m['file_path'] as String,
+        fileName: m['file_name'] as String,
+        uploadedAt: DateTime.tryParse(m['uploaded_at'] as String? ?? '') ?? DateTime.now(),
+        uploadedBy: m['uploaded_by'] as String? ?? '',
+      );
+}
+
+// ─── Deployment order service methods (added to ProtocolSyncService extension) ─
+
+extension DeploymentOrderService on ProtocolSyncService {
+  Future<List<DeploymentOrder>> allDeploymentOrders() async {
+    final client = SupabaseService.client;
+    if (client == null) return [];
+    try {
+      return (await client
+              .from('deployment_orders')
+              .select()
+              .order('uploaded_at', ascending: false) as List)
+          .map((r) => DeploymentOrder.fromMap(r as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<List<DeploymentOrder>> pendingDeploymentOrders() async {
+    final client = SupabaseService.client;
+    if (client == null) return [];
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      var userId = prefs.getString('tac_user_id') ?? '';
+      final orders = (await client
+              .from('deployment_orders')
+              .select()
+              .order('uploaded_at', ascending: false) as List)
+          .map((r) => DeploymentOrder.fromMap(r as Map<String, dynamic>))
+          .toList();
+      if (userId.isEmpty) return orders;
+      final viewedIds = (await client
+              .from('deployment_order_views')
+              .select('order_id')
+              .eq('user_id', userId) as List)
+          .map((r) => r['order_id'] as String)
+          .toSet();
+      return orders.where((o) => !viewedIds.contains(o.id)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> markDeploymentOrderViewed(String orderId) async {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getString('tac_user_id') ?? '';
+      if (userId.isEmpty) return;
+      await client.from('deployment_order_views').upsert(
+        {'user_id': userId, 'order_id': orderId},
+        onConflict: 'user_id,order_id',
+      );
+    } catch (_) {}
+  }
+
+  Future<File?> downloadDeploymentOrder(DeploymentOrder order) async {
+    final client = SupabaseService.client;
+    if (client == null) return null;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/deployment_orders/${order.id}_${order.fileName}');
+      if (await file.exists()) return file;
+      await file.parent.create(recursive: true);
+      final bytes = await client.storage.from('deployment_orders').download(order.filePath);
+      await file.writeAsBytes(bytes);
+      return file;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> uploadDeploymentOrder({
+    required String title,
+    required String notes,
+    required Uint8List bytes,
+    required String fileName,
+    required String uploadedBy,
+  }) async {
+    final client = SupabaseService.client;
+    if (client == null) throw Exception('Supabase not configured');
+    final id = _newUuid();
+    final ext = fileName.contains('.') ? fileName.split('.').last : 'pdf';
+    final storagePath = '$id.$ext';
+    final contentType = ext == 'pdf' ? 'application/pdf' : 'application/octet-stream';
+    await client.storage.from('deployment_orders').uploadBinary(
+      storagePath,
+      bytes,
+      fileOptions: FileOptions(upsert: true, contentType: contentType),
+    );
+    await client.from('deployment_orders').insert({
+      'id': id,
+      'title': title,
+      'notes': notes,
+      'file_path': storagePath,
+      'file_name': fileName,
+      'uploaded_at': DateTime.now().toIso8601String(),
+      'uploaded_by': uploadedBy,
+    });
+  }
+
+  Future<void> deleteDeploymentOrder(DeploymentOrder order) async {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    try {
+      await client.storage.from('deployment_orders').remove([order.filePath]);
+    } catch (_) {}
+    await client.from('deployment_orders').delete().eq('id', order.id);
+  }
+}
+
 // ─── Admin login dialog ───────────────────────────────────────────────────────
 
 Future<bool> showAdminPinDialog(BuildContext context) async {
@@ -634,13 +778,22 @@ class AdminPanelScreen extends StatelessWidget {
                 context, MaterialPageRoute(builder: (_) => const AdminReportsScreen())),
           ),
           const Divider(indent: 72, endIndent: 16),
+          ListTile(
+            leading: const CircleAvatar(
+                backgroundColor: Colors.orange, child: Icon(Icons.send_to_mobile, color: Colors.white)),
+            title: const Text('Deployment Orders'),
+            subtitle: const Text('Push orders and documents to all team members'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const AdminDeploymentOrdersScreen())),
+          ),
           const Divider(indent: 72, endIndent: 16),
           ListTile(
             leading: const CircleAvatar(
                 backgroundColor: Colors.purple,
                 child: Icon(Icons.workspace_premium, color: Colors.white)),
             title: const Text('Team Certifications'),
-            subtitle: const Text('View certifications for all team members'),
+            subtitle: const Text('View certifications by state'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
                 context, MaterialPageRoute(builder: (_) => const AdminCertsScreen())),
@@ -1221,13 +1374,17 @@ class _AdminCertsScreenState extends State<AdminCertsScreen> {
     if (mounted) setState(() { _rows = rows; _loading = false; });
   }
 
-  Map<String, List<Map<String, dynamic>>> _grouped() {
+  Map<String, List<Map<String, dynamic>>> _groupedByState() {
     final Map<String, List<Map<String, dynamic>>> groups = {};
     for (final row in _rows) {
-      final callsign = row['callsign'] as String? ?? 'Unknown';
-      groups.putIfAbsent(callsign, () => []).add(row);
+      final state = (row['state'] as String?)?.trim();
+      final key = (state == null || state.isEmpty) ? 'Unknown State' : state;
+      groups.putIfAbsent(key, () => []).add(row);
     }
-    return groups;
+    final sorted = Map.fromEntries(
+      groups.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
+    );
+    return sorted;
   }
 
   Future<void> _viewCert(Map<String, dynamic> row) async {
@@ -1310,7 +1467,7 @@ class _AdminCertsScreenState extends State<AdminCertsScreen> {
   Widget build(BuildContext context) {
     if (_loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
 
-    final groups = _grouped();
+    final groups = _groupedByState();
 
     return Scaffold(
       appBar: AppBar(
@@ -1332,31 +1489,35 @@ class _AdminCertsScreenState extends State<AdminCertsScreen> {
               padding: const EdgeInsets.all(12),
               itemCount: groups.length,
               itemBuilder: (_, i) {
-                final callsign = groups.keys.elementAt(i);
-                final certs = groups[callsign]!;
+                final state = groups.keys.elementAt(i);
+                final certs = groups[state]!;
                 return Card(
                   margin: const EdgeInsets.only(bottom: 10),
                   child: ExpansionTile(
                     leading: CircleAvatar(
-                      backgroundColor: Colors.deepOrange.withValues(alpha: 0.15),
-                      child: const Icon(Icons.person, color: Colors.deepOrange),
+                      backgroundColor: Colors.indigo.withValues(alpha: 0.15),
+                      child: const Icon(Icons.map_outlined, color: Colors.indigo),
                     ),
-                    title: Text(callsign,
+                    title: Text(state,
                         style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('${certs.length} cert${certs.length != 1 ? 's' : ''}'),
+                    subtitle: Text('${certs.length} certification${certs.length != 1 ? 's' : ''}'),
                     initiallyExpanded: true,
                     children: certs.map((cert) {
-                      final dt =
-                          DateTime.tryParse(cert['uploaded_at'] as String? ?? '');
+                      final dt = DateTime.tryParse(cert['uploaded_at'] as String? ?? '');
+                      final callsign = cert['callsign'] as String? ?? 'Unknown';
                       return ListTile(
-                        leading:
-                            const Icon(Icons.workspace_premium, color: Colors.amber),
+                        leading: const Icon(Icons.workspace_premium, color: Colors.amber),
                         title: Text(cert['license_type'] as String? ?? '',
                             style: const TextStyle(fontWeight: FontWeight.w600)),
                         subtitle: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(cert['state'] as String? ?? ''),
+                              Row(children: [
+                                const Icon(Icons.person, size: 13, color: Colors.grey),
+                                const SizedBox(width: 4),
+                                Text(callsign,
+                                    style: const TextStyle(fontSize: 12)),
+                              ]),
                               if (dt != null)
                                 Text('Uploaded ${_fmt(dt)}',
                                     style: const TextStyle(
@@ -1373,6 +1534,257 @@ class _AdminCertsScreenState extends State<AdminCertsScreen> {
                 );
               },
             ),
+    );
+  }
+}
+
+// ─── Admin: Deployment orders ─────────────────────────────────────────────────
+
+class AdminDeploymentOrdersScreen extends StatefulWidget {
+  const AdminDeploymentOrdersScreen({super.key});
+
+  @override
+  State<AdminDeploymentOrdersScreen> createState() =>
+      _AdminDeploymentOrdersScreenState();
+}
+
+class _AdminDeploymentOrdersScreenState
+    extends State<AdminDeploymentOrdersScreen> {
+  List<DeploymentOrder> _orders = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final orders = await ProtocolSyncService.instance.allDeploymentOrders();
+    if (mounted) setState(() { _orders = orders; _loading = false; });
+  }
+
+  Future<void> _showUploadSheet() async {
+    final titleCtrl = TextEditingController();
+    final notesCtrl = TextEditingController();
+    Uint8List? bytes;
+    String? fileName;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSt) => Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              const Text('New Deployment Order',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 16),
+              TextField(
+                controller: titleCtrl,
+                decoration: const InputDecoration(
+                    labelText: 'Title', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: notesCtrl,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: 'Notes / Instructions',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.attach_file),
+                label: Text(fileName ?? 'Attach Document (PDF or image)'),
+                onPressed: () async {
+                  final result = await FilePicker.platform.pickFiles(
+                    type: FileType.custom,
+                    allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png', 'docx'],
+                    withData: true,
+                  );
+                  if (result == null) return;
+                  final f = result.files.first;
+                  Uint8List? b = f.bytes;
+                  if (b == null && f.path != null) b = await File(f.path!).readAsBytes();
+                  setSt(() { bytes = b; fileName = f.name; });
+                },
+              ),
+              if (bytes != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(fileName ?? '',
+                      style: const TextStyle(fontSize: 12, color: Colors.green)),
+                ),
+              const SizedBox(height: 16),
+              _DeploymentUploadButton(
+                titleCtrl: titleCtrl,
+                notesCtrl: notesCtrl,
+                bytes: bytes,
+                fileName: fileName,
+                onSuccess: () { Navigator.pop(ctx); _load(); },
+              ),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmDelete(DeploymentOrder order) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Order?'),
+        content: Text('Permanently delete "${order.title}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await ProtocolSyncService.instance.deleteDeploymentOrder(order);
+      _load();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Deployment Orders'),
+        actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _load)],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _showUploadSheet,
+        icon: const Icon(Icons.upload_file),
+        label: const Text('New Order'),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _orders.isEmpty
+              ? Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.send_to_mobile, size: 64, color: Colors.grey),
+                    const SizedBox(height: 16),
+                    const Text('No deployment orders yet'),
+                    const SizedBox(height: 8),
+                    FilledButton.icon(
+                      onPressed: _showUploadSheet,
+                      icon: const Icon(Icons.upload_file),
+                      label: const Text('Create First Order'),
+                    ),
+                  ]),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
+                  itemCount: _orders.length,
+                  itemBuilder: (_, i) {
+                    final o = _orders[i];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        leading: const Icon(Icons.assignment_outlined,
+                            color: Colors.orange, size: 36),
+                        title: Text(o.title,
+                            style: const TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('${o.fileName}  •  ${_fmt(o.uploadedAt)}',
+                                  style: const TextStyle(fontSize: 11)),
+                              if (o.notes.isNotEmpty)
+                                Text(o.notes,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        fontStyle: FontStyle.italic,
+                                        color: Colors.grey)),
+                            ]),
+                        isThreeLine: o.notes.isNotEmpty,
+                        trailing: IconButton(
+                          icon: Icon(Icons.delete_outline, color: Colors.red[400]),
+                          onPressed: () => _confirmDelete(o),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+    );
+  }
+}
+
+class _DeploymentUploadButton extends StatefulWidget {
+  final TextEditingController titleCtrl;
+  final TextEditingController notesCtrl;
+  final Uint8List? bytes;
+  final String? fileName;
+  final VoidCallback onSuccess;
+  const _DeploymentUploadButton({
+    required this.titleCtrl,
+    required this.notesCtrl,
+    required this.bytes,
+    required this.fileName,
+    required this.onSuccess,
+  });
+
+  @override
+  State<_DeploymentUploadButton> createState() =>
+      _DeploymentUploadButtonState();
+}
+
+class _DeploymentUploadButtonState extends State<_DeploymentUploadButton> {
+  bool _uploading = false;
+
+  Future<void> _upload() async {
+    if (widget.bytes == null || widget.fileName == null) return;
+    final title = widget.titleCtrl.text.trim();
+    if (title.isEmpty) return;
+    setState(() => _uploading = true);
+    final prefs = await SharedPreferences.getInstance();
+    final callsign = prefs.getString('tac_callsign') ?? 'Admin';
+    try {
+      await ProtocolSyncService.instance.uploadDeploymentOrder(
+        title: title,
+        notes: widget.notesCtrl.text.trim(),
+        bytes: widget.bytes!,
+        fileName: widget.fileName!,
+        uploadedBy: callsign,
+      );
+      widget.onSuccess();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Upload failed: $e')));
+        setState(() => _uploading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canUpload = widget.bytes != null &&
+        !_uploading &&
+        widget.titleCtrl.text.trim().isNotEmpty;
+    return FilledButton.icon(
+      onPressed: canUpload ? _upload : null,
+      icon: _uploading
+          ? const SizedBox(
+              width: 18, height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+          : const Icon(Icons.send),
+      label: Text(_uploading ? 'Uploading…' : 'Push to Team'),
     );
   }
 }
@@ -1453,6 +1865,57 @@ insert into storage.buckets (id, name, public)
 create policy "public_certs" on storage.objects
   for all using (bucket_id = 'certs')
   with check (bucket_id = 'certs');
+
+-- Deployment Orders (run after existing schema)
+
+create table deployment_orders (
+  id uuid default gen_random_uuid() primary key,
+  title text not null,
+  notes text default '',
+  file_path text not null,
+  file_name text not null,
+  uploaded_at timestamptz default now(),
+  uploaded_by text default ''
+);
+
+create table deployment_order_views (
+  user_id text not null,
+  order_id uuid references deployment_orders(id) on delete cascade,
+  viewed_at timestamptz default now(),
+  primary key (user_id, order_id)
+);
+
+alter table deployment_orders enable row level security;
+alter table deployment_order_views enable row level security;
+
+create policy "public_access" on deployment_orders
+  for all using (true) with check (true);
+create policy "public_access" on deployment_order_views
+  for all using (true) with check (true);
+
+insert into storage.buckets (id, name, public)
+  values ('deployment_orders', 'deployment_orders', true)
+  on conflict (id) do nothing;
+
+create policy "public_orders" on storage.objects
+  for all using (bucket_id = 'deployment_orders')
+  with check (bucket_id = 'deployment_orders');
+
+-- Team Availability
+
+create table team_availability (
+  user_id text not null,
+  callsign text not null,
+  date date not null,
+  status text not null default 'Available',
+  notes text default '',
+  updated_at timestamptz default now(),
+  primary key (user_id, date)
+);
+
+alter table team_availability enable row level security;
+create policy "public_access" on team_availability
+  for all using (true) with check (true);
 ''';
 
 // ─── Shared date formatter ────────────────────────────────────────────────────

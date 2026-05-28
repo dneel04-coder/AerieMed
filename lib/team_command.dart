@@ -1,7 +1,15 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:pdfrx/pdfrx.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -422,22 +430,30 @@ class TeamCommandScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 4,
+      length: 6,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Team Command'),
-          bottom: const TabBar(tabs: [
-            Tab(icon: Icon(Icons.account_tree_outlined, size: 20), text: 'Incident'),
-            Tab(icon: Icon(Icons.people_outlined, size: 20), text: 'Roster'),
-            Tab(icon: Icon(Icons.task_alt, size: 20), text: 'Tasks'),
-            Tab(icon: Icon(Icons.handshake_outlined, size: 20), text: 'Handoff'),
-          ]),
+          bottom: const TabBar(
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
+            tabs: [
+              Tab(icon: Icon(Icons.account_tree_outlined, size: 20), text: 'Incident'),
+              Tab(icon: Icon(Icons.people_outlined, size: 20), text: 'Roster'),
+              Tab(icon: Icon(Icons.task_alt, size: 20), text: 'Tasks'),
+              Tab(icon: Icon(Icons.handshake_outlined, size: 20), text: 'Handoff'),
+              Tab(icon: Icon(Icons.assignment_outlined, size: 20), text: 'Orders'),
+              Tab(icon: Icon(Icons.calendar_month_outlined, size: 20), text: 'Availability'),
+            ],
+          ),
         ),
-        body: const TabBarView(children: [
-          _IncidentTab(),
-          _RosterTab(),
-          _TasksTab(),
-          _HandoffTab(),
+        body: TabBarView(children: [
+          const _IncidentTab(),
+          const _RosterTab(),
+          const _TasksTab(),
+          const _HandoffTab(),
+          _DeploymentOrdersTab(),
+          _AvailabilityTab(),
         ]),
       ),
     );
@@ -1644,6 +1660,566 @@ class _HandoffFormScreenState extends State<_HandoffFormScreen> {
     return h.formattedText;
   }
 }
+
+// ── Deployment Orders Tab ─────────────────────────────────────────────────────
+
+class _DeploymentOrdersTab extends StatefulWidget {
+  const _DeploymentOrdersTab();
+  @override
+  State<_DeploymentOrdersTab> createState() => _DeploymentOrdersTabState();
+}
+
+class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  List<DeploymentOrder> _orders = [];
+  bool _loading = true;
+  bool _notConfigured = false;
+  bool _isAdmin = false;
+  final Set<String> _downloading = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    final isAdmin = await ProtocolSyncService.instance.isAdminMode;
+    if (mounted) setState(() => _isAdmin = isAdmin);
+    await _load();
+  }
+
+  Future<void> _load() async {
+    setState(() { _loading = true; _notConfigured = false; });
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) {
+      if (mounted) setState(() { _loading = false; _notConfigured = true; });
+      return;
+    }
+    final orders = await ProtocolSyncService.instance.allDeploymentOrders();
+    if (mounted) setState(() { _orders = orders; _loading = false; });
+  }
+
+  Future<void> _viewOrder(DeploymentOrder order) async {
+    setState(() => _downloading.add(order.id));
+    final file = await ProtocolSyncService.instance.downloadDeploymentOrder(order);
+    setState(() => _downloading.remove(order.id));
+    if (file == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Download failed. Check your connection.')));
+      }
+      return;
+    }
+    await ProtocolSyncService.instance.markDeploymentOrderViewed(order.id);
+    if (!mounted) return;
+    final ext = order.fileName.split('.').last.toLowerCase();
+    if (ext == 'pdf') {
+      await Navigator.push(context, MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(
+            title: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+              Text(order.title, style: const TextStyle(fontSize: 15)),
+              Text(_fmtTc(order.uploadedAt), style: const TextStyle(fontSize: 11)),
+            ]),
+          ),
+          body: PdfViewer.file(file.path),
+        ),
+      ));
+    } else {
+      await showDialog(context: context, builder: (_) => Dialog(
+        insetPadding: const EdgeInsets.all(8),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          AppBar(
+            automaticallyImplyLeading: false,
+            title: Text(order.title, style: const TextStyle(fontSize: 14)),
+            actions: [IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context))],
+          ),
+          InteractiveViewer(child: Image.file(file)),
+        ]),
+      ));
+    }
+  }
+
+  Future<void> _showUploadSheet() async {
+    final titleCtrl = TextEditingController();
+    final notesCtrl = TextEditingController();
+    Uint8List? bytes;
+    String? fileName;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSt) => Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              const Text('New Deployment Order',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 16),
+              TextField(controller: titleCtrl,
+                  decoration: const InputDecoration(labelText: 'Title', border: OutlineInputBorder())),
+              const SizedBox(height: 12),
+              TextField(controller: notesCtrl, maxLines: 3,
+                  decoration: const InputDecoration(labelText: 'Notes / Instructions', border: OutlineInputBorder())),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.attach_file),
+                label: Text(fileName ?? 'Attach Document (PDF or image)'),
+                onPressed: () async {
+                  final result = await FilePicker.platform.pickFiles(
+                    type: FileType.custom,
+                    allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
+                    withData: true,
+                  );
+                  if (result == null) return;
+                  final f = result.files.first;
+                  Uint8List? b = f.bytes;
+                  if (b == null && f.path != null) b = await File(f.path!).readAsBytes();
+                  setSt(() { bytes = b; fileName = f.name; });
+                },
+              ),
+              if (bytes != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(fileName ?? '', style: const TextStyle(fontSize: 12, color: Colors.green)),
+                ),
+              const SizedBox(height: 16),
+              _OrderUploadButton(
+                titleCtrl: titleCtrl,
+                notesCtrl: notesCtrl,
+                bytes: bytes,
+                fileName: fileName,
+                onSuccess: () { Navigator.pop(ctx); _load(); },
+              ),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_notConfigured) return _notConfiguredWidget();
+    return Scaffold(
+      floatingActionButton: _isAdmin
+          ? FloatingActionButton.extended(
+              onPressed: _showUploadSheet,
+              icon: const Icon(Icons.upload_file),
+              label: const Text('Push Order'))
+          : null,
+      body: _orders.isEmpty
+          ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.assignment_outlined, size: 64, color: Colors.grey),
+              const SizedBox(height: 16),
+              const Text('No deployment orders yet.', style: TextStyle(color: Colors.grey)),
+              if (_isAdmin) ...[
+                const SizedBox(height: 8),
+                FilledButton.icon(onPressed: _showUploadSheet,
+                    icon: const Icon(Icons.upload_file), label: const Text('Push First Order')),
+              ],
+            ]))
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
+                itemCount: _orders.length,
+                itemBuilder: (_, i) {
+                  final o = _orders[i];
+                  final downloading = _downloading.contains(o.id);
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      leading: const Icon(Icons.assignment_outlined, color: Colors.orange, size: 36),
+                      title: Text(o.title, style: const TextStyle(fontWeight: FontWeight.w600)),
+                      subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(
+                          '${o.uploadedBy.isNotEmpty ? 'From: ${o.uploadedBy}  •  ' : ''}${_fmtTc(o.uploadedAt)}',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        if (o.notes.isNotEmpty)
+                          Text(o.notes, maxLines: 1, overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: Colors.grey)),
+                      ]),
+                      isThreeLine: o.notes.isNotEmpty,
+                      trailing: downloading
+                          ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.open_in_new, size: 20),
+                      onTap: downloading ? null : () => _viewOrder(o),
+                    ),
+                  );
+                },
+              ),
+            ),
+    );
+  }
+}
+
+class _OrderUploadButton extends StatefulWidget {
+  final TextEditingController titleCtrl;
+  final TextEditingController notesCtrl;
+  final Uint8List? bytes;
+  final String? fileName;
+  final VoidCallback onSuccess;
+  const _OrderUploadButton({
+    required this.titleCtrl,
+    required this.notesCtrl,
+    required this.bytes,
+    required this.fileName,
+    required this.onSuccess,
+  });
+  @override
+  State<_OrderUploadButton> createState() => _OrderUploadButtonState();
+}
+
+class _OrderUploadButtonState extends State<_OrderUploadButton> {
+  bool _uploading = false;
+
+  Future<void> _upload() async {
+    if (widget.bytes == null || widget.fileName == null) return;
+    final title = widget.titleCtrl.text.trim();
+    if (title.isEmpty) return;
+    setState(() => _uploading = true);
+    final prefs = await SharedPreferences.getInstance();
+    final callsign = prefs.getString('tac_callsign') ?? 'Admin';
+    try {
+      await ProtocolSyncService.instance.uploadDeploymentOrder(
+        title: title,
+        notes: widget.notesCtrl.text.trim(),
+        bytes: widget.bytes!,
+        fileName: widget.fileName!,
+        uploadedBy: callsign,
+      );
+      widget.onSuccess();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Upload failed: $e')));
+        setState(() => _uploading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canUpload = widget.bytes != null && !_uploading && widget.titleCtrl.text.trim().isNotEmpty;
+    return FilledButton.icon(
+      onPressed: canUpload ? _upload : null,
+      icon: _uploading
+          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+          : const Icon(Icons.send),
+      label: Text(_uploading ? 'Uploading…' : 'Push to Team'),
+    );
+  }
+}
+
+// ── Availability Tab ──────────────────────────────────────────────────────────
+
+class _AvailabilityTab extends StatefulWidget {
+  const _AvailabilityTab();
+  @override
+  State<_AvailabilityTab> createState() => _AvailabilityTabState();
+}
+
+class _AvailabilityTabState extends State<_AvailabilityTab>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  bool _loading = true;
+  bool _notConfigured = false;
+  DateTime _displayMonth = DateTime.now();
+  final Map<String, List<Map<String, String>>> _dayEntries = {};
+  String _myUserId = '';
+  String _myCallsign = '';
+
+  static const _statuses = ['Available', 'Unavailable', 'Partial'];
+  static const Map<String, Color> _statusColors = {
+    'Available': Colors.green,
+    'Unavailable': Colors.red,
+    'Partial': Colors.orange,
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    final prefs = await SharedPreferences.getInstance();
+    _myUserId = prefs.getString('tac_user_id') ?? '';
+    _myCallsign = prefs.getString('tac_callsign') ?? 'Me';
+    if (_myUserId.isEmpty) {
+      final rng = Random.secure();
+      _myUserId = List.generate(12, (_) => rng.nextInt(16).toRadixString(16)).join();
+      await prefs.setString('tac_user_id', _myUserId);
+    }
+    await _load();
+  }
+
+  Future<void> _load() async {
+    setState(() { _loading = true; _notConfigured = false; });
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) {
+      if (mounted) setState(() { _loading = false; _notConfigured = true; });
+      return;
+    }
+    try {
+      final client = SupabaseService.client!;
+      final start = DateTime(_displayMonth.year, _displayMonth.month, 1);
+      final end = DateTime(_displayMonth.year, _displayMonth.month + 1, 0);
+      final rows = (await client
+              .from('team_availability')
+              .select()
+              .gte('date', '${start.year}-${_pad(start.month)}-01')
+              .lte('date', '${end.year}-${_pad(end.month)}-${_pad(end.day)}')
+              .order('date') as List)
+          .cast<Map<String, dynamic>>();
+      final Map<String, List<Map<String, String>>> entries = {};
+      for (final r in rows) {
+        final date = r['date'] as String;
+        entries.putIfAbsent(date, () => []).add({
+          'user_id': r['user_id'] as String,
+          'callsign': r['callsign'] as String? ?? '',
+          'status': r['status'] as String? ?? 'Available',
+          'notes': r['notes'] as String? ?? '',
+        });
+      }
+      if (mounted) setState(() { _dayEntries
+        ..clear()
+        ..addAll(entries);
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _setAvailability(String dateStr) async {
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok || !mounted) return;
+    final existing = (_dayEntries[dateStr] ?? [])
+        .where((e) => e['user_id'] == _myUserId)
+        .firstOrNull;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(dateStr),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: _statuses.map((s) {
+            final selected = existing?['status'] == s;
+            return InkWell(
+              onTap: () => Navigator.pop(context, s),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                child: Row(children: [
+                  Icon(selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                      size: 20, color: _statusColors[s] ?? Colors.grey),
+                  const SizedBox(width: 10),
+                  Container(width: 12, height: 12,
+                      decoration: BoxDecoration(color: _statusColors[s], shape: BoxShape.circle)),
+                  const SizedBox(width: 8),
+                  Text(s, style: TextStyle(fontWeight: selected ? FontWeight.bold : FontWeight.normal)),
+                ]),
+              ),
+            );
+          }).toList(),
+        ),
+        actions: [
+          if (existing != null)
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'remove'),
+              child: const Text('Clear', style: TextStyle(color: Colors.red)),
+            ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        ],
+      ),
+    );
+    if (result == null) return;
+    try {
+      final client = SupabaseService.client!;
+      if (result == 'remove') {
+        await client.from('team_availability')
+            .delete().eq('user_id', _myUserId).eq('date', dateStr);
+      } else {
+        await client.from('team_availability').upsert({
+          'user_id': _myUserId,
+          'callsign': _myCallsign,
+          'date': dateStr,
+          'status': result,
+          'updated_at': DateTime.now().toIso8601String(),
+        }, onConflict: 'user_id,date');
+      }
+      await _load();
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_notConfigured) return _notConfiguredWidget();
+
+    final now = DateTime.now();
+    final firstDay = DateTime(_displayMonth.year, _displayMonth.month, 1);
+    final daysInMonth = DateTime(_displayMonth.year, _displayMonth.month + 1, 0).day;
+    final startWeekday = firstDay.weekday % 7;
+    final rows = ((startWeekday + daysInMonth) / 7).ceil();
+
+    return Column(children: [
+      // Month navigation
+      Row(children: [
+        IconButton(
+          icon: const Icon(Icons.chevron_left),
+          onPressed: () {
+            setState(() => _displayMonth = DateTime(_displayMonth.year, _displayMonth.month - 1));
+            _load();
+          },
+        ),
+        Expanded(
+          child: Text(_monthLabel(_displayMonth),
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+        ),
+        IconButton(
+          icon: const Icon(Icons.today),
+          tooltip: 'Today',
+          onPressed: () {
+            setState(() => _displayMonth = DateTime.now());
+            _load();
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.chevron_right),
+          onPressed: () {
+            setState(() => _displayMonth = DateTime(_displayMonth.year, _displayMonth.month + 1));
+            _load();
+          },
+        ),
+      ]),
+      // Weekday headers
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Row(
+          children: ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) =>
+            Expanded(child: Text(d,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant))),
+          ).toList(),
+        ),
+      ),
+      const Divider(height: 6),
+      // Calendar grid
+      Expanded(
+        child: GridView.builder(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 7, childAspectRatio: 0.82),
+          itemCount: rows * 7,
+          itemBuilder: (_, idx) {
+            final dayNum = idx - startWeekday + 1;
+            if (dayNum < 1 || dayNum > daysInMonth) return const SizedBox.shrink();
+            final date = DateTime(_displayMonth.year, _displayMonth.month, dayNum);
+            final dateStr = '${date.year}-${_pad(date.month)}-${_pad(date.day)}';
+            final entries = _dayEntries[dateStr] ?? [];
+            final myEntry = entries.where((e) => e['user_id'] == _myUserId).firstOrNull;
+            final isToday = date.year == now.year && date.month == now.month && date.day == now.day;
+            final isPast = date.isBefore(DateTime(now.year, now.month, now.day));
+            return GestureDetector(
+              onTap: isPast ? null : () => _setAvailability(dateStr),
+              child: Container(
+                margin: const EdgeInsets.all(1.5),
+                decoration: BoxDecoration(
+                  color: myEntry != null
+                      ? (_statusColors[myEntry['status']] ?? Colors.grey).withValues(alpha: 0.15)
+                      : null,
+                  border: isToday
+                      ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2)
+                      : null,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Column(mainAxisAlignment: MainAxisAlignment.start, children: [
+                  const SizedBox(height: 3),
+                  Text('$dayNum', style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: isToday ? FontWeight.bold : FontWeight.normal,
+                    color: isPast ? Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.35) : null,
+                  )),
+                  if (entries.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Wrap(spacing: 2, runSpacing: 2, alignment: WrapAlignment.center,
+                      children: entries.take(4).map((e) => Tooltip(
+                        message: '${e['callsign']}: ${e['status']}',
+                        child: Container(width: 7, height: 7,
+                            decoration: BoxDecoration(
+                                color: _statusColors[e['status']] ?? Colors.grey,
+                                shape: BoxShape.circle)),
+                      )).toList(),
+                    ),
+                  ],
+                ]),
+              ),
+            );
+          },
+        ),
+      ),
+      // Legend
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          ..._statusColors.entries.map((e) => Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Container(width: 10, height: 10,
+                  decoration: BoxDecoration(color: e.value, shape: BoxShape.circle)),
+              const SizedBox(width: 4),
+              Text(e.key, style: const TextStyle(fontSize: 11)),
+            ]),
+          )),
+          const SizedBox(width: 12),
+          const Text('Tap a date to set your status',
+              style: TextStyle(fontSize: 10, color: Colors.grey)),
+        ]),
+      ),
+    ]);
+  }
+
+  static String _monthLabel(DateTime d) {
+    const names = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'];
+    return '${names[d.month]} ${d.year}';
+  }
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+Widget _notConfiguredWidget() => const Center(
+  child: Column(mainAxisSize: MainAxisSize.min, children: [
+    Icon(Icons.cloud_off, size: 64, color: Colors.grey),
+    SizedBox(height: 16),
+    Text('Supabase not configured', style: TextStyle(fontSize: 16)),
+    SizedBox(height: 8),
+    Text('Open Tac Map to connect to your Supabase project.',
+        style: TextStyle(color: Colors.grey, fontSize: 13)),
+  ]),
+);
+
+String _fmtTc(DateTime dt) =>
+    '${dt.year}-${_pad(dt.month)}-${_pad(dt.day)}';
+
+String _pad(int n) => n.toString().padLeft(2, '0');
 
 // ── Shared widgets ────────────────────────────────────────────────────────────
 

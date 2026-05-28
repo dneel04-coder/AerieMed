@@ -178,7 +178,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     _initRootProtocols();
     _loadData();
     _checkAdminMode();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _checkNewProtocols());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdates());
   }
 
   Future<void> _checkAdminMode() async {
@@ -186,16 +186,30 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     if (mounted) setState(() => _isAdmin = isAdmin);
   }
 
-  Future<void> _checkNewProtocols() async {
+  Future<void> _checkForUpdates() async {
     final ok = await SupabaseService.ensureInitialized();
     if (!ok || !mounted) return;
+
+    // Protocols
     final pending = await ProtocolSyncService.instance.pendingProtocols();
-    if (pending.isEmpty || !mounted) return;
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => ProtocolUpdateDialog(protocols: pending),
-    );
+    if (pending.isNotEmpty && mounted) {
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => ProtocolUpdateDialog(protocols: pending),
+      );
+    }
+
+    // Deployment orders
+    if (!mounted) return;
+    final newOrders = await ProtocolSyncService.instance.pendingDeploymentOrders();
+    if (newOrders.isNotEmpty && mounted) {
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _DeploymentOrdersDialog(orders: newOrders),
+      );
+    }
   }
 
   Future<void> _toggleAdminMode() async {
@@ -814,6 +828,83 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
       body: PdfViewer.file(
         widget.filePath,
       ),
+    );
+  }
+}
+
+// ── Deployment orders startup dialog ──────────────────────────────────────────
+
+class _DeploymentOrdersDialog extends StatefulWidget {
+  final List<DeploymentOrder> orders;
+  const _DeploymentOrdersDialog({required this.orders});
+
+  @override
+  State<_DeploymentOrdersDialog> createState() => _DeploymentOrdersDialogState();
+}
+
+class _DeploymentOrdersDialogState extends State<_DeploymentOrdersDialog> {
+  bool _acknowledging = false;
+
+  Future<void> _ackAll() async {
+    setState(() => _acknowledging = true);
+    for (final o in widget.orders) {
+      await ProtocolSyncService.instance.markDeploymentOrderViewed(o.id);
+    }
+    if (mounted) Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = widget.orders.length;
+    return AlertDialog(
+      icon: const Icon(Icons.assignment_outlined, color: Colors.orange, size: 32),
+      title: Text('$n Deployment Order${n > 1 ? 's' : ''} Received'),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 260,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+            'The following order${n > 1 ? 's have' : ' has'} been issued. '
+            'Tap to review each one.',
+            style: TextStyle(fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 10),
+          Expanded(
+            child: ListView.builder(
+              itemCount: n,
+              itemBuilder: (_, i) {
+                final o = widget.orders[i];
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  child: ListTile(
+                    leading: const Icon(Icons.assignment_outlined,
+                        color: Colors.orange, size: 24),
+                    title: Text(o.title,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 13)),
+                    subtitle: Text(
+                      'From: ${o.uploadedBy.isEmpty ? 'Admin' : o.uploadedBy}',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ]),
+      ),
+      actionsAlignment: MainAxisAlignment.center,
+      actions: [
+        FilledButton.icon(
+          onPressed: _acknowledging ? null : _ackAll,
+          icon: _acknowledging
+              ? const SizedBox(width: 18, height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.check_circle_outline),
+          label: const Text('Acknowledge'),
+        ),
+      ],
     );
   }
 }

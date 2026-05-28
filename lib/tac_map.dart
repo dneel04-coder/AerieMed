@@ -457,6 +457,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   TacMarkerType? _placingType;
   _BaseLayer _baseLayer = _BaseLayer.osm;
   _IncidentOverlay? _incidentOverlay;
+  bool _markerTableWarned = false;
 
   @override
   void initState() {
@@ -584,26 +585,52 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   }
 
   Future<void> _loadInitialData() async {
+    // Load users first — silent fail is acceptable
     try {
-      final users = await _supabase
-          .from('tac_users')
-          .select(); // all missions
-      final markers = await _supabase
-          .from('tac_markers')
-          .select()
-          .eq('mission_code', _missionCode);
+      final users = await _supabase.from('tac_users').select();
       if (!mounted) return;
       setState(() {
         for (final r in users as List) {
           final u = TacUser.fromMap(r as Map<String, dynamic>);
           _users[u.id] = u;
         }
+      });
+    } catch (_) {}
+
+    // Load markers separately so a missing table is visible
+    try {
+      final markers = await _supabase
+          .from('tac_markers')
+          .select()
+          .eq('mission_code', _missionCode);
+      if (!mounted) return;
+      setState(() {
         for (final r in markers as List) {
           final m = TacMarker.fromMap(r as Map<String, dynamic>);
           _markers[m.id] = m;
         }
       });
-    } catch (_) {}
+      _markerTableWarned = false;
+    } catch (e) {
+      if (!mounted || _markerTableWarned) return;
+      _markerTableWarned = true;
+      final msg = _isMarkerTableMissing(e)
+          ? 'tac_markers table not found — open Tac Map Settings and re-run the setup SQL'
+          : 'Could not load markers: ${e is PostgrestException ? e.message : e}';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(msg),
+        backgroundColor: Colors.orange,
+        duration: const Duration(seconds: 8),
+      ));
+    }
+  }
+
+  static bool _isMarkerTableMissing(Object e) {
+    if (e is! PostgrestException) return false;
+    final code = e.code ?? '';
+    final msg = e.message.toLowerCase();
+    return code == '42P01' || code == 'PGRST204' ||
+        msg.contains('tac_markers') || msg.contains('does not exist');
   }
 
   Future<void> _placeMarker(LatLng pos, TacMarkerType type) async {
@@ -634,7 +661,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       if (mounted) setState(() => _markers.remove(tempId));
     } catch (e) {
       if (!mounted) return;
-      final msg = (e is PostgrestException && e.code == 'PGRST125')
+      final msg = _isMarkerTableMissing(e)
           ? 'tac_markers table not found — open Tac Map Settings and re-run the setup SQL in your Supabase project'
           : 'Marker saved locally — sync failed (${e is PostgrestException ? e.message : e})';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
