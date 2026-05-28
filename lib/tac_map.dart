@@ -844,12 +844,18 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           PopupMenuButton(itemBuilder: (_) => [
             const PopupMenuItem(value: 'leave', child: Text('Leave Mission')),
             const PopupMenuItem(value: 'recenter', child: Text('Re-center')),
+            const PopupMenuItem(value: 'supabase_settings', child: Text('Supabase Settings / SQL')),
             if (_incidentOverlay != null)
               const PopupMenuItem(value: 'clear_overlay', child: Text('Clear Incident Overlay')),
-          ], onSelected: (v) {
+          ], onSelected: (v) async {
             if (v == 'leave') _leaveMission();
             if (v == 'recenter' && _myLocation != null) _mapCtrl.move(_myLocation!, 14);
             if (v == 'clear_overlay') setState(() => _incidentOverlay = null);
+            if (v == 'supabase_settings') {
+              await Navigator.push(context, MaterialPageRoute(
+                builder: (_) => _SupabaseConfigScreen(onSaved: () => Navigator.pop(context)),
+              ));
+            }
           }),
         ],
       ),
