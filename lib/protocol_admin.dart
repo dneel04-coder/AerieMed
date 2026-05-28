@@ -15,6 +15,9 @@ class SupabaseService {
   static const _anonKey = 'tac_supabase_anon_key';
   static bool _initialized = false;
 
+  /// Clears initialized state so ensureInitialized re-runs with new credentials.
+  static void reset() => _initialized = false;
+
   static Future<bool> ensureInitialized() async {
     if (_initialized) return true;
     final prefs = await SharedPreferences.getInstance();

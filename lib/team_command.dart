@@ -2348,8 +2348,16 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
   }
 
   Future<void> _saveStatus(String dateStr, String status) async {
+    final client = SupabaseService.client;
+    if (client == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Supabase not connected — open Tac Map to configure.'),
+            backgroundColor: Colors.orange));
+      }
+      return;
+    }
     try {
-      final client = SupabaseService.client!;
       if (status == 'remove') {
         await client.from('team_availability')
             .delete().eq('user_id', _myUserId).eq('date', dateStr);

@@ -214,15 +214,63 @@ class _SupabaseConfigScreenState extends State<_SupabaseConfigScreen> {
   final _urlCtrl = TextEditingController();
   final _keyCtrl = TextEditingController();
   bool _saving = false;
+  String? _errorMsg;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSaved();
+  }
+
+  Future<void> _loadSaved() async {
+    final prefs = await SharedPreferences.getInstance();
+    final url = prefs.getString(_kSupabaseUrl) ?? '';
+    final key = prefs.getString(_kSupabaseKey) ?? '';
+    if (mounted) {
+      _urlCtrl.text = url;
+      _keyCtrl.text = key;
+    }
+  }
+
+  /// Strips any path/query from the URL — Supabase needs the bare project host.
+  static String _cleanUrl(String raw) {
+    var u = raw.trim();
+    if (u.isEmpty) return '';
+    if (!u.startsWith('http')) u = 'https://$u';
+    try {
+      final uri = Uri.parse(u);
+      return '${uri.scheme}://${uri.host}';
+    } catch (_) {
+      return u.replaceAll(RegExp(r'/+$'), '');
+    }
+  }
 
   Future<void> _save() async {
-    final url = _urlCtrl.text.trim();
+    final url = _cleanUrl(_urlCtrl.text);
     final key = _keyCtrl.text.trim();
-    if (url.isEmpty || key.isEmpty) return;
-    setState(() => _saving = true);
+    if (url.isEmpty || key.isEmpty) {
+      setState(() => _errorMsg = 'Both URL and key are required.');
+      return;
+    }
+    setState(() { _saving = true; _errorMsg = null; });
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kSupabaseUrl, url);
     await prefs.setString(_kSupabaseKey, key);
+
+    // Reset Supabase init state so ensureInitialized re-runs with new creds.
+    SupabaseService.reset();
+    final ok = await SupabaseService.ensureInitialized();
+
+    if (!mounted) return;
+    if (!ok) {
+      setState(() {
+        _saving = false;
+        _errorMsg = 'Could not connect. Check that the URL and Anon Key are correct.';
+      });
+      return;
+    }
+    setState(() => _saving = false);
     widget.onSaved();
   }
 
@@ -236,13 +284,13 @@ class _SupabaseConfigScreenState extends State<_SupabaseConfigScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Tac Map — Supabase Config')),
+      appBar: AppBar(title: const Text('Supabase Config')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text(
-            'Tac Map requires a Supabase project for real-time location sharing. '
-            'Create a free project at supabase.com, then run the SQL below in the SQL Editor.',
+            'Connect to your Supabase project. Run the SQL below in the Supabase SQL Editor first, '
+            'then enter your Project URL and Anon Key.',
             style: TextStyle(fontSize: 13),
           ),
           const SizedBox(height: 16),
@@ -250,26 +298,51 @@ class _SupabaseConfigScreenState extends State<_SupabaseConfigScreen> {
           const SizedBox(height: 24),
           TextField(
             controller: _urlCtrl,
+            autocorrect: false,
+            keyboardType: TextInputType.url,
             decoration: const InputDecoration(
               labelText: 'Project URL',
-              hintText: 'https://xxxx.supabase.co',
+              hintText: 'https://xxxxxxxxxxxx.supabase.co',
+              helperText: 'Copy from Supabase → Project Settings → API',
               border: OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _keyCtrl,
+            autocorrect: false,
             decoration: const InputDecoration(
               labelText: 'Anon Public Key',
+              helperText: 'The "anon" key — NOT the service_role key',
               border: OutlineInputBorder(),
             ),
           ),
+          if (_errorMsg != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.1),
+                border: Border.all(color: Colors.red.withValues(alpha: 0.4)),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(children: [
+                const Icon(Icons.error_outline, color: Colors.red, size: 18),
+                const SizedBox(width: 8),
+                Expanded(child: Text(_errorMsg!,
+                    style: const TextStyle(color: Colors.red, fontSize: 13))),
+              ]),
+            ),
+          ],
           const SizedBox(height: 20),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
               onPressed: _saving ? null : _save,
-              child: _saving ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save & Connect'),
+              child: _saving
+                  ? const SizedBox(height: 18, width: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Save & Connect'),
             ),
           ),
         ]),
