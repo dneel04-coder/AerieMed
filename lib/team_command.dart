@@ -4,11 +4,9 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService;
 
 
@@ -881,6 +879,12 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
   bool _certLoading = false;
   bool _certNotConfigured = false;
   final _stateSearch = TextEditingController();
+
+  // Profiles view
+  List<Map<String, dynamic>> _profileRows = [];
+  bool _profileLoading = false;
+  bool _profileNotConfigured = false;
+
   int _viewIdx = 0;
 
   @override
@@ -906,6 +910,28 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
     if (mounted) setState(() { _certRows = rows; _certLoading = false; });
   }
 
+  Future<void> _loadProfiles() async {
+    if (_profileLoading) return;
+    setState(() { _profileLoading = true; _profileNotConfigured = false; });
+    final client = SupabaseService.client;
+    if (client == null) {
+      final ok = await SupabaseService.ensureInitialized();
+      if (!ok) {
+        if (mounted) setState(() { _profileLoading = false; _profileNotConfigured = true; });
+        return;
+      }
+    }
+    try {
+      final rows = await SupabaseService.client!
+          .from('user_profiles')
+          .select()
+          .order('name');
+      if (mounted) setState(() { _profileRows = List<Map<String, dynamic>>.from(rows as List); _profileLoading = false; });
+    } catch (_) {
+      if (mounted) setState(() { _profileLoading = false; _profileNotConfigured = true; });
+    }
+  }
+
   Future<void> _openForm([TeamMember? existing]) async {
     final result = await showModalBottomSheet<bool>(
       context: context,
@@ -928,16 +954,23 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
                 icon: Icon(Icons.people_outline, size: 16), label: Text('Members')),
             ButtonSegment(value: 1,
                 icon: Icon(Icons.badge_outlined, size: 16), label: Text('Team Certs')),
+            ButtonSegment(value: 2,
+                icon: Icon(Icons.account_circle_outlined, size: 16), label: Text('Profiles')),
           ],
           selected: {_viewIdx},
           onSelectionChanged: (s) {
             setState(() => _viewIdx = s.first);
             if (s.first == 1 && _certRows.isEmpty && !_certLoading) _loadCerts();
+            if (s.first == 2 && _profileRows.isEmpty && !_profileLoading) _loadProfiles();
           },
           style: const ButtonStyle(visualDensity: VisualDensity.compact),
         ),
       ),
-      Expanded(child: _viewIdx == 0 ? _buildMembersView() : _buildCertsView()),
+      Expanded(child: _viewIdx == 0
+          ? _buildMembersView()
+          : _viewIdx == 1
+              ? _buildCertsView()
+              : _buildProfilesView()),
     ]);
   }
 
@@ -1062,6 +1095,96 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
           ),
         ),
     ]);
+  }
+
+  Widget _buildProfilesView() {
+    if (_profileLoading) return const Center(child: CircularProgressIndicator());
+    if (_profileNotConfigured) return _notConfiguredWidget();
+    if (_profileRows.isEmpty) {
+      return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.account_circle_outlined, size: 64, color: Colors.grey[300]),
+        const SizedBox(height: 12),
+        const Text('No profiles synced yet', style: TextStyle(color: Colors.grey)),
+        const SizedBox(height: 16),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.refresh),
+          label: const Text('Refresh'),
+          onPressed: _loadProfiles,
+        ),
+      ]));
+    }
+    return RefreshIndicator(
+      onRefresh: _loadProfiles,
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+        itemCount: _profileRows.length,
+        itemBuilder: (_, i) => _profileCard(_profileRows[i]),
+      ),
+    );
+  }
+
+  Widget _profileCard(Map<String, dynamic> p) {
+    final name = p['name'] as String? ?? '';
+    final callsign = p['callsign'] as String? ?? '';
+    final certLevel = p['cert_level'] as String? ?? 'None';
+    final rt130 = p['rt130'] as bool? ?? false;
+    final ropeRescue = p['rope_rescue'] as bool? ?? false;
+    final display = callsign.isNotEmpty ? callsign : name;
+    final certColor = _certColor(certLevel);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(children: [
+          CircleAvatar(
+            radius: 20,
+            backgroundColor: certColor.withValues(alpha: 0.15),
+            child: Text(display.isNotEmpty ? display[0].toUpperCase() : '?',
+                style: TextStyle(fontWeight: FontWeight.bold, color: certColor)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(display, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            if (callsign.isNotEmpty && name.isNotEmpty)
+              Text(name, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+          ])),
+          Wrap(spacing: 4, children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: certColor.withValues(alpha: 0.12),
+                border: Border.all(color: certColor.withValues(alpha: 0.4)),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(certLevel,
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: certColor)),
+            ),
+            if (rt130)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.12),
+                  border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Text('RT-130',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.orange)),
+              ),
+            if (ropeRescue)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withValues(alpha: 0.12),
+                  border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Text('Rope',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.blue)),
+              ),
+          ]),
+        ]),
+      ),
+    );
   }
 
   Widget _userCertCard(String callsign, List<Map<String, dynamic>> certs) {

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
+import 'user_profile.dart';
 import 'patient_report.dart';
 import 'decision_tree.dart';
 import 'drug_reference.dart';
@@ -38,11 +39,24 @@ class AustereMedApp extends StatefulWidget {
 
 class _AustereMedAppState extends State<AustereMedApp> {
   ThemeMode _themeMode = ThemeMode.system;
+  bool _loggedIn = false;
+  bool _authChecked = false;
 
   @override
   void initState() {
     super.initState();
     _loadTheme();
+    _checkLogin();
+  }
+
+  Future<void> _checkLogin() async {
+    final loggedIn = await UserProfile.isLoggedIn();
+    if (mounted) setState(() { _loggedIn = loggedIn; _authChecked = true; });
+  }
+
+  void _logout() async {
+    await UserProfile.logout();
+    if (mounted) setState(() => _loggedIn = false);
   }
 
   Future<void> _loadTheme() async {
@@ -79,14 +93,21 @@ class _AustereMedAppState extends State<AustereMedApp> {
       themeMode: _themeMode,
       // Prevent content from going under the Android navigation bar on all screens
       builder: (context, child) => SafeArea(top: false, child: child!),
-      home: TableOfContentsScreen(onThemeToggle: toggleTheme),
+      home: !_authChecked
+          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          : _loggedIn
+              ? TableOfContentsScreen(onThemeToggle: toggleTheme, onLogout: _logout)
+              : LoginScreen(onLoggedIn: () {
+                  if (mounted) setState(() => _loggedIn = true);
+                }),
     );
   }
 }
 
 class TableOfContentsScreen extends StatefulWidget {
   final VoidCallback onThemeToggle;
-  const TableOfContentsScreen({super.key, required this.onThemeToggle});
+  final VoidCallback? onLogout;
+  const TableOfContentsScreen({super.key, required this.onThemeToggle, this.onLogout});
 
   @override
   State<TableOfContentsScreen> createState() => _TableOfContentsScreenState();
@@ -269,16 +290,14 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     setState(() {
       favorites = Set.from(prefs.getStringList('favorites') ?? []);
       final uploadsList = prefs.getStringList('user_uploads') ?? [];
-      userUploads = uploadsList
-          .where((e) => e.contains('|'))
-          .map((e) {
-            final separatorIndex = e.indexOf('|');
-            return {
-              'title': e.substring(0, separatorIndex),
-              'path': e.substring(separatorIndex + 1),
-            };
-          })
-          .toList();
+      userUploads = uploadsList.where((e) => e.contains('|')).map((e) {
+        final parts = e.split('|');
+        return {
+          'title': parts[0],
+          'path': parts[1],
+          if (parts.length >= 3) 'category': parts[2],
+        };
+      }).toList();
     });
   }
 
@@ -289,7 +308,10 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
 
   Future<void> _saveUploads() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('user_uploads', userUploads.map((e) => '${e['title']}|${e['path']}').toList());
+    await prefs.setStringList('user_uploads', userUploads.map((e) {
+      final cat = e['category'] ?? '';
+      return '${e['title']}|${e['path']}|$cat';
+    }).toList());
   }
 
   void _toggleFavorite(String assetPath) {
@@ -303,29 +325,44 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     _saveFavorites();
   }
 
+  static const _kUploadCategories = [
+    'Airway', 'Breathing', 'Circulation', 'Trauma', 'Medications', 'Other Protocols',
+  ];
+
   Future<void> _uploadFile() async {
     final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['pdf']);
-    if (result != null && result.files.single.path != null) {
-      final file = File(result.files.single.path!);
-      final fileName = result.files.single.name;
-      final dir = await getApplicationDocumentsDirectory();
-      final uploadDir = Directory('${dir.path}/user_uploads');
-      if (!await uploadDir.exists()) await uploadDir.create();
+    if (result == null || result.files.single.path == null) return;
 
-      final targetPath = '${uploadDir.path}/$fileName';
-      final targetFile = File(targetPath);
+    final file = File(result.files.single.path!);
+    final fileName = result.files.single.name;
 
-      if (await targetFile.exists()) {
-        await targetFile.delete();
-      }
-      await file.copy(targetPath);
+    if (!mounted) return;
+    String? category = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Add to Protocol Folder'),
+        children: _kUploadCategories.map((cat) => SimpleDialogOption(
+          onPressed: () => Navigator.pop(ctx, cat),
+          child: Text(cat),
+        )).toList(),
+      ),
+    );
+    if (category == null) return;
 
-      setState(() {
-        userUploads.removeWhere((element) => element['title'] == fileName);
-        userUploads.add({'title': fileName, 'path': targetPath});
-      });
-      _saveUploads();
-    }
+    final dir = await getApplicationDocumentsDirectory();
+    final uploadDir = Directory('${dir.path}/user_uploads');
+    if (!await uploadDir.exists()) await uploadDir.create();
+
+    final targetPath = '${uploadDir.path}/$fileName';
+    final targetFile = File(targetPath);
+    if (await targetFile.exists()) await targetFile.delete();
+    await file.copy(targetPath);
+
+    setState(() {
+      userUploads.removeWhere((e) => e['title'] == fileName);
+      userUploads.add({'title': fileName, 'path': targetPath, 'category': category});
+    });
+    _saveUploads();
   }
 
   Future<void> _deleteUpload(int index) async {
@@ -370,11 +407,27 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     final breathingItems = <Map<String, dynamic>>[];
     final circulationItems = <Map<String, dynamic>>[];
     final traumaItems = <Map<String, dynamic>>[];
+    final medicationUploadItems = <Map<String, dynamic>>[];
     final otherItems = <Map<String, dynamic>>[];
+    final uncategorizedUploads = <Map<String, dynamic>>[];
 
     final airwayMeds = <Map<String, dynamic>>[];
     final breathingMeds = <Map<String, dynamic>>[];
     final circulationMeds = <Map<String, dynamic>>[];
+
+    // Route user uploads into the correct folder
+    for (final u in userUploads) {
+      final uploadItem = {'title': u['title'], 'path': u['path'], 'isUserUpload': true};
+      switch (u['category']) {
+        case 'Airway':       airwayItems.add(uploadItem); break;
+        case 'Breathing':    breathingItems.add(uploadItem); break;
+        case 'Circulation':  circulationItems.add(uploadItem); break;
+        case 'Trauma':       traumaItems.add(uploadItem); break;
+        case 'Medications':  medicationUploadItems.add(uploadItem); break;
+        case 'Other Protocols': otherItems.add(uploadItem); break;
+        default:             uncategorizedUploads.add(uploadItem);
+      }
+    }
 
     final circulationKeywords = ['circulation', 'cardiac', 'heart', 'pulse', 'shock', 'arrest', 'vascular', 'blood', 'vessel'];
 
@@ -434,11 +487,11 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
           'items': _getFavoriteItems(),
           'isFavoriteSection': true,
         },
-      if (userUploads.isNotEmpty)
+      if (uncategorizedUploads.isNotEmpty)
         {
           'title': 'User Uploads',
           'isFolder': true,
-          'items': userUploads.map((e) => {'title': e['title'], 'path': e['path'], 'isUserUpload': true}).toList(),
+          'items': uncategorizedUploads,
         },
       {
         'title': 'Airway',
@@ -472,7 +525,11 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
       {
         'title': 'Medications',
         'isFolder': true,
-        'items': mainMedFolderItems,
+        'items': [
+          ...mainMedFolderItems,
+          if (medicationUploadItems.isNotEmpty)
+            {'title': 'Uploaded', 'isFolder': true, 'items': medicationUploadItems},
+        ],
       },
       {
         'title': 'Other Protocols',
@@ -617,6 +674,12 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
               title: const Text('Import PDF'),
               onTap: () { Navigator.pop(context); _uploadFile(); },
             ),
+            if (widget.onLogout != null)
+              ListTile(
+                leading: const Icon(Icons.logout, color: Colors.red),
+                title: const Text('Log Out', style: TextStyle(color: Colors.red)),
+                onTap: () { Navigator.pop(context); widget.onLogout!(); },
+              ),
           ],
         ),
       ),

@@ -417,6 +417,15 @@ class _MissionSetupScreenState extends State<_MissionSetupScreen> {
   bool _isAdmin = false;
   bool _joining = false;
 
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      final saved = prefs.getString(_kCallsign) ?? '';
+      if (saved.isNotEmpty && mounted) _callsignCtrl.text = saved;
+    });
+  }
+
   Future<void> _join() async {
     final callsign = _callsignCtrl.text.trim().toUpperCase();
     final mission = _missionCtrl.text.trim().toUpperCase();
@@ -531,6 +540,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   _BaseLayer _baseLayer = _BaseLayer.osm;
   _IncidentOverlay? _incidentOverlay;
   bool _markerTableWarned = false;
+  bool _sharingLocation = true;
 
   @override
   void initState() {
@@ -570,7 +580,32 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _locationTimer = Timer.periodic(const Duration(seconds: 10), (_) => _publishLocation());
   }
 
+  Future<void> _stopSharing() async {
+    _locationTimer?.cancel();
+    _locationTimer = null;
+    try {
+      await _supabase.from('tac_users').delete()
+          .eq('id', _userId).eq('mission_code', _missionCode);
+    } catch (_) {}
+    if (mounted) setState(() { _sharingLocation = false; _users.remove(_userId); });
+  }
+
+  void _startSharing() {
+    if (_sharingLocation) return;
+    setState(() => _sharingLocation = true);
+    _startLocationPublish();
+  }
+
+  Future<void> _clearMarkersByType(TacMarkerType type) async {
+    final toDelete = _markers.values.where((m) => m.type == type).map((m) => m.id).toList();
+    for (final id in toDelete) {
+      await _deleteMarker(id);
+    }
+    if (mounted) setState(() { for (final id in toDelete) { _markers.remove(id); } });
+  }
+
   Future<void> _publishLocation() async {
+    if (!_sharingLocation) return;
     if (_myLocation == null) {
       try {
         final pos = await Geolocator.getCurrentPosition(
@@ -906,16 +941,28 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             tooltip: 'Wildfire Incident Maps',
             onPressed: _showIncidentBrowser,
           ),
+          IconButton(
+            icon: Icon(_sharingLocation ? Icons.location_on : Icons.location_off,
+                color: _sharingLocation ? null : Colors.red),
+            tooltip: _sharingLocation ? 'Stop Sharing Location' : 'Start Sharing Location',
+            onPressed: _sharingLocation ? _stopSharing : _startSharing,
+          ),
           PopupMenuButton(itemBuilder: (_) => [
             const PopupMenuItem(value: 'leave', child: Text('Leave Mission')),
             const PopupMenuItem(value: 'recenter', child: Text('Re-center')),
             const PopupMenuItem(value: 'supabase_settings', child: Text('Supabase Settings / SQL')),
             if (_incidentOverlay != null)
               const PopupMenuItem(value: 'clear_overlay', child: Text('Clear Incident Overlay')),
+            const PopupMenuItem(value: 'clear_patient', child: Text('Clear Patient Marker')),
+            const PopupMenuItem(value: 'clear_exfil_start', child: Text('Clear Exfil Start')),
+            const PopupMenuItem(value: 'clear_exfil_end', child: Text('Clear Exfil End')),
           ], onSelected: (v) async {
             if (v == 'leave') _leaveMission();
             if (v == 'recenter' && _myLocation != null) _mapCtrl.move(_myLocation!, 14);
             if (v == 'clear_overlay') setState(() => _incidentOverlay = null);
+            if (v == 'clear_patient') _clearMarkersByType(TacMarkerType.patient);
+            if (v == 'clear_exfil_start') _clearMarkersByType(TacMarkerType.extractionStart);
+            if (v == 'clear_exfil_end') _clearMarkersByType(TacMarkerType.extractionEnd);
             if (v == 'supabase_settings') {
               await Navigator.push(context, MaterialPageRoute(
                 builder: (_) => _SupabaseConfigScreen(onSaved: () => Navigator.pop(context)),

@@ -1952,6 +1952,25 @@ do \$\$ begin
   create policy "public_access" on team_availability
     for all using (true) with check (true);
 exception when duplicate_object then null; end \$\$;
+
+-- ── User profiles ─────────────────────────────────────────────────────────────
+
+create table if not exists user_profiles (
+  user_id text primary key,
+  name text not null default '',
+  callsign text not null default '',
+  cert_level text not null default 'None',
+  rt130 boolean not null default false,
+  rope_rescue boolean not null default false,
+  updated_at timestamptz default now()
+);
+
+alter table user_profiles enable row level security;
+
+do \$\$ begin
+  create policy "public_access" on user_profiles
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
 ''';
 
 
