@@ -16,9 +16,10 @@ class SupabaseService {
   static const _kDefaultUrl = 'https://vlgiclyuxaleyusalexo.supabase.co';
   static const _kDefaultKey = 'sb_publishable_U6M_YMbubI1Y8qD4a3SKCA_Oeo6L75B';
   static bool _initialized = false;
+  static bool _migrated = false;
 
   /// Clears initialized state so ensureInitialized re-runs with new credentials.
-  static void reset() => _initialized = false;
+  static void reset() { _initialized = false; _migrated = false; }
 
   static Future<bool> ensureInitialized() async {
     if (_initialized) return true;
@@ -32,16 +33,32 @@ class SupabaseService {
     try {
       await Supabase.initialize(url: url, anonKey: key);
       _initialized = true;
-      return true;
     } catch (e) {
       final msg = e.toString().toLowerCase();
       if (msg.contains('already') || msg.contains('initialized')) {
         _initialized = true;
-        return true;
+      } else {
+        return false;
       }
-      return false;
+    }
+    await _runMigrations();
+    return true;
+  }
+
+  static Future<void> _runMigrations() async {
+    if (_migrated) return;
+    _migrated = true;
+    // Probe whether the expiration_date column exists so callers can skip it if absent.
+    try {
+      await Supabase.instance.client
+          .from('team_certs').select('expiration_date').limit(1);
+      hasExpirationCol = true;
+    } catch (_) {
+      hasExpirationCol = false;
     }
   }
+
+  static bool hasExpirationCol = true;
 
   static SupabaseClient? get client => _initialized ? Supabase.instance.client : null;
 }

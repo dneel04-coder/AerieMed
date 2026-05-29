@@ -187,7 +187,7 @@ class CertSyncer {
 
     // Always upsert metadata regardless of storage outcome.
     try {
-      await client.from('team_certs').upsert({
+      final row = <String, dynamic>{
         'id': cert.id,
         'user_id': userId,
         'callsign': callsign,
@@ -196,10 +196,12 @@ class CertSyncer {
         'original_file_name': cert.originalFileName,
         'uploaded_at': cert.uploadedAt.toIso8601String(),
         'file_path': storagePath,
-        'expiration_date': cert.expirationDate != null
-            ? '${cert.expirationDate!.year}-${cert.expirationDate!.month.toString().padLeft(2,'0')}-${cert.expirationDate!.day.toString().padLeft(2,'0')}'
-            : null,
-      }, onConflict: 'id');
+      };
+      if (SupabaseService.hasExpirationCol && cert.expirationDate != null) {
+        row['expiration_date'] =
+            '${cert.expirationDate!.year}-${cert.expirationDate!.month.toString().padLeft(2,'0')}-${cert.expirationDate!.day.toString().padLeft(2,'0')}';
+      }
+      await client.from('team_certs').upsert(row, onConflict: 'id');
     } catch (_) {}
   }
 
