@@ -158,10 +158,14 @@ class _SunWeatherScreenState extends State<SunWeatherScreen> {
     _calcSunForNow();
   }
 
+  static const _kDefaultOwmKey = '4e4515c2da0871acf4fa0912c955f57b';
+
   Future<void> _loadCache() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _apiKey = prefs.getString('owm_api_key') ?? '';
+      _apiKey = prefs.getString('owm_api_key')?.isNotEmpty == true
+          ? prefs.getString('owm_api_key')!
+          : _kDefaultOwmKey;
       final cached = prefs.getString('weather_cache');
       if (cached != null) _weather = WeatherData.fromCacheJson(cached);
       _lat = prefs.getDouble('weather_lat');

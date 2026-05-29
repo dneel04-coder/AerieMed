@@ -913,8 +913,19 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
       if (mounted) setState(() { _certLoading = false; _certNotConfigured = true; });
       return;
     }
-    final rows = await ProtocolSyncService.instance.adminGetCerts();
-    if (mounted) setState(() { _certRows = rows; _certLoading = false; });
+    // Load certs and profiles in parallel so names are ready when certs render.
+    final results = await Future.wait([
+      ProtocolSyncService.instance.adminGetCerts(),
+      SupabaseService.client!.from('user_profiles').select('user_id, name'),
+    ]);
+    final rows = results[0] as List<Map<String, dynamic>>;
+    final names = <String, String>{};
+    for (final p in results[1] as List) {
+      final uid = (p['user_id'] as String?) ?? '';
+      final name = p['name'] as String? ?? '';
+      if (uid.isNotEmpty && name.isNotEmpty) names[uid] = name;
+    }
+    if (mounted) setState(() { _certRows = rows; _userNames = names; _certLoading = false; });
   }
 
   Future<void> _loadProfiles() async {
