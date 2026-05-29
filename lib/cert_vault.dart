@@ -216,6 +216,34 @@ class CertSyncer {
       await prefs.setString('tac_user_id', userId);
     }
     final callsign = prefs.getString('tac_callsign') ?? 'Unknown';
+    // Purge legacy duplicate rows (same user_id + type + state, different callsign/id).
+    final client = SupabaseService.client;
+    if (client != null) {
+      try {
+        final existing = (await client
+                .from('team_certs')
+                .select('id, license_type, state, uploaded_at')
+                .eq('user_id', userId) as List)
+            .cast<Map<String, dynamic>>();
+        // Group by (license_type, state); keep newest, delete the rest.
+        final groups = <String, List<Map<String, dynamic>>>{};
+        for (final r in existing) {
+          final k = '${r['license_type']}|${r['state']}';
+          groups.putIfAbsent(k, () => []).add(r);
+        }
+        for (final group in groups.values) {
+          if (group.length <= 1) continue;
+          group.sort((a, b) {
+            final da = DateTime.tryParse(a['uploaded_at'] as String? ?? '') ?? DateTime(0);
+            final db = DateTime.tryParse(b['uploaded_at'] as String? ?? '') ?? DateTime(0);
+            return db.compareTo(da); // newest first
+          });
+          for (final old in group.skip(1)) {
+            try { await client.from('team_certs').delete().eq('id', old['id']); } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
     for (final cert in certs) {
       await _trySyncCert(cert, userId, callsign);
     }

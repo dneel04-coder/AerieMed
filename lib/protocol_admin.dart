@@ -325,11 +325,20 @@ class ProtocolSyncService {
     final client = await _client();
     if (client == null) return [];
     try {
-      return (await client
+      final all = (await client
               .from('team_certs')
               .select()
-              .order('callsign') as List)
+              .order('uploaded_at', ascending: false) as List)
           .cast<Map<String, dynamic>>();
+      // Deduplicate: for the same (user_id, license_type, state) keep only the
+      // most recent row — handles legacy duplicates uploaded under different callsigns.
+      final seen = <String>{};
+      final deduped = <Map<String, dynamic>>[];
+      for (final r in all) {
+        final key = '${r['user_id']}|${r['license_type']}|${r['state']}';
+        if (seen.add(key)) deduped.add(r);
+      }
+      return deduped;
     } catch (_) {
       return [];
     }
