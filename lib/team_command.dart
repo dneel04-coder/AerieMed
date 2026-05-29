@@ -2491,11 +2491,25 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
     final isPdf = ext == 'pdf' || ext.isEmpty;
 
     try {
-      final dir = await getTemporaryDirectory();
-      final tmp = File('${dir.path}/order_${order.id}.${ext.isEmpty ? 'pdf' : ext}');
-      await tmp.writeAsBytes(bytes);
-      if (!mounted) return;
       if (isPdf) {
+        // Validate PDF magic bytes before attempting to open.
+        final magic = bytes.length >= 4
+            ? String.fromCharCodes(bytes.sublist(0, 4))
+            : '';
+        if (!magic.startsWith('%PDF')) {
+          _showOrderError(
+            'File does not appear to be a valid PDF '
+            '(${bytes.length} bytes, magic: "$magic").\n'
+            'Ask admin to delete this order and re-upload.',
+          );
+          return;
+        }
+        // Write to app documents dir (more reliable than temp on Android).
+        final dir = await getApplicationDocumentsDirectory();
+        final safeId = order.id.replaceAll('-', '');
+        final f = File('${dir.path}/order_$safeId.pdf');
+        await f.writeAsBytes(bytes, flush: true);
+        if (!mounted) return;
         await Navigator.push(context, MaterialPageRoute(
           builder: (_) => Scaffold(
             appBar: AppBar(
@@ -2507,7 +2521,7 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
                       maxLines: 1, overflow: TextOverflow.ellipsis),
               ]),
             ),
-            body: PdfViewer.file(tmp.path),
+            body: PdfViewer.file(f.path),
           ),
         ));
       } else {

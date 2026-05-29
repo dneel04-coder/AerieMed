@@ -23,12 +23,21 @@ class SupabaseService {
   /// Clears initialized state so ensureInitialized re-runs with new credentials.
   static void reset() { _initialized = false; _migrated = false; }
 
+  // Strip any path/query from the URL — Supabase needs only the bare host.
+  static String _cleanUrl(String raw) {
+    try {
+      final u = Uri.parse(raw.trim());
+      return '${u.scheme}://${u.host}';
+    } catch (_) { return raw; }
+  }
+
   static Future<bool> ensureInitialized() async {
     if (_initialized) return true;
     final prefs = await SharedPreferences.getInstance();
-    final url = prefs.getString(_urlKey)?.isNotEmpty == true
+    final rawUrl = prefs.getString(_urlKey)?.isNotEmpty == true
         ? prefs.getString(_urlKey)!
         : _kDefaultUrl;
+    final url = _cleanUrl(rawUrl);
     final key = prefs.getString(_anonKey)?.isNotEmpty == true
         ? prefs.getString(_anonKey)!
         : _kDefaultKey;
@@ -512,14 +521,28 @@ extension DeploymentOrderService on ProtocolSyncService {
     final client = await _client();
     if (client == null) throw Exception('Supabase not configured');
     final id = _newUuid();
-    // Store the file as base64 in the file_path column with a 'base64:' prefix.
-    // No extra column needed — works with the existing schema immediately.
-    final fileData = 'base64:${base64.encode(bytes)}';
+    final ext = fileName.contains('.') ? fileName.split('.').last : 'pdf';
+    final storagePath = '$id.$ext';
+    String savedPath = storagePath;
+
+    // Try Supabase Storage first; fall back to base64 in file_path if unavailable.
+    try {
+      await client.storage.from('deployment_orders').uploadBinary(
+        storagePath, bytes,
+        fileOptions: FileOptions(
+            upsert: true,
+            contentType: ext == 'pdf' ? 'application/pdf' : 'application/octet-stream'),
+      );
+    } catch (_) {
+      // Storage bucket not set up — embed as base64 so admin can still push orders.
+      savedPath = 'base64:${base64.encode(bytes)}';
+    }
+
     await client.from('deployment_orders').insert({
       'id': id,
       'title': title,
       'notes': notes,
-      'file_path': fileData,
+      'file_path': savedPath,
       'file_name': fileName,
       'uploaded_at': DateTime.now().toIso8601String(),
       'uploaded_by': uploadedBy,
