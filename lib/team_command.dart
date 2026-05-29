@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService;
 import 'user_profile.dart' show LoginScreen;
 
@@ -2467,46 +2468,82 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
 
   Future<void> _viewOrder(DeploymentOrder order) async {
     setState(() => _downloading.add(order.id));
-    final result = await ProtocolSyncService.instance.downloadDeploymentOrderWithError(order);
-    setState(() => _downloading.remove(order.id));
-    if (result.file == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(result.error ?? 'Download failed'),
-          duration: const Duration(seconds: 8),
-        ));
+
+    // Try to get a signed URL first — avoids any local download entirely.
+    String? viewUrl;
+    String? errorMsg;
+    try {
+      final ok = await SupabaseService.ensureInitialized();
+      if (ok) {
+        viewUrl = await SupabaseService.client!.storage
+            .from('deployment_orders')
+            .createSignedUrl(order.filePath, 3600);
       }
-      return;
+    } catch (e) {
+      errorMsg = e.toString();
     }
-    final file = result.file!;
+
+    // Fall back to public URL if signed URL failed.
+    if (viewUrl == null) {
+      const base = 'https://vlgiclyuxaleyusalexo.supabase.co';
+      viewUrl = '$base/storage/v1/object/public/deployment_orders/${order.filePath}';
+    }
+
+    setState(() => _downloading.remove(order.id));
     await ProtocolSyncService.instance.markDeploymentOrderViewed(order.id);
     if (!mounted) return;
+
     final ext = order.fileName.split('.').last.toLowerCase();
     if (ext == 'pdf') {
       await Navigator.push(context, MaterialPageRoute(
         builder: (_) => Scaffold(
           appBar: AppBar(
-            title: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            title: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min, children: [
               Text(order.title, style: const TextStyle(fontSize: 15)),
               Text(_fmtTc(order.uploadedAt), style: const TextStyle(fontSize: 11)),
             ]),
           ),
-          body: PdfViewer.file(file.path),
+          body: PdfViewer.uri(Uri.parse(viewUrl!)),
         ),
       ));
     } else {
-      await showDialog(context: context, builder: (_) => Dialog(
-        insetPadding: const EdgeInsets.all(8),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          AppBar(
-            automaticallyImplyLeading: false,
-            title: Text(order.title, style: const TextStyle(fontSize: 14)),
-            actions: [IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context))],
-          ),
-          InteractiveViewer(child: Image.file(file)),
-        ]),
-      ));
+      // Image: download bytes and show.
+      try {
+        final resp = await http.get(Uri.parse(viewUrl))
+            .timeout(const Duration(seconds: 30));
+        if (!mounted) return;
+        if (resp.statusCode == 200) {
+          await showDialog(context: context, builder: (_) => Dialog(
+            insetPadding: const EdgeInsets.all(8),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              AppBar(
+                automaticallyImplyLeading: false,
+                title: Text(order.title, style: const TextStyle(fontSize: 14)),
+                actions: [IconButton(icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context))],
+              ),
+              InteractiveViewer(child: Image.memory(resp.bodyBytes)),
+            ]),
+          ));
+        } else {
+          _showOrderError('HTTP ${resp.statusCode}\n\nURL: $viewUrl');
+        }
+      } catch (e) {
+        if (mounted) _showOrderError('$e\n\nSignedURL error: $errorMsg');
+      }
     }
+  }
+
+  void _showOrderError(String detail) {
+    showDialog(context: context, builder: (_) => AlertDialog(
+      title: const Text('Could not open order'),
+      content: SingleChildScrollView(child: Text(detail,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 12))),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+      ],
+    ));
   }
 
   Future<void> _showUploadSheet() async {
