@@ -12,6 +12,8 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'protocol_admin.dart' show SupabaseService;
 
 
+enum CertStatus { ok, warningSix, warning30, expired, unknown }
+
 class UserCert {
   final String id;
   final String licenseType;
@@ -19,6 +21,7 @@ class UserCert {
   final String filePath;
   final String originalFileName;
   final DateTime uploadedAt;
+  final DateTime? expirationDate;
 
   const UserCert({
     required this.id,
@@ -27,9 +30,19 @@ class UserCert {
     required this.filePath,
     required this.originalFileName,
     required this.uploadedAt,
+    this.expirationDate,
   });
 
   bool get isPdf => filePath.toLowerCase().endsWith('.pdf');
+
+  CertStatus get expirationStatus {
+    if (expirationDate == null) return CertStatus.unknown;
+    final days = expirationDate!.difference(DateTime.now()).inDays;
+    if (days < 0) return CertStatus.expired;
+    if (days <= 30) return CertStatus.warning30;
+    if (days <= 180) return CertStatus.warningSix;
+    return CertStatus.ok;
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -38,6 +51,7 @@ class UserCert {
         'filePath': filePath,
         'originalFileName': originalFileName,
         'uploadedAt': uploadedAt.toIso8601String(),
+        if (expirationDate != null) 'expirationDate': expirationDate!.toIso8601String(),
       };
 
   factory UserCert.fromJson(Map<String, dynamic> j) => UserCert(
@@ -47,6 +61,9 @@ class UserCert {
         filePath: j['filePath'] as String,
         originalFileName: j['originalFileName'] as String,
         uploadedAt: DateTime.parse(j['uploadedAt'] as String),
+        expirationDate: j['expirationDate'] != null
+            ? DateTime.tryParse(j['expirationDate'] as String)
+            : null,
       );
 }
 
@@ -179,6 +196,9 @@ class CertSyncer {
         'original_file_name': cert.originalFileName,
         'uploaded_at': cert.uploadedAt.toIso8601String(),
         'file_path': storagePath,
+        'expiration_date': cert.expirationDate != null
+            ? '${cert.expirationDate!.year}-${cert.expirationDate!.month.toString().padLeft(2,'0')}-${cert.expirationDate!.day.toString().padLeft(2,'0')}'
+            : null,
       }, onConflict: 'id');
     } catch (_) {}
   }
@@ -273,6 +293,67 @@ class _CertParser {
       .split(' ')
       .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1).toLowerCase()}')
       .join(' ');
+
+  static DateTime? parseExpiration(String text) {
+    final now = DateTime.now();
+    // Try labeled patterns first: EXP, EXPIR, EXPIRATION, EXPIRES, VALID THROUGH, VALID UNTIL
+    final labeled = RegExp(
+      r'(?:exp(?:ir(?:ation|es?)?)?|valid\s+(?:through|until))[:\s]*'
+      r'(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}|'
+      r'\d{1,2}[\/\-]\d{4}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s,]+\d{1,2}[\s,]+\d{4})',
+      caseSensitive: false,
+    );
+    for (final m in labeled.allMatches(text)) {
+      final d = _parseRaw(m.group(1)!);
+      if (d != null && d.isAfter(now.subtract(const Duration(days: 365 * 5)))) return d;
+    }
+    // Fall back to any date-like token that looks like a future/recent expiry
+    final bare = RegExp(
+      r'\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\b');
+    for (final m in bare.allMatches(text)) {
+      final d = _parseRaw(m.group(1)!);
+      if (d != null && d.isAfter(now)) return d; // only future dates as expiry candidates
+    }
+    return null;
+  }
+
+  static final _months = {
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+  };
+
+  static DateTime? _parseRaw(String s) {
+    s = s.trim();
+    try {
+      // Month name: "March 15, 2027" or "Mar 2027"
+      final named = RegExp(r'^([a-z]+)[,\s]+(\d{1,2})?[,\s]*(\d{4})$', caseSensitive: false);
+      final nm = named.firstMatch(s);
+      if (nm != null) {
+        final mo = _months[nm.group(1)!.substring(0, 3).toLowerCase()];
+        final day = int.tryParse(nm.group(2) ?? '1') ?? 1;
+        final yr = int.tryParse(nm.group(3)!)!;
+        if (mo != null) return DateTime(yr, mo, day);
+      }
+      // ISO: 2027-03-15
+      if (RegExp(r'^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}$').hasMatch(s)) {
+        return DateTime.tryParse(s.replaceAll('/', '-'));
+      }
+      final parts = s.split(RegExp(r'[\/\-]'));
+      if (parts.length == 3) {
+        var a = int.parse(parts[0]), b = int.parse(parts[1]);
+        var y = int.parse(parts[2]);
+        if (y < 100) y += 2000;
+        // MM/DD/YYYY
+        if (a <= 12 && b <= 31) return DateTime(y, a, b);
+      }
+      if (parts.length == 2) {
+        var mo = int.parse(parts[0]), y = int.parse(parts[1]);
+        if (y < 100) y += 2000;
+        if (mo >= 1 && mo <= 12) return DateTime(y, mo, 1);
+      }
+    } catch (_) {}
+    return null;
+  }
 }
 
 
@@ -372,14 +453,16 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
       String? ocr;
       if (isImage) ocr = await _runOcr(dest);
 
-      final autoType  = ocr != null ? _CertParser.parseType(ocr)  : null;
-      final autoState = ocr != null ? _CertParser.parseState(ocr) : null;
+      final autoType       = ocr != null ? _CertParser.parseType(ocr)       : null;
+      final autoState      = ocr != null ? _CertParser.parseState(ocr)      : null;
+      final autoExpiration = ocr != null ? _CertParser.parseExpiration(ocr) : null;
 
       if (!mounted) return;
       setState(() => _loading = false);
 
-      String? chosenType  = autoType;
-      String? chosenState = autoState;
+      String?   chosenType       = autoType;
+      String?   chosenState      = autoState;
+      DateTime? chosenExpiration = autoExpiration;
 
       final saved = await showDialog<bool>(
         context: context,
@@ -389,7 +472,8 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
           isImage: isImage,
           initialType: autoType,
           initialState: autoState,
-          onSave: (t, s) { chosenType = t; chosenState = s; },
+          initialExpiration: autoExpiration,
+          onSave: (t, s, exp) { chosenType = t; chosenState = s; chosenExpiration = exp; },
         ),
       );
 
@@ -401,6 +485,7 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
           filePath: dest,
           originalFileName: name,
           uploadedAt: DateTime.now(),
+          expirationDate: chosenExpiration,
         );
         // Replace an existing cert only when both type AND state match.
         final oldCerts = _certs
@@ -567,8 +652,11 @@ class _CertCard extends StatelessWidget {
                                   TextStyle(color: Colors.grey[600], fontSize: 13))),
                     ]),
                     const SizedBox(height: 2),
-                    Text(_fmt(cert.uploadedAt),
-                        style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                    if (cert.expirationDate != null)
+                      _ExpirationBadge(cert: cert)
+                    else
+                      Text('Uploaded ${_fmt(cert.uploadedAt)}',
+                          style: TextStyle(color: Colors.grey[500], fontSize: 12)),
                   ],
                 ),
               ),
@@ -612,6 +700,46 @@ class _CertCard extends StatelessWidget {
               ),
       ),
     );
+  }
+
+  String _fmt(DateTime d) => '${d.month}/${d.day}/${d.year}';
+}
+
+
+class _ExpirationBadge extends StatelessWidget {
+  final UserCert cert;
+  const _ExpirationBadge({required this.cert});
+
+  @override
+  Widget build(BuildContext context) {
+    final exp = cert.expirationDate!;
+    final days = exp.difference(DateTime.now()).inDays;
+    final Color color;
+    final String label;
+    final IconData icon;
+    if (days < 0) {
+      color = Colors.red;
+      label = 'Expired ${_fmt(exp)}';
+      icon = Icons.cancel_outlined;
+    } else if (days <= 30) {
+      color = Colors.red;
+      label = 'Expires in $days day${days == 1 ? '' : 's'} (${_fmt(exp)})';
+      icon = Icons.warning_amber_rounded;
+    } else if (days <= 180) {
+      color = Colors.orange;
+      label = 'Expires ${_fmt(exp)} (~${(days / 30).round()} mo)';
+      icon = Icons.warning_amber_rounded;
+    } else {
+      color = Colors.green;
+      label = 'Exp: ${_fmt(exp)}';
+      icon = Icons.check_circle_outline;
+    }
+    return Row(children: [
+      Icon(icon, size: 13, color: color),
+      const SizedBox(width: 3),
+      Flexible(child: Text(label,
+          style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600))),
+    ]);
   }
 
   String _fmt(DateTime d) => '${d.month}/${d.day}/${d.year}';
@@ -689,7 +817,8 @@ class _ConfirmDialog extends StatefulWidget {
   final bool isImage;
   final String? initialType;
   final String? initialState;
-  final void Function(String type, String state) onSave;
+  final DateTime? initialExpiration;
+  final void Function(String type, String state, DateTime? expiration) onSave;
 
   const _ConfirmDialog({
     required this.filePath,
@@ -697,6 +826,7 @@ class _ConfirmDialog extends StatefulWidget {
     required this.initialType,
     required this.initialState,
     required this.onSave,
+    this.initialExpiration,
   });
 
   @override
@@ -704,14 +834,16 @@ class _ConfirmDialog extends StatefulWidget {
 }
 
 class _ConfirmDialogState extends State<_ConfirmDialog> {
-  String? _type;
-  String? _state;
+  String?   _type;
+  String?   _state;
+  DateTime? _expiration;
 
   @override
   void initState() {
     super.initState();
-    _type  = widget.initialType;
-    _state = widget.initialState;
+    _type       = widget.initialType;
+    _state      = widget.initialState;
+    _expiration = widget.initialExpiration;
   }
 
   bool get _ready => _type != null && _state != null;
@@ -774,6 +906,36 @@ class _ConfirmDialogState extends State<_ConfirmDialog> {
                   .toList(),
               onChanged: (v) => setState(() => _state = v),
             ),
+            const SizedBox(height: 12),
+            // Expiration date picker
+            OutlinedButton.icon(
+              icon: const Icon(Icons.event_outlined, size: 18),
+              label: Text(_expiration == null
+                  ? 'Set Expiration Date (optional)'
+                  : 'Expires: ${_expiration!.month}/${_expiration!.day}/${_expiration!.year}'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: _expiration == null ? null : Colors.orange,
+                side: BorderSide(
+                    color: _expiration == null
+                        ? Colors.grey.shade400
+                        : Colors.orange),
+              ),
+              onPressed: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: _expiration ?? DateTime.now().add(const Duration(days: 365)),
+                  firstDate: DateTime(2000),
+                  lastDate: DateTime(2050),
+                );
+                if (picked != null) setState(() => _expiration = picked);
+              },
+            ),
+            if (_expiration != null)
+              TextButton(
+                onPressed: () => setState(() => _expiration = null),
+                child: const Text('Clear expiration date',
+                    style: TextStyle(fontSize: 12, color: Colors.grey)),
+              ),
             const SizedBox(height: 20),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -785,7 +947,7 @@ class _ConfirmDialogState extends State<_ConfirmDialog> {
                 FilledButton(
                   onPressed: _ready
                       ? () {
-                          widget.onSave(_type!, _state!);
+                          widget.onSave(_type!, _state!, _expiration);
                           Navigator.pop(context, true);
                         }
                       : null,

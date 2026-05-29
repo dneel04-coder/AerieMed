@@ -1932,8 +1932,11 @@ create table if not exists team_certs (
   state text not null,
   original_file_name text not null,
   uploaded_at timestamptz not null,
-  file_path text not null
+  file_path text not null,
+  expiration_date date
 );
+
+alter table team_certs add column if not exists expiration_date date;
 
 alter table team_certs enable row level security;
 
