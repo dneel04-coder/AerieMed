@@ -1860,7 +1860,7 @@ class _DeploymentUploadButtonState extends State<_DeploymentUploadButton> {
 
 
 const _kAdditionalSql = '''
--- AeriMed — Supabase SQL schema
+-- ResQruck — Supabase SQL schema
 -- Safe to run multiple times (idempotent).
 
 -- ── Core tables ───────────────────────────────────────────────────────────────

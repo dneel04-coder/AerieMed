@@ -1008,7 +1008,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   children: [
                     TileLayer(
                       urlTemplate: _baseLayer.urlTemplate,
-                      userAgentPackageName: 'com.aerie.aerimed',
+                      userAgentPackageName: 'com.resqruck.app',
                     ),
                     if (_incidentOverlay != null)
                       OverlayImageLayer(

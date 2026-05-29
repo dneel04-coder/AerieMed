@@ -27,17 +27,17 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Draw behind the Android navigation bar (edge-to-edge)
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  runApp(const AustereMedApp());
+  runApp(const ResQruckApp());
 }
 
-class AustereMedApp extends StatefulWidget {
-  const AustereMedApp({super.key});
+class ResQruckApp extends StatefulWidget {
+  const ResQruckApp({super.key});
 
   @override
-  State<AustereMedApp> createState() => _AustereMedAppState();
+  State<ResQruckApp> createState() => _ResQruckAppState();
 }
 
-class _AustereMedAppState extends State<AustereMedApp> {
+class _ResQruckAppState extends State<ResQruckApp> {
   ThemeMode _themeMode = ThemeMode.system;
   bool _loggedIn = false;
   bool _authChecked = false;
@@ -80,7 +80,7 @@ class _AustereMedAppState extends State<AustereMedApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AustereMed',
+      title: 'ResQruck',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo, brightness: Brightness.light),
@@ -686,7 +686,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
 
       // ── AppBar ───────────────────────────────────────────────────────────
       appBar: AppBar(
-        title: const Text('AustereMed'),
+        title: const Text('ResQruck'),
         actions: [
           IconButton(icon: const Icon(Icons.brightness_medium), onPressed: widget.onThemeToggle),
         ],

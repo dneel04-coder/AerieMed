@@ -92,15 +92,15 @@ Future<void> exportEncryptedBundle(BuildContext context, PatientReport report) a
 
     final dir = await getTemporaryDirectory();
     final safeId = report.id.length > 8 ? report.id.substring(report.id.length - 8) : report.id;
-    final filename = 'AustereMed_$safeId.AustereMed';
+    final filename = 'ResQruck_$safeId.ResQruck';
     final file = File('${dir.path}/$filename');
     await file.writeAsString(bundle);
 
-    final subject = 'AustereMed — ${report.patientId.isEmpty ? "Patient Report" : report.patientId}';
+    final subject = 'ResQruck — ${report.patientId.isEmpty ? "Patient Report" : report.patientId}';
     await SharePlus.instance.share(ShareParams(
       files: [XFile(file.path, mimeType: 'application/octet-stream', name: filename)],
       subject: subject,
-      text: 'Encrypted patient report from AustereMed. Open with AustereMed to import.',
+      text: 'Encrypted patient report from ResQruck. Open with ResQruck to import.',
     ));
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text('Export failed: $e')));
@@ -354,7 +354,7 @@ Future<void> generateAndSharePdf(BuildContext context, PatientReport report) asy
   final messenger = ScaffoldMessenger.of(context);
   try {
     final bytes = await buildReportPdf(report);
-    final filename = 'AustereMed_${report.patientId.isEmpty ? report.id : report.patientId.replaceAll(' ', '_')}.pdf';
+    final filename = 'ResQruck_${report.patientId.isEmpty ? report.id : report.patientId.replaceAll(' ', '_')}.pdf';
     await _printingSharePdf(bytes, filename);
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text('PDF generation failed: $e')));

@@ -172,7 +172,7 @@ class _LoginScreenState extends State<LoginScreen> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             Icon(Icons.medical_services_outlined, size: 72, color: cs.primary),
             const SizedBox(height: 10),
-            Text('AustereMed', textAlign: TextAlign.center,
+            Text('ResQruck', textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.headlineMedium
                     ?.copyWith(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
