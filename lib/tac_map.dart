@@ -112,8 +112,16 @@ class TacUser {
         lat: (m['lat'] as num).toDouble(),
         lng: (m['lng'] as num).toDouble(),
         isAdmin: m['is_admin'] as bool? ?? false,
-        updatedAt: DateTime.tryParse(m['updated_at'] as String? ?? '') ?? DateTime(2000),
+        updatedAt: _parseTs(m['updated_at'] as String?),
       );
+
+  // Supabase sometimes returns timestamps with a space instead of 'T'.
+  static DateTime _parseTs(String? s) {
+    if (s == null || s.isEmpty) return DateTime(2000);
+    final n = s.replaceFirstMapped(
+        RegExp(r'^(\d{4}-\d{2}-\d{2}) '), (m) => '${m[1]}T');
+    return DateTime.tryParse(n) ?? DateTime(2000);
+  }
 }
 
 class TacMarker {
@@ -564,9 +572,12 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _missionCode = prefs.getString(_kMissionCode) ?? '';
     _isAdmin = prefs.getBool(_kIsAdmin) ?? false;
 
-    // Remove any stale row left from a previous session (crashed / never left).
+    // Remove own stale row from any previous session.
+    try { await _supabase.from('tac_users').delete().eq('id', _userId); } catch (_) {}
+    // Purge any rows from other users that haven't updated in >30 minutes.
     try {
-      await _supabase.from('tac_users').delete().eq('id', _userId);
+      final cutoff = DateTime.now().subtract(const Duration(minutes: 30)).toUtc().toIso8601String();
+      await _supabase.from('tac_users').delete().lt('updated_at', cutoff);
     } catch (_) {}
 
     await _requestLocation();
@@ -679,7 +690,11 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 if (id != null) setState(() => _users.remove(id));
               } else {
                 final u = TacUser.fromMap(payload.newRecord);
-                setState(() => _users[u.id] = u);
+                // Never downgrade a fresh optimistic entry with a stale parsed one.
+                final existing = _users[u.id];
+                if (existing == null || u.updatedAt.isAfter(existing.updatedAt)) {
+                  setState(() => _users[u.id] = u);
+                }
               }
             })
         .onPostgresChanges(
@@ -1068,10 +1083,17 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             ),
           ),
           _TeamPanel(
-            users: _users.values.toList(),
+            users: _users.values.where((u) =>
+                u.updatedAt.isAfter(DateTime.now().subtract(const Duration(minutes: 15)))).toList(),
             myId: _userId,
+            missionCode: _missionCode,
+            isAdmin: _isAdmin,
             placingType: _placingType,
             onPlaceType: (t) => setState(() => _placingType = _placingType == t ? null : t),
+            onKickUser: (id) async {
+              try { await _supabase.from('tac_users').delete().eq('id', id); } catch (_) {}
+              setState(() => _users.remove(id));
+            },
           ),
         ],
       ),
@@ -1207,105 +1229,177 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   }
 }
 
-class _TeamPanel extends StatelessWidget {
+class _TeamPanel extends StatefulWidget {
   final List<TacUser> users;
   final String myId;
+  final String missionCode;
+  final bool isAdmin;
   final TacMarkerType? placingType;
   final ValueChanged<TacMarkerType> onPlaceType;
+  final ValueChanged<String> onKickUser;
 
   const _TeamPanel({
     required this.users,
     required this.myId,
+    required this.missionCode,
+    required this.isAdmin,
     required this.placingType,
     required this.onPlaceType,
+    required this.onKickUser,
   });
 
   @override
+  State<_TeamPanel> createState() => _TeamPanelState();
+}
+
+class _TeamPanelState extends State<_TeamPanel> {
+  bool _showAll = false;
+
+  @override
   Widget build(BuildContext context) {
+    final visibleUsers = _showAll
+        ? widget.users
+        : widget.users.where((u) => u.missionCode == widget.missionCode).toList();
+
+    final missions = widget.users.map((u) => u.missionCode).toSet();
+    final multiMission = missions.length > 1 || (missions.isNotEmpty && !missions.contains(widget.missionCode));
+
     return Container(
       color: Theme.of(context).colorScheme.surface,
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Text('TEAM', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-              const SizedBox(width: 8),
-              Expanded(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: users.map((u) {
-                      final isMe = u.id == myId;
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: Chip(
-                          label: Text(u.callsign,
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  color: isMe ? Colors.white : null,
-                                  fontWeight: isMe ? FontWeight.bold : null)),
-                          backgroundColor: isMe ? Colors.teal : null,
-                          side: BorderSide.none,
-                          padding: EdgeInsets.zero,
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                      );
-                    }).toList(),
+          Row(children: [
+            Text(
+              _showAll ? 'ALL MISSIONS' : 'TEAM — ${widget.missionCode}',
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(width: 6),
+            if (multiMission)
+              GestureDetector(
+                onTap: () => setState(() => _showAll = !_showAll),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: _showAll ? Colors.indigo : Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    _showAll ? 'All' : 'Mine',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: _showAll ? Colors.white : Colors.black87,
+                    ),
                   ),
                 ),
               ),
-            ],
-          ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: visibleUsers.isEmpty
+                      ? [const Text('No members', style: TextStyle(fontSize: 11, color: Colors.grey))]
+                      : visibleUsers.map((u) {
+                          final isMe = u.id == widget.myId;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 4),
+                            child: widget.isAdmin && !isMe
+                                ? GestureDetector(
+                                    onLongPress: () => _confirmKick(u),
+                                    child: _userChip(u, isMe),
+                                  )
+                                : _userChip(u, isMe),
+                          );
+                        }).toList(),
+                ),
+              ),
+            ),
+          ]),
           const SizedBox(height: 4),
-          Row(
-            children: [
-              const Text('PLACE:', style: TextStyle(fontSize: 11)),
-              const SizedBox(width: 8),
-              Expanded(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: TacMarkerType.values.map((t) {
-                      final active = placingType == t;
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: FilterChip(
-                          label: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(t.icon, size: 14, color: active ? Colors.white : t.color),
-                              const SizedBox(width: 4),
-                              Text(t.label,
-                                  style: TextStyle(
-                                      fontSize: 11, color: active ? Colors.white : null)),
-                            ],
-                          ),
-                          selected: active,
-                          onSelected: (_) => onPlaceType(t),
-                          selectedColor: t.color,
-                          checkmarkColor: Colors.white,
-                          showCheckmark: false,
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                      );
-                    }).toList(),
-                  ),
+          Row(children: [
+            const Text('PLACE:', style: TextStyle(fontSize: 11)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: TacMarkerType.values.map((t) {
+                    final active = widget.placingType == t;
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: FilterChip(
+                        label: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(t.icon, size: 14, color: active ? Colors.white : t.color),
+                          const SizedBox(width: 4),
+                          Text(t.label,
+                              style: TextStyle(fontSize: 11, color: active ? Colors.white : null)),
+                        ]),
+                        selected: active,
+                        onSelected: (_) => widget.onPlaceType(t),
+                        selectedColor: t.color,
+                        checkmarkColor: Colors.white,
+                        showCheckmark: false,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    );
+                  }).toList(),
                 ),
               ),
-            ],
-          ),
-          if (placingType != null)
+            ),
+          ]),
+          if (widget.placingType != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                'Tap the map to place ${placingType!.label} marker. Tap chip again to cancel.',
-                style: TextStyle(
-                    fontSize: 11, color: placingType!.color, fontStyle: FontStyle.italic),
+                'Tap the map to place ${widget.placingType!.label} marker. Tap chip again to cancel.',
+                style: TextStyle(fontSize: 11, color: widget.placingType!.color, fontStyle: FontStyle.italic),
               ),
             ),
+          if (widget.isAdmin)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text('Admin: long-press a name to remove from map',
+                  style: TextStyle(fontSize: 10, color: Colors.grey[500], fontStyle: FontStyle.italic)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _userChip(TacUser u, bool isMe) {
+    final label = _showAll && u.missionCode != widget.missionCode
+        ? '${u.callsign} (${u.missionCode})'
+        : u.callsign;
+    return Chip(
+      label: Text(label,
+          style: TextStyle(
+              fontSize: 11,
+              color: isMe ? Colors.white : null,
+              fontWeight: isMe ? FontWeight.bold : null)),
+      backgroundColor: isMe ? Colors.teal : null,
+      side: BorderSide.none,
+      padding: EdgeInsets.zero,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+  }
+
+  void _confirmKick(TacUser u) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Remove from Map?'),
+        content: Text('Remove ${u.callsign} from the active map?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () { Navigator.pop(context); widget.onKickUser(u.id); },
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Remove'),
+          ),
         ],
       ),
     );

@@ -1020,22 +1020,65 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
       certCounts[m.certification] = (certCounts[m.certification] ?? 0) + 1;
     }
     return Stack(children: [
-      _members.isEmpty
-          ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.people_outline, size: 64, color: Colors.grey[300]),
-              const SizedBox(height: 12),
-              const Text('No team members', style: TextStyle(color: Colors.grey)),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                icon: const Icon(Icons.add),
-                label: const Text('Add Member'),
-                onPressed: () => _openForm(),
+      ListView(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
+        children: [
+          // Synced members from user_profiles (auto-populated on login)
+          if (_profileRows.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text('Active Members (${_profileRows.length})',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            ),
+            ..._profileRows.map((p) {
+              final name = p['name'] as String? ?? '';
+              final callsign = p['callsign'] as String? ?? '';
+              final certLevel = p['cert_level'] as String? ?? 'None';
+              final display = name.isNotEmpty ? name : callsign;
+              final sub = (callsign.isNotEmpty && name.isNotEmpty)
+                  ? 'Callsign: $callsign'
+                  : null;
+              final col = _certColor(certLevel);
+              return Card(
+                margin: const EdgeInsets.only(bottom: 6),
+                child: ListTile(
+                  dense: true,
+                  leading: CircleAvatar(
+                    radius: 16,
+                    backgroundColor: col.withValues(alpha: 0.15),
+                    child: Text(display.isNotEmpty ? display[0].toUpperCase() : '?',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: col)),
+                  ),
+                  title: Text(display,
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                  subtitle: sub != null ? Text(sub, style: const TextStyle(fontSize: 12)) : null,
+                  trailing: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: col.withValues(alpha: 0.12),
+                      border: Border.all(color: col.withValues(alpha: 0.4)),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(certLevel,
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: col)),
+                  ),
+                ),
+              );
+            }),
+            const Divider(height: 20),
+          ],
+          // Manually-added local members
+          if (_members.isNotEmpty) ...[
+            if (_profileRows.isNotEmpty)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 6),
+                child: Text('Manually Added',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               ),
-            ]))
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
-              children: [
-                Wrap(
+            if (certCounts.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Wrap(
                   spacing: 6, runSpacing: 4,
                   children: certCounts.entries.map((e) => Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -1047,10 +1090,22 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
                             fontWeight: FontWeight.w600)),
                   )).toList(),
                 ),
-                const SizedBox(height: 8),
-                ..._members.map((m) => _memberTile(m)),
-              ],
-            ),
+              ),
+            ..._members.map((m) => _memberTile(m)),
+          ],
+          if (_profileRows.isEmpty && _members.isEmpty)
+            Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const SizedBox(height: 40),
+              Icon(Icons.people_outline, size: 64, color: Colors.grey[300]),
+              const SizedBox(height: 12),
+              const Text('No team members yet', style: TextStyle(color: Colors.grey)),
+              const SizedBox(height: 4),
+              const Text('Members appear here when users log in to the app',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+            ])),
+        ],
+      ),
       Positioned(
         bottom: 16, right: 16,
         child: FloatingActionButton.extended(
