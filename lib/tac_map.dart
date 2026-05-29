@@ -564,6 +564,11 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _missionCode = prefs.getString(_kMissionCode) ?? '';
     _isAdmin = prefs.getBool(_kIsAdmin) ?? false;
 
+    // Remove any stale row left from a previous session (crashed / never left).
+    try {
+      await _supabase.from('tac_users').delete().eq('id', _userId);
+    } catch (_) {}
+
     await _requestLocation();
     _startLocationPublish();
     _subscribeRealtime();
@@ -825,7 +830,10 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   List<Marker> _buildMapMarkers() {
     final markers = <Marker>[];
 
+    final staleThreshold = DateTime.now().subtract(const Duration(minutes: 30));
     for (final user in _users.values) {
+      // Skip entries not updated in the last 30 minutes (stale/crashed sessions).
+      if (user.updatedAt.isBefore(staleThreshold)) continue;
       final isMe = user.id == _userId;
       final sameMission = user.missionCode == _missionCode;
       final color = isMe
@@ -833,17 +841,17 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           : sameMission
               ? Colors.blue
               : Colors.deepOrange;
-      // Label: callsign + mission code for users on other missions
-      final label = sameMission ? user.callsign : '${user.callsign}\n${user.missionCode}';
+      final label = user.callsign;
       markers.add(Marker(
         point: LatLng(user.lat, user.lng),
-        width: 88,
-        height: sameMission ? 60 : 72,
+        width: 96,
+        height: 60,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Container(
+              constraints: const BoxConstraints(maxWidth: 90),
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
               decoration: BoxDecoration(
                 color: color,
@@ -852,6 +860,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               ),
               child: Text(label,
                   textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                       color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
             ),

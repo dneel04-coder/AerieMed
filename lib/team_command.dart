@@ -885,10 +885,17 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
   bool _profileLoading = false;
   bool _profileNotConfigured = false;
 
+  // Full name lookup used by Team Certs (userId → name)
+  Map<String, String> _userNames = {};
+
   int _viewIdx = 0;
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() {
+    super.initState();
+    _load();
+    _loadProfiles(); // pre-load so Profiles tab is ready and names available for certs
+  }
 
   @override
   void dispose() { _stateSearch.dispose(); super.dispose(); }
@@ -913,20 +920,28 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
   Future<void> _loadProfiles() async {
     if (_profileLoading) return;
     setState(() { _profileLoading = true; _profileNotConfigured = false; });
-    final client = SupabaseService.client;
-    if (client == null) {
-      final ok = await SupabaseService.ensureInitialized();
-      if (!ok) {
-        if (mounted) setState(() { _profileLoading = false; _profileNotConfigured = true; });
-        return;
-      }
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) {
+      if (mounted) setState(() { _profileLoading = false; _profileNotConfigured = true; });
+      return;
     }
     try {
       final rows = await SupabaseService.client!
           .from('user_profiles')
           .select()
           .order('name');
-      if (mounted) setState(() { _profileRows = List<Map<String, dynamic>>.from(rows as List); _profileLoading = false; });
+      final list = List<Map<String, dynamic>>.from(rows as List);
+      final names = <String, String>{};
+      for (final p in list) {
+        final uid = p['user_id'] as String? ?? '';
+        final name = p['name'] as String? ?? '';
+        if (uid.isNotEmpty) names[uid] = name;
+      }
+      if (mounted) setState(() {
+        _profileRows = list;
+        _userNames = names;
+        _profileLoading = false;
+      });
     } catch (_) {
       if (mounted) setState(() { _profileLoading = false; _profileNotConfigured = true; });
     }
@@ -1089,7 +1104,11 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
               itemCount: sortedUids.length,
               itemBuilder: (_, i) {
                 final uid = sortedUids[i];
-                return _userCertCard(callsignMap[uid] ?? 'Unknown', grouped[uid]!);
+                return _userCertCard(
+                  callsignMap[uid] ?? 'Unknown',
+                  _userNames[uid] ?? '',
+                  grouped[uid]!,
+                );
               },
             ),
           ),
@@ -1187,7 +1206,9 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
     );
   }
 
-  Widget _userCertCard(String callsign, List<Map<String, dynamic>> certs) {
+  Widget _userCertCard(String callsign, String fullName, List<Map<String, dynamic>> certs) {
+    final displayName = fullName.isNotEmpty ? fullName : callsign;
+    final showCallsign = fullName.isNotEmpty && callsign != fullName;
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
@@ -1198,14 +1219,19 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
               radius: 16,
               backgroundColor: Theme.of(context).colorScheme.primaryContainer,
               child: Text(
-                callsign.isNotEmpty ? callsign[0].toUpperCase() : '?',
+                displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13,
                     color: Theme.of(context).colorScheme.onPrimaryContainer),
               ),
             ),
             const SizedBox(width: 10),
-            Expanded(child: Text(callsign,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(displayName,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              if (showCallsign)
+                Text(callsign,
+                    style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+            ])),
             Text('${certs.length} cert${certs.length == 1 ? '' : 's'}',
                 style: TextStyle(fontSize: 11, color: Colors.grey[600])),
           ]),
