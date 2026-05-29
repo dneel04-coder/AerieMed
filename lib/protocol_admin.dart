@@ -448,22 +448,18 @@ extension DeploymentOrderService on ProtocolSyncService {
   }
 
   Future<File?> downloadDeploymentOrder(DeploymentOrder order) async {
-    final client = await _client();
-    if (client == null) return null;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/deployment_orders/${order.id}_${order.fileName}');
       if (await file.exists()) return file;
       await file.parent.create(recursive: true);
-      // Use the public URL — avoids SDK path-validation issues with the storage client.
-      final publicUrl = client.storage
-          .from('deployment_orders')
-          .getPublicUrl(order.filePath);
-      final response = await http.get(Uri.parse(publicUrl))
+      // Build the public storage URL directly — no Supabase SDK involved so no
+      // StorageException can be thrown regardless of SDK or path validation state.
+      const base = 'https://vlgiclyuxaleyusalexo.supabase.co';
+      final url = '$base/storage/v1/object/public/deployment_orders/${order.filePath}';
+      final response = await http.get(Uri.parse(url))
           .timeout(const Duration(seconds: 30));
-      if (response.statusCode != 200) {
-        throw Exception('HTTP ${response.statusCode}');
-      }
+      if (response.statusCode != 200) throw Exception('HTTP ${response.statusCode}');
       await file.writeAsBytes(response.bodyBytes);
       return file;
     } catch (_) {
