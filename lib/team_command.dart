@@ -1543,14 +1543,82 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
         ),
       ]));
     }
+    // Detect duplicates: multiple rows with the same name.
+    final nameCount = <String, int>{};
+    for (final p in _profileRows) {
+      final n = (p['name'] as String? ?? '').toLowerCase().trim();
+      if (n.isNotEmpty) nameCount[n] = (nameCount[n] ?? 0) + 1;
+    }
+    final hasDuplicates = nameCount.values.any((c) => c > 1);
+
     return RefreshIndicator(
       onRefresh: _loadProfiles,
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
-        itemCount: _profileRows.length,
-        itemBuilder: (_, i) => _profileCard(_profileRows[i]),
-      ),
+      child: Column(children: [
+        if (_isAdmin && hasDuplicates)
+          Container(
+            margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.12),
+              border: Border.all(color: Colors.orange.withValues(alpha: 0.5)),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(children: [
+              const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 18),
+              const SizedBox(width: 8),
+              const Expanded(child: Text(
+                'Duplicate profiles detected (same name, different device ID)',
+                style: TextStyle(fontSize: 12, color: Colors.orange),
+              )),
+              TextButton(
+                onPressed: _removeDuplicateProfiles,
+                child: const Text('Clean Up', style: TextStyle(fontSize: 12)),
+              ),
+            ]),
+          ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+            itemCount: _profileRows.length,
+            itemBuilder: (_, i) => _profileCard(_profileRows[i]),
+          ),
+        ),
+      ]),
     );
+  }
+
+  Future<void> _removeDuplicateProfiles() async {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    // Group by name (case-insensitive); keep the most recently updated row.
+    final byName = <String, List<Map<String, dynamic>>>{};
+    for (final p in _profileRows) {
+      final key = (p['name'] as String? ?? '').toLowerCase().trim();
+      if (key.isNotEmpty) byName.putIfAbsent(key, () => []).add(p);
+    }
+    int removed = 0;
+    for (final group in byName.values) {
+      if (group.length <= 1) continue;
+      group.sort((a, b) {
+        final da = DateTime.tryParse(a['updated_at'] as String? ?? '') ?? DateTime(0);
+        final db = DateTime.tryParse(b['updated_at'] as String? ?? '') ?? DateTime(0);
+        return db.compareTo(da); // newest first
+      });
+      for (final old in group.skip(1)) {
+        try {
+          await client.from('user_profiles').delete().eq('user_id', old['user_id']);
+          removed++;
+        } catch (_) {}
+      }
+    }
+    await _loadProfiles();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(removed > 0
+            ? 'Removed $removed duplicate profile${removed == 1 ? '' : 's'}'
+            : 'No duplicates found'),
+      ));
+    }
   }
 
   Widget _profileCard(Map<String, dynamic> p) {

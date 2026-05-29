@@ -85,6 +85,16 @@ class UserProfile {
         'rope_rescue': ropeRescue,
         'updated_at': DateTime.now().toIso8601String(),
       }, onConflict: 'user_id');
+
+      // Remove stale duplicate rows for this same person (same name, different
+      // user_id — happens when the app is reinstalled and generates a new ID).
+      if (name.isNotEmpty) {
+        await client
+            .from('user_profiles')
+            .delete()
+            .ilike('name', name)
+            .neq('user_id', userId);
+      }
     } catch (_) {}
   }
 }
