@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:pdfrx/pdfrx.dart';
+import 'package:printing/printing.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/services.dart';
@@ -888,8 +888,12 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
           ),
         ],
       ),
-      body: PdfViewer.file(
-        widget.filePath,
+      body: PdfPreview(
+        build: (_) => File(widget.filePath).readAsBytes(),
+        allowSharing: false,
+        allowPrinting: false,
+        canChangePageFormat: false,
+        canDebug: false,
       ),
     );
   }
