@@ -8,6 +8,7 @@ import 'package:pdfrx/pdfrx.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService;
+import 'user_profile.dart' show LoginScreen;
 
 enum _CertExpiry { green, yellow, red }
 
@@ -890,6 +891,7 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
   Map<String, String> _userNames = {};
 
   bool _isAdmin = false;
+  String _myUserId = '';
   int _viewIdx = 0;
 
   @override
@@ -899,6 +901,9 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
     _loadProfiles();
     ProtocolSyncService.instance.isAdminMode.then((v) {
       if (mounted) setState(() => _isAdmin = v);
+    });
+    SharedPreferences.getInstance().then((p) {
+      if (mounted) setState(() => _myUserId = p.getString('tac_user_id') ?? '');
     });
   }
 
@@ -1290,6 +1295,7 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
   }
 
   Widget _profileCard(Map<String, dynamic> p) {
+    final uid = p['user_id'] as String? ?? '';
     final name = p['name'] as String? ?? '';
     final callsign = p['callsign'] as String? ?? '';
     final certLevel = p['cert_level'] as String? ?? 'None';
@@ -1297,24 +1303,56 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
     final ropeRescue = p['rope_rescue'] as bool? ?? false;
     final display = callsign.isNotEmpty ? callsign : name;
     final certColor = _certColor(certLevel);
+    final isMe = uid == _myUserId && uid.isNotEmpty;
+
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
         padding: const EdgeInsets.all(12),
-        child: Row(children: [
-          CircleAvatar(
-            radius: 20,
-            backgroundColor: certColor.withValues(alpha: 0.15),
-            child: Text(display.isNotEmpty ? display[0].toUpperCase() : '?',
-                style: TextStyle(fontWeight: FontWeight.bold, color: certColor)),
-          ),
-          const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(display, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-            if (callsign.isNotEmpty && name.isNotEmpty)
-              Text(name, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-          ])),
-          Wrap(spacing: 4, children: [
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            CircleAvatar(
+              radius: 20,
+              backgroundColor: certColor.withValues(alpha: 0.15),
+              child: Text(display.isNotEmpty ? display[0].toUpperCase() : '?',
+                  style: TextStyle(fontWeight: FontWeight.bold, color: certColor)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Text(display, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                if (isMe) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.indigo.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text('You',
+                        style: TextStyle(fontSize: 10, color: Colors.indigo,
+                            fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ]),
+              if (callsign.isNotEmpty && name.isNotEmpty)
+                Text(name, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+            ])),
+            if (isMe)
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 20),
+                tooltip: 'Edit my profile',
+                onPressed: () => _editProfile(),
+              ),
+            if (_isAdmin)
+              IconButton(
+                icon: const Icon(Icons.delete_outline, size: 20, color: Colors.red),
+                tooltip: 'Delete profile',
+                onPressed: () => _confirmDeleteProfile(uid, display),
+              ),
+          ]),
+          const SizedBox(height: 8),
+          Wrap(spacing: 6, runSpacing: 4, children: [
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
@@ -1351,6 +1389,49 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
         ]),
       ),
     );
+  }
+
+  void _editProfile() {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => LoginScreen(
+        onLoggedIn: () {
+          Navigator.pop(context);
+          _loadProfiles(); // refresh so updated data shows immediately
+        },
+      ),
+    ));
+  }
+
+  Future<void> _confirmDeleteProfile(String uid, String displayName) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Profile?'),
+        content: Text('Remove $displayName from the team roster? This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await SupabaseService.client!.from('user_profiles').delete().eq('user_id', uid);
+      setState(() => _profileRows.removeWhere((r) => r['user_id'] == uid));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$displayName removed from roster.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Delete failed: $e')));
+      }
+    }
   }
 
 

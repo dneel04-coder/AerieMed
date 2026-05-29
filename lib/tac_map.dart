@@ -112,7 +112,7 @@ class TacUser {
         lat: (m['lat'] as num).toDouble(),
         lng: (m['lng'] as num).toDouble(),
         isAdmin: m['is_admin'] as bool? ?? false,
-        updatedAt: DateTime.tryParse(m['updated_at'] as String? ?? '') ?? DateTime.now(),
+        updatedAt: DateTime.tryParse(m['updated_at'] as String? ?? '') ?? DateTime(2000),
       );
 }
 
@@ -806,11 +806,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _refreshTimer?.cancel();
     _realtimeChannel?.unsubscribe();
     try {
-      await _supabase
-          .from('tac_users')
-          .delete()
-          .eq('id', _userId)
-          .eq('mission_code', _missionCode);
+      await _supabase.from('tac_users').delete().eq('id', _userId);
     } catch (_) {}
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kCallsign);
@@ -830,7 +826,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   List<Marker> _buildMapMarkers() {
     final markers = <Marker>[];
 
-    final staleThreshold = DateTime.now().subtract(const Duration(minutes: 30));
+    final staleThreshold = DateTime.now().subtract(const Duration(minutes: 15));
     for (final user in _users.values) {
       // Skip entries not updated in the last 30 minutes (stale/crashed sessions).
       if (user.updatedAt.isBefore(staleThreshold)) continue;
