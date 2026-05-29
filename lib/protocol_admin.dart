@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -454,8 +455,16 @@ extension DeploymentOrderService on ProtocolSyncService {
       final file = File('${dir.path}/deployment_orders/${order.id}_${order.fileName}');
       if (await file.exists()) return file;
       await file.parent.create(recursive: true);
-      final bytes = await client.storage.from('deployment_orders').download(order.filePath);
-      await file.writeAsBytes(bytes);
+      // Use the public URL — avoids SDK path-validation issues with the storage client.
+      final publicUrl = client.storage
+          .from('deployment_orders')
+          .getPublicUrl(order.filePath);
+      final response = await http.get(Uri.parse(publicUrl))
+          .timeout(const Duration(seconds: 30));
+      if (response.statusCode != 200) {
+        throw Exception('HTTP ${response.statusCode}');
+      }
+      await file.writeAsBytes(response.bodyBytes);
       return file;
     } catch (_) {
       return null;

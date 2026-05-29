@@ -588,7 +588,7 @@ class _PatientReportListScreenState extends State<PatientReportListScreen> {
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
           if (r.isSynced)
             const Tooltip(
-              message: 'Sent to admin',
+              message: 'Transmitted to admin',
               child: Padding(
                 padding: EdgeInsets.only(right: 2),
                 child: Icon(Icons.cloud_done, color: Colors.green, size: 16),
@@ -602,10 +602,17 @@ class _PatientReportListScreenState extends State<PatientReportListScreen> {
               builder: (_) => TransferOptionsSheet(report: r),
             ),
           ),
-          IconButton(
-            icon: Icon(Icons.delete_outline, color: Colors.red[400]),
-            onPressed: () => _confirmDelete(r),
-          ),
+          if (r.isSynced)
+            IconButton(
+              icon: Icon(Icons.delete_outline, color: Colors.red[400]),
+              tooltip: 'Delete (transmitted)',
+              onPressed: () => _confirmDelete(r),
+            )
+          else
+            Tooltip(
+              message: 'Transmit to admin before deleting',
+              child: Icon(Icons.delete_outline, color: Colors.grey[300], size: 24),
+            ),
         ]),
         onTap: () async {
           await Navigator.push(
