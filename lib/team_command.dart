@@ -107,6 +107,8 @@ class Incident {
   final String id;
   final DateTime startedAt;
   String name, type, location, status, notes;
+  String compiledBy, incidentLead;
+  List<String> membersPresent;
   List<IcRole> roles;
 
   Incident({
@@ -117,8 +119,12 @@ class Incident {
     this.location = '',
     this.status = 'Active',
     this.notes = '',
+    this.compiledBy = '',
+    this.incidentLead = '',
+    List<String>? membersPresent,
     List<IcRole>? roles,
-  }) : roles = roles ?? _defaultRoles();
+  }) : membersPresent = membersPresent ?? [],
+       roles = roles ?? _defaultRoles();
 
   factory Incident.fresh() => Incident(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -146,6 +152,8 @@ class Incident {
         'id': id, 'startedAt': startedAt.toIso8601String(),
         'name': name, 'type': type, 'location': location,
         'status': status, 'notes': notes,
+        'compiledBy': compiledBy, 'incidentLead': incidentLead,
+        'membersPresent': membersPresent,
         'roles': roles.map((r) => r.toJson()).toList(),
       };
 
@@ -157,6 +165,9 @@ class Incident {
         location: j['location'] as String? ?? '',
         status: j['status'] as String? ?? 'Active',
         notes: j['notes'] as String? ?? '',
+        compiledBy: j['compiledBy'] as String? ?? '',
+        incidentLead: j['incidentLead'] as String? ?? '',
+        membersPresent: (j['membersPresent'] as List? ?? []).cast<String>(),
         roles: (j['roles'] as List? ?? [])
             .map((e) => IcRole.fromJson(e as Map<String, dynamic>))
             .toList(),
@@ -659,6 +670,36 @@ class _IncidentTabState extends State<_IncidentTab> with AutomaticKeepAliveClien
           ]),
           const SizedBox(height: 4),
           Text('Started: ${inc.timeDisplay}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          if (inc.compiledBy.isNotEmpty || inc.incidentLead.isNotEmpty) ...[
+            const Divider(height: 10),
+            if (inc.compiledBy.isNotEmpty)
+              Row(children: [
+                const Icon(Icons.edit_outlined, size: 13, color: Colors.grey),
+                const SizedBox(width: 4),
+                Text('Compiled by: ${inc.compiledBy}', style: const TextStyle(fontSize: 12)),
+              ]),
+            if (inc.incidentLead.isNotEmpty)
+              Row(children: [
+                const Icon(Icons.star_outline, size: 13, color: Colors.grey),
+                const SizedBox(width: 4),
+                Text('Lead: ${inc.incidentLead}', style: const TextStyle(fontSize: 12)),
+              ]),
+          ],
+          if (inc.membersPresent.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Wrap(spacing: 4, runSpacing: 2,
+              children: [
+                const Icon(Icons.people_outline, size: 13, color: Colors.grey),
+                ...inc.membersPresent.map((m) => Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.indigo.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(m, style: const TextStyle(fontSize: 11)),
+                )),
+              ]),
+          ],
           if (inc.notes.isNotEmpty) ...[
             const Divider(height: 12),
             Text(inc.notes, style: const TextStyle(fontSize: 12)),
@@ -785,16 +826,48 @@ class _IncidentFormSheet extends StatefulWidget {
 class _IncidentFormSheetState extends State<_IncidentFormSheet> {
   late final TextEditingController _name, _location, _notes;
   String _type = '', _status = 'Active';
+  String _compiledBy = '', _incidentLead = '';
+  List<String> _membersPresent = [];
+  List<String> _profileNames = [];
+  bool _profilesLoading = true;
 
   @override
   void initState() {
     super.initState();
     final e = widget.existing;
-    _name = TextEditingController(text: e?.name ?? '');
+    _name     = TextEditingController(text: e?.name ?? '');
     _location = TextEditingController(text: e?.location ?? '');
-    _notes = TextEditingController(text: e?.notes ?? '');
-    _type = e?.type ?? '';
-    _status = e?.status ?? 'Active';
+    _notes    = TextEditingController(text: e?.notes ?? '');
+    _type         = e?.type ?? '';
+    _status       = e?.status ?? 'Active';
+    _compiledBy   = e?.compiledBy ?? '';
+    _incidentLead = e?.incidentLead ?? '';
+    _membersPresent = List<String>.from(e?.membersPresent ?? []);
+    _loadProfiles();
+  }
+
+  Future<void> _loadProfiles() async {
+    try {
+      // Pre-fill compiled by from own profile
+      if (_compiledBy.isEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        _compiledBy = prefs.getString('tac_callsign') ?? '';
+      }
+      final ok = await SupabaseService.ensureInitialized();
+      if (!ok) { if (mounted) setState(() => _profilesLoading = false); return; }
+      final rows = await SupabaseService.client!
+          .from('user_profiles')
+          .select('name, callsign')
+          .order('name') as List;
+      final names = rows.map<String>((p) {
+        final name = p['name'] as String? ?? '';
+        final callsign = p['callsign'] as String? ?? '';
+        return callsign.isNotEmpty ? '$name ($callsign)' : name;
+      }).where((s) => s.trim().isNotEmpty).toList();
+      if (mounted) setState(() { _profileNames = names; _profilesLoading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _profilesLoading = false);
+    }
   }
 
   @override
@@ -802,11 +875,14 @@ class _IncidentFormSheetState extends State<_IncidentFormSheet> {
 
   Future<void> _save() async {
     final inc = widget.existing ?? Incident.fresh();
-    inc.name = _name.text.trim();
-    inc.type = _type;
-    inc.location = _location.text.trim();
-    inc.status = _status;
-    inc.notes = _notes.text.trim();
+    inc.name           = _name.text.trim();
+    inc.type           = _type;
+    inc.location       = _location.text.trim();
+    inc.status         = _status;
+    inc.notes          = _notes.text.trim();
+    inc.compiledBy     = _compiledBy;
+    inc.incidentLead   = _incidentLead;
+    inc.membersPresent = _membersPresent;
     await IncidentStorage.save(inc);
     if (mounted) Navigator.pop(context, true);
   }
@@ -819,6 +895,32 @@ class _IncidentFormSheetState extends State<_IncidentFormSheet> {
         contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9)),
     ),
   );
+
+  Widget _personDropdown(String label, String value, ValueChanged<String?> onChanged) {
+    final items = _profileNames.isNotEmpty
+        ? _profileNames
+        : (value.isNotEmpty ? [value] : <String>[]);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: DropdownButtonFormField<String>(
+        value: value.isEmpty ? null : value,
+        isExpanded: true,
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          suffixIcon: _profilesLoading
+              ? const SizedBox(width: 18, height: 18,
+                  child: Padding(padding: EdgeInsets.all(8),
+                      child: CircularProgressIndicator(strokeWidth: 2)))
+              : null,
+        ),
+        items: items.map((n) => DropdownMenuItem(value: n, child: Text(n, overflow: TextOverflow.ellipsis))).toList(),
+        onChanged: onChanged,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -848,6 +950,38 @@ class _IncidentFormSheetState extends State<_IncidentFormSheet> {
             onChanged: (v) => setState(() => _status = v ?? 'Active'),
           ),
           const SizedBox(height: 10),
+          const Divider(),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 6),
+            child: Text('PERSONNEL', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12,
+                color: Colors.grey, letterSpacing: 0.8)),
+          ),
+          _personDropdown('Compiled by', _compiledBy,
+              (v) => setState(() => _compiledBy = v ?? '')),
+          _personDropdown('Incident Lead', _incidentLead,
+              (v) => setState(() => _incidentLead = v ?? '')),
+          // Members present — tap chips to toggle
+          const Text('Members Present', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 6),
+          if (_profileNames.isEmpty && _profilesLoading)
+            const Center(child: SizedBox(height: 24, width: 24,
+                child: CircularProgressIndicator(strokeWidth: 2)))
+          else if (_profileNames.isEmpty)
+            const Text('No profiles loaded', style: TextStyle(fontSize: 12, color: Colors.grey))
+          else
+            Wrap(spacing: 6, runSpacing: 4, children: _profileNames.map((name) {
+              final selected = _membersPresent.contains(name);
+              return FilterChip(
+                label: Text(name, style: const TextStyle(fontSize: 12)),
+                selected: selected,
+                onSelected: (v) => setState(() => v
+                    ? _membersPresent.add(name)
+                    : _membersPresent.remove(name)),
+                selectedColor: Colors.indigo.withValues(alpha: 0.2),
+                checkmarkColor: Colors.indigo,
+              );
+            }).toList()),
+          const Divider(),
           _tf('Notes', _notes, maxLines: 3),
           const SizedBox(height: 4),
           FilledButton.icon(
@@ -890,6 +1024,9 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
   // Full name lookup used by Team Certs (userId → name)
   Map<String, String> _userNames = {};
 
+  // Today's availability: userId → status ('Available', 'Unavailable', 'Partial', 'Deployed')
+  Map<String, String> _todayAvailability = {};
+
   bool _isAdmin = false;
   String _myUserId = '';
   int _viewIdx = 0;
@@ -899,12 +1036,31 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
     super.initState();
     _load();
     _loadProfiles();
+    _loadTodayAvailability();
     ProtocolSyncService.instance.isAdminMode.then((v) {
       if (mounted) setState(() => _isAdmin = v);
     });
     SharedPreferences.getInstance().then((p) {
       if (mounted) setState(() => _myUserId = p.getString('tac_user_id') ?? '');
     });
+  }
+
+  Future<void> _loadTodayAvailability() async {
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) return;
+    try {
+      final today = DateTime.now();
+      final dateStr = '${today.year}-${today.month.toString().padLeft(2,'0')}-${today.day.toString().padLeft(2,'0')}';
+      final rows = await SupabaseService.client!
+          .from('team_availability')
+          .select('user_id, status')
+          .eq('date', dateStr) as List;
+      final map = <String, String>{};
+      for (final r in rows) {
+        map[r['user_id'] as String] = r['status'] as String? ?? 'Available';
+      }
+      if (mounted) setState(() => _todayAvailability = map);
+    } catch (_) {}
   }
 
   @override
@@ -1015,96 +1171,85 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
 
   Widget _buildMembersView() {
     if (_loading) return const Center(child: CircularProgressIndicator());
+
+    // Bucket profiles by today's availability status.
+    final available   = <Map<String, dynamic>>[];
+    final unavailable = <Map<String, dynamic>>[];
+    final deployed    = <Map<String, dynamic>>[];
+
+    for (final p in _profileRows) {
+      final uid    = p['user_id'] as String? ?? '';
+      final status = _todayAvailability[uid] ?? 'Available';
+      if (status == 'Deployed') {
+        deployed.add(p);
+      } else if (status == 'Available' || status == 'Partial') {
+        available.add(p);
+      } else {
+        unavailable.add(p);
+      }
+    }
+    // Users with no profile row default to Available.
+
     final certCounts = <String, int>{};
     for (final m in _members) {
       certCounts[m.certification] = (certCounts[m.certification] ?? 0) + 1;
     }
+
     return Stack(children: [
-      ListView(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
-        children: [
-          // Synced members from user_profiles (auto-populated on login)
-          if (_profileRows.isNotEmpty) ...[
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Text('Active Members (${_profileRows.length})',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-            ),
-            ..._profileRows.map((p) {
-              final name = p['name'] as String? ?? '';
-              final callsign = p['callsign'] as String? ?? '';
-              final certLevel = p['cert_level'] as String? ?? 'None';
-              final display = name.isNotEmpty ? name : callsign;
-              final sub = (callsign.isNotEmpty && name.isNotEmpty)
-                  ? 'Callsign: $callsign'
-                  : null;
-              final col = _certColor(certLevel);
-              return Card(
-                margin: const EdgeInsets.only(bottom: 6),
-                child: ListTile(
-                  dense: true,
-                  leading: CircleAvatar(
-                    radius: 16,
-                    backgroundColor: col.withValues(alpha: 0.15),
-                    child: Text(display.isNotEmpty ? display[0].toUpperCase() : '?',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: col)),
-                  ),
-                  title: Text(display,
-                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                  subtitle: sub != null ? Text(sub, style: const TextStyle(fontSize: 12)) : null,
-                  trailing: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: col.withValues(alpha: 0.12),
-                      border: Border.all(color: col.withValues(alpha: 0.4)),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(certLevel,
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: col)),
-                  ),
-                ),
-              );
-            }),
-            const Divider(height: 20),
-          ],
-          // Manually-added local members
-          if (_members.isNotEmpty) ...[
-            if (_profileRows.isNotEmpty)
+      RefreshIndicator(
+        onRefresh: () async { _loadProfiles(); _loadTodayAvailability(); },
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
+          children: [
+            if (_profileRows.isEmpty && _members.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 40),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.people_outline, size: 64, color: Colors.grey[300]),
+                  const SizedBox(height: 12),
+                  const Text('No team members yet', style: TextStyle(color: Colors.grey)),
+                  const SizedBox(height: 4),
+                  const Text('Members appear here when users log in',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+                ]),
+              ),
+            if (_profileRows.isNotEmpty) ...[
+              _availabilityDrawer('Available', Colors.green,
+                  Icons.check_circle_outline, available),
+              const SizedBox(height: 6),
+              _availabilityDrawer('Unavailable', Colors.grey,
+                  Icons.do_not_disturb_outlined, unavailable),
+              const SizedBox(height: 6),
+              _availabilityDrawer('Deployed', Colors.blue,
+                  Icons.flight_takeoff_outlined, deployed),
+              const SizedBox(height: 12),
+            ],
+            if (_members.isNotEmpty) ...[
               const Padding(
                 padding: EdgeInsets.only(bottom: 6),
                 child: Text('Manually Added',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               ),
-            if (certCounts.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Wrap(
-                  spacing: 6, runSpacing: 4,
-                  children: certCounts.entries.map((e) => Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                        color: _certColor(e.key).withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(12)),
-                    child: Text('${e.key}: ${e.value}',
-                        style: TextStyle(fontSize: 11, color: _certColor(e.key),
-                            fontWeight: FontWeight.w600)),
-                  )).toList(),
+              if (certCounts.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Wrap(spacing: 6, runSpacing: 4,
+                    children: certCounts.entries.map((e) => Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                          color: _certColor(e.key).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(12)),
+                      child: Text('${e.key}: ${e.value}',
+                          style: TextStyle(fontSize: 11, color: _certColor(e.key),
+                              fontWeight: FontWeight.w600)),
+                    )).toList(),
+                  ),
                 ),
-              ),
-            ..._members.map((m) => _memberTile(m)),
+              ..._members.map((m) => _memberTile(m)),
+            ],
           ],
-          if (_profileRows.isEmpty && _members.isEmpty)
-            Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const SizedBox(height: 40),
-              Icon(Icons.people_outline, size: 64, color: Colors.grey[300]),
-              const SizedBox(height: 12),
-              const Text('No team members yet', style: TextStyle(color: Colors.grey)),
-              const SizedBox(height: 4),
-              const Text('Members appear here when users log in to the app',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey, fontSize: 12)),
-            ])),
-        ],
+        ),
       ),
       Positioned(
         bottom: 16, right: 16,
@@ -1116,6 +1261,64 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
         ),
       ),
     ]);
+  }
+
+  Widget _availabilityDrawer(
+    String title, Color color, IconData icon,
+    List<Map<String, dynamic>> profiles,
+  ) {
+    return Card(
+      clipBehavior: Clip.hardEdge,
+      child: ExpansionTile(
+        leading: Icon(icon, color: color),
+        title: Text(title,
+            style: TextStyle(fontWeight: FontWeight.bold, color: color)),
+        subtitle: Text('${profiles.length} member${profiles.length == 1 ? '' : 's'}',
+            style: TextStyle(fontSize: 12, color: color.withValues(alpha: 0.8))),
+        collapsedBackgroundColor: color.withValues(alpha: 0.05),
+        backgroundColor: color.withValues(alpha: 0.03),
+        initiallyExpanded: title == 'Available' || title == 'Deployed',
+        children: profiles.isEmpty
+            ? [Padding(
+                padding: const EdgeInsets.all(14),
+                child: Text('None', style: TextStyle(color: Colors.grey[500])),
+              )]
+            : profiles.map((p) {
+                final name     = p['name'] as String? ?? '';
+                final callsign = p['callsign'] as String? ?? '';
+                final certLvl  = p['cert_level'] as String? ?? 'None';
+                final display  = name.isNotEmpty ? name : callsign;
+                final sub      = (callsign.isNotEmpty && name.isNotEmpty)
+                    ? 'Callsign: $callsign'
+                    : null;
+                final col = _certColor(certLvl);
+                return ListTile(
+                  dense: true,
+                  leading: CircleAvatar(
+                    radius: 15,
+                    backgroundColor: col.withValues(alpha: 0.15),
+                    child: Text(display.isNotEmpty ? display[0].toUpperCase() : '?',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: col)),
+                  ),
+                  title: Text(display,
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                  subtitle: sub != null
+                      ? Text(sub, style: const TextStyle(fontSize: 12))
+                      : null,
+                  trailing: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: col.withValues(alpha: 0.12),
+                      border: Border.all(color: col.withValues(alpha: 0.4)),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(certLvl,
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: col)),
+                  ),
+                );
+              }).toList(),
+      ),
+    );
   }
 
   // Returns expiration status from a Supabase cert row.
@@ -2268,8 +2471,10 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
     setState(() => _downloading.remove(order.id));
     if (file == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Download failed. Check your connection.')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not open order — file may not be in storage yet. Ask admin to re-upload.'),
+          duration: Duration(seconds: 6),
+        ));
       }
       return;
     }
