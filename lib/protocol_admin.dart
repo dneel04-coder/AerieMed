@@ -13,6 +13,8 @@ import 'patient_report.dart';
 class SupabaseService {
   static const _urlKey = 'tac_supabase_url';
   static const _anonKey = 'tac_supabase_anon_key';
+  static const _kDefaultUrl = 'https://vlgiclyuxaleyusalexo.supabase.co';
+  static const _kDefaultKey = 'sb_publishable_U6M_YMbubI1Y8qD4a3SKCA_Oeo6L75B';
   static bool _initialized = false;
 
   /// Clears initialized state so ensureInitialized re-runs with new credentials.
@@ -21,9 +23,12 @@ class SupabaseService {
   static Future<bool> ensureInitialized() async {
     if (_initialized) return true;
     final prefs = await SharedPreferences.getInstance();
-    final url = prefs.getString(_urlKey) ?? '';
-    final key = prefs.getString(_anonKey) ?? '';
-    if (url.isEmpty || key.isEmpty) return false;
+    final url = prefs.getString(_urlKey)?.isNotEmpty == true
+        ? prefs.getString(_urlKey)!
+        : _kDefaultUrl;
+    final key = prefs.getString(_anonKey)?.isNotEmpty == true
+        ? prefs.getString(_anonKey)!
+        : _kDefaultKey;
     try {
       await Supabase.initialize(url: url, anonKey: key);
       _initialized = true;

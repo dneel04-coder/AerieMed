@@ -169,12 +169,17 @@ class _TacMapScreenState extends State<TacMapScreen> {
 
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
-    final url = prefs.getString(_kSupabaseUrl) ?? '';
-    final key = prefs.getString(_kSupabaseKey) ?? '';
-
-    if (url.isEmpty || key.isEmpty) {
-      setState(() => _phase = _Phase.noConfig);
-      return;
+    // Use saved credentials if present, otherwise fall back to built-in defaults.
+    final url = prefs.getString(_kSupabaseUrl)?.isNotEmpty == true
+        ? prefs.getString(_kSupabaseUrl)!
+        : 'https://vlgiclyuxaleyusalexo.supabase.co';
+    final key = prefs.getString(_kSupabaseKey)?.isNotEmpty == true
+        ? prefs.getString(_kSupabaseKey)!
+        : 'sb_publishable_U6M_YMbubI1Y8qD4a3SKCA_Oeo6L75B';
+    // Write defaults back so the config screen shows them if opened.
+    if (prefs.getString(_kSupabaseUrl)?.isEmpty != false) {
+      await prefs.setString(_kSupabaseUrl, url);
+      await prefs.setString(_kSupabaseKey, key);
     }
 
     await SupabaseService.ensureInitialized();
@@ -224,8 +229,12 @@ class _SupabaseConfigScreenState extends State<_SupabaseConfigScreen> {
 
   Future<void> _loadSaved() async {
     final prefs = await SharedPreferences.getInstance();
-    final url = prefs.getString(_kSupabaseUrl) ?? '';
-    final key = prefs.getString(_kSupabaseKey) ?? '';
+    final url = prefs.getString(_kSupabaseUrl)?.isNotEmpty == true
+        ? prefs.getString(_kSupabaseUrl)!
+        : 'https://vlgiclyuxaleyusalexo.supabase.co';
+    final key = prefs.getString(_kSupabaseKey)?.isNotEmpty == true
+        ? prefs.getString(_kSupabaseKey)!
+        : 'sb_publishable_U6M_YMbubI1Y8qD4a3SKCA_Oeo6L75B';
     if (mounted) {
       _urlCtrl.text = url;
       _keyCtrl.text = key;

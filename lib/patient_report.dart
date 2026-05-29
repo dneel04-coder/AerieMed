@@ -400,9 +400,12 @@ class ReportSyncer {
   static Future<void> trySyncReport(PatientReport report) async {
     if (report.isSynced) return;
     final prefs = await SharedPreferences.getInstance();
-    final url = prefs.getString(_urlKey) ?? '';
-    final key = prefs.getString(_anonKey) ?? '';
-    if (url.isEmpty || key.isEmpty) return;
+    final url = prefs.getString(_urlKey)?.isNotEmpty == true
+        ? prefs.getString(_urlKey)!
+        : 'https://vlgiclyuxaleyusalexo.supabase.co';
+    final key = prefs.getString(_anonKey)?.isNotEmpty == true
+        ? prefs.getString(_anonKey)!
+        : 'sb_publishable_U6M_YMbubI1Y8qD4a3SKCA_Oeo6L75B';
 
     SupabaseClient client;
     try {
