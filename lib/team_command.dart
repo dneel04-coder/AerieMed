@@ -2504,11 +2504,18 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
           );
           return;
         }
-        // Write to app documents dir (more reliable than temp on Android).
-        final dir = await getApplicationDocumentsDirectory();
+        // Write to temp dir. On Android use Uri.file() which routes through
+        // the platform file descriptor — more reliable than the path-only API.
+        final dir = await getTemporaryDirectory();
         final safeId = order.id.replaceAll('-', '');
         final f = File('${dir.path}/order_$safeId.pdf');
         await f.writeAsBytes(bytes, flush: true);
+        // Verify file was written correctly.
+        final written = await f.length();
+        if (written != bytes.length) {
+          _showOrderError('File write error: wrote $written of ${bytes.length} bytes');
+          return;
+        }
         if (!mounted) return;
         await Navigator.push(context, MaterialPageRoute(
           builder: (_) => Scaffold(
@@ -2521,7 +2528,8 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
                       maxLines: 1, overflow: TextOverflow.ellipsis),
               ]),
             ),
-            body: PdfViewer.file(f.path),
+            // Uri.file works better on Android for internal storage paths.
+            body: PdfViewer.uri(Uri.file(f.path)),
           ),
         ));
       } else {
