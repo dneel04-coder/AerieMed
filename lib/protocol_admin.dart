@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -382,10 +383,10 @@ class DeploymentOrder {
 
   factory DeploymentOrder.fromMap(Map<String, dynamic> m) => DeploymentOrder(
         id: m['id'] as String,
-        title: m['title'] as String,
+        title: m['title'] as String? ?? '',
         notes: m['notes'] as String? ?? '',
-        filePath: m['file_path'] as String,
-        fileName: m['file_name'] as String,
+        filePath: m['file_path'] as String? ?? '',
+        fileName: m['file_name'] as String? ?? '',
         uploadedAt: DateTime.tryParse(m['uploaded_at'] as String? ?? '') ?? DateTime.now(),
         uploadedBy: m['uploaded_by'] as String? ?? '',
       );
@@ -511,36 +512,46 @@ extension DeploymentOrderService on ProtocolSyncService {
     final client = await _client();
     if (client == null) throw Exception('Supabase not configured');
     final id = _newUuid();
-    final ext = fileName.contains('.') ? fileName.split('.').last : 'pdf';
-    final storagePath = '$id.$ext';
-    final contentType = ext == 'pdf' ? 'application/pdf' : 'application/octet-stream';
-    try {
-      await client.storage.from('deployment_orders').uploadBinary(
-        storagePath,
-        bytes,
-        fileOptions: FileOptions(upsert: true, contentType: contentType),
-      );
-    } on StorageException catch (e) {
-      final code = e.statusCode ?? '';
-      final msg = e.message.toLowerCase();
-      if (code == '404' || msg.contains('invalid path') || msg.contains('not found')) {
-        throw Exception(
-          'Storage bucket "deployment_orders" not found.\n'
-          'Go to Admin Panel → Protocol Management, tap the </> SQL button, '
-          'and run the schema in your Supabase project.',
-        );
-      }
-      rethrow;
-    }
+    // Store the file as base64 directly in the database row — no storage
+    // bucket required. Works immediately without any SQL setup.
+    final fileData = base64.encode(bytes);
     await client.from('deployment_orders').insert({
       'id': id,
       'title': title,
       'notes': notes,
-      'file_path': storagePath,
+      'file_path': '',
       'file_name': fileName,
+      'file_data': fileData,
       'uploaded_at': DateTime.now().toIso8601String(),
       'uploaded_by': uploadedBy,
     });
+  }
+
+  /// Fetches the raw file bytes for an order. Tries the inline base64 first,
+  /// then falls back to storage for orders uploaded before this change.
+  Future<Uint8List?> fetchOrderBytes(DeploymentOrder order) async {
+    final client = await _client();
+    if (client == null) return null;
+    try {
+      final row = await client
+          .from('deployment_orders')
+          .select('file_data, file_path')
+          .eq('id', order.id)
+          .single();
+      final data = row['file_data'] as String?;
+      if (data != null && data.isNotEmpty) {
+        return base64.decode(data);
+      }
+      // Legacy: try storage download for old orders
+      if ((row['file_path'] as String? ?? '').isNotEmpty) {
+        try {
+          return await client.storage
+              .from('deployment_orders')
+              .download(row['file_path'] as String);
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<void> deleteDeploymentOrder(DeploymentOrder order) async {
@@ -2026,11 +2037,14 @@ create table if not exists deployment_orders (
   id uuid default gen_random_uuid() primary key,
   title text not null,
   notes text default '',
-  file_path text not null,
-  file_name text not null,
+  file_path text not null default '',
+  file_name text not null default '',
+  file_data text default '',
   uploaded_at timestamptz default now(),
   uploaded_by text default ''
 );
+
+alter table deployment_orders add column if not exists file_data text default '';
 
 create table if not exists deployment_order_views (
   user_id text not null,

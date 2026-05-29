@@ -7,7 +7,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService;
 import 'user_profile.dart' show LoginScreen;
@@ -2470,47 +2469,18 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
   Future<void> _viewOrder(DeploymentOrder order) async {
     setState(() => _downloading.add(order.id));
 
-    Uint8List? bytes;
-    String? signedUrl;
-    final errors = <String>[];
-
-    final client = SupabaseService.client;
-    if (client != null && order.filePath.isNotEmpty) {
-      // 1. Authenticated SDK download (most reliable).
-      try {
-        bytes = await client.storage
-            .from('deployment_orders')
-            .download(order.filePath);
-      } catch (e) {
-        errors.add('SDK: $e');
-      }
-
-      // 2. Signed URL (works for any bucket type).
-      if (bytes == null) {
-        try {
-          signedUrl = await client.storage
-              .from('deployment_orders')
-              .createSignedUrl(order.filePath, 3600);
-        } catch (e) {
-          errors.add('Signed URL: $e');
-        }
-      }
-    } else {
-      errors.add('filePath is empty or Supabase not connected');
-    }
+    // Fetch bytes from database (base64) or legacy storage fallback.
+    final bytes = await ProtocolSyncService.instance.fetchOrderBytes(order);
 
     setState(() => _downloading.remove(order.id));
     await ProtocolSyncService.instance.markDeploymentOrderViewed(order.id);
     if (!mounted) return;
 
-    // Nothing worked — show diagnostic dialog.
-    if (bytes == null && signedUrl == null) {
+    if (bytes == null) {
       _showOrderError(
-        'file_path: "${order.filePath}"\n'
-        'file_name: "${order.fileName}"\n\n'
-        '${errors.join('\n\n')}\n\n'
-        'The file may not be in storage. Ask admin to delete this order '
-        'and re-upload it.',
+        'Could not load the file for this order.\n\n'
+        'This order was uploaded before the current version.\n'
+        'Please ask admin to delete it and re-upload.',
       );
       return;
     }
@@ -2518,49 +2488,13 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
     final ext = order.fileName.contains('.')
         ? order.fileName.split('.').last.toLowerCase()
         : '';
-    final isPdf = ext == 'pdf' || ext.isEmpty; // treat unknown extension as PDF
+    final isPdf = ext == 'pdf' || ext.isEmpty;
 
-    if (bytes != null) {
-      // Write to temp file and open.
-      try {
-        final dir = await getTemporaryDirectory();
-        final tmp = File('${dir.path}/order_${order.id}.$ext');
-        await tmp.writeAsBytes(bytes);
-        if (!mounted) return;
-        if (isPdf) {
-          await Navigator.push(context, MaterialPageRoute(
-            builder: (_) => Scaffold(
-              appBar: AppBar(
-                title: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min, children: [
-                  Text(order.title, style: const TextStyle(fontSize: 15)),
-                  if (order.notes.isNotEmpty)
-                    Text(order.notes, style: const TextStyle(fontSize: 11),
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
-                ]),
-              ),
-              body: PdfViewer.file(tmp.path),
-            ),
-          ));
-        } else {
-          await showDialog(context: context, builder: (_) => Dialog(
-            insetPadding: const EdgeInsets.all(8),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              AppBar(
-                automaticallyImplyLeading: false,
-                title: Text(order.title, style: const TextStyle(fontSize: 14)),
-                actions: [IconButton(icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context))],
-              ),
-              InteractiveViewer(child: Image.memory(bytes!)),
-            ]),
-          ));
-        }
-      } catch (e) {
-        if (mounted) _showOrderError('Open failed: $e');
-      }
-    } else {
-      // Open from signed URL.
+    try {
+      final dir = await getTemporaryDirectory();
+      final tmp = File('${dir.path}/order_${order.id}.${ext.isEmpty ? 'pdf' : ext}');
+      await tmp.writeAsBytes(bytes);
+      if (!mounted) return;
       if (isPdf) {
         await Navigator.push(context, MaterialPageRoute(
           builder: (_) => Scaffold(
@@ -2573,33 +2507,25 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
                       maxLines: 1, overflow: TextOverflow.ellipsis),
               ]),
             ),
-            body: PdfViewer.uri(Uri.parse(signedUrl!)),
+            body: PdfViewer.file(tmp.path),
           ),
         ));
       } else {
-        try {
-          final resp = await http.get(Uri.parse(signedUrl!))
-              .timeout(const Duration(seconds: 30));
-          if (resp.statusCode == 200 && mounted) {
-            await showDialog(context: context, builder: (_) => Dialog(
-              insetPadding: const EdgeInsets.all(8),
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                AppBar(
-                  automaticallyImplyLeading: false,
-                  title: Text(order.title),
-                  actions: [IconButton(icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.pop(context))],
-                ),
-                InteractiveViewer(child: Image.memory(resp.bodyBytes)),
-              ]),
-            ));
-          } else if (mounted) {
-            _showOrderError('HTTP ${resp.statusCode}\nURL: $signedUrl');
-          }
-        } catch (e) {
-          if (mounted) _showOrderError('$e');
-        }
+        await showDialog(context: context, builder: (_) => Dialog(
+          insetPadding: const EdgeInsets.all(8),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            AppBar(
+              automaticallyImplyLeading: false,
+              title: Text(order.title, style: const TextStyle(fontSize: 14)),
+              actions: [IconButton(icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context))],
+            ),
+            InteractiveViewer(child: Image.memory(bytes)),
+          ]),
+        ));
       }
+    } catch (e) {
+      if (mounted) _showOrderError('Open failed: $e');
     }
   }
 
