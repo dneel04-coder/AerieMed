@@ -447,25 +447,59 @@ extension DeploymentOrderService on ProtocolSyncService {
     } catch (_) {}
   }
 
-  Future<File?> downloadDeploymentOrder(DeploymentOrder order) async {
+  Future<({File? file, String? error})> downloadDeploymentOrderWithError(
+      DeploymentOrder order) async {
+    final client = await _client();
+    if (client == null) return (file: null, error: 'Supabase not connected');
     try {
       final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/deployment_orders/${order.id}_${order.fileName}');
-      if (await file.exists()) return file;
-      await file.parent.create(recursive: true);
-      // Build the public storage URL directly — no Supabase SDK involved so no
-      // StorageException can be thrown regardless of SDK or path validation state.
+      final localFile =
+          File('${dir.path}/deployment_orders/${order.id}_${order.fileName}');
+      if (await localFile.exists()) return (file: localFile, error: null);
+      await localFile.parent.create(recursive: true);
+
+      // 1. Try SDK download (authenticated — works for any bucket type).
+      try {
+        final bytes = await client.storage
+            .from('deployment_orders')
+            .download(order.filePath);
+        await localFile.writeAsBytes(bytes);
+        return (file: localFile, error: null);
+      } catch (_) {}
+
+      // 2. Try signed URL (60-second validity, any bucket).
+      try {
+        final signed = await client.storage
+            .from('deployment_orders')
+            .createSignedUrl(order.filePath, 60);
+        final resp = await http.get(Uri.parse(signed))
+            .timeout(const Duration(seconds: 30));
+        if (resp.statusCode == 200) {
+          await localFile.writeAsBytes(resp.bodyBytes);
+          return (file: localFile, error: null);
+        }
+      } catch (_) {}
+
+      // 3. Fall back to public URL with anon key header.
       const base = 'https://vlgiclyuxaleyusalexo.supabase.co';
-      final url = '$base/storage/v1/object/public/deployment_orders/${order.filePath}';
-      final response = await http.get(Uri.parse(url))
-          .timeout(const Duration(seconds: 30));
-      if (response.statusCode != 200) throw Exception('HTTP ${response.statusCode}');
-      await file.writeAsBytes(response.bodyBytes);
-      return file;
-    } catch (_) {
-      return null;
+      const anon = 'sb_publishable_U6M_YMbubI1Y8qD4a3SKCA_Oeo6L75B';
+      final resp = await http.get(
+        Uri.parse('$base/storage/v1/object/deployment_orders/${order.filePath}'),
+        headers: {'Authorization': 'Bearer $anon', 'apikey': anon},
+      ).timeout(const Duration(seconds: 30));
+      if (resp.statusCode == 200) {
+        await localFile.writeAsBytes(resp.bodyBytes);
+        return (file: localFile, error: null);
+      }
+      return (file: null, error: 'HTTP ${resp.statusCode} — file may not be in storage. Ask admin to re-upload this order.');
+    } catch (e) {
+      return (file: null, error: e.toString());
     }
   }
+
+  // Keep old signature for compatibility.
+  Future<File?> downloadDeploymentOrder(DeploymentOrder order) async =>
+      (await downloadDeploymentOrderWithError(order)).file;
 
   Future<void> uploadDeploymentOrder({
     required String title,

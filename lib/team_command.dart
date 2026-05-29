@@ -2467,17 +2467,18 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
 
   Future<void> _viewOrder(DeploymentOrder order) async {
     setState(() => _downloading.add(order.id));
-    final file = await ProtocolSyncService.instance.downloadDeploymentOrder(order);
+    final result = await ProtocolSyncService.instance.downloadDeploymentOrderWithError(order);
     setState(() => _downloading.remove(order.id));
-    if (file == null) {
+    if (result.file == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Could not open order — file may not be in storage yet. Ask admin to re-upload.'),
-          duration: Duration(seconds: 6),
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(result.error ?? 'Download failed'),
+          duration: const Duration(seconds: 8),
         ));
       }
       return;
     }
+    final file = result.file!;
     await ProtocolSyncService.instance.markDeploymentOrderViewed(order.id);
     if (!mounted) return;
     final ext = order.fileName.split('.').last.toLowerCase();
