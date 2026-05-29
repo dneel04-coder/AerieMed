@@ -138,6 +138,23 @@ class CertSyncer {
         : 'jpg';
     final storagePath = '$userId/${cert.id}.$ext';
 
+    // Delete old Supabase rows for this user + cert type before uploading.
+    try {
+      final oldRows = await client
+          .from('team_certs')
+          .select('id, file_path')
+          .eq('user_id', userId)
+          .eq('license_type', cert.licenseType)
+          .neq('id', cert.id) as List;
+      for (final old in oldRows) {
+        final oldPath = old['file_path'] as String? ?? '';
+        if (oldPath.isNotEmpty) {
+          try { await client.storage.from('certs').remove([oldPath]); } catch (_) {}
+        }
+        try { await client.from('team_certs').delete().eq('id', old['id']); } catch (_) {}
+      }
+    } catch (_) {}
+
     // Storage upload is best-effort — if the bucket doesn't exist yet the
     // metadata row still gets written so the cert appears in the admin panel.
     try {
@@ -384,7 +401,15 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
           originalFileName: name,
           uploadedAt: DateTime.now(),
         );
-        setState(() => _certs.add(cert));
+        // Remove any existing cert of the same type before adding the new one.
+        final oldCerts = _certs.where((c) => c.licenseType == cert.licenseType).toList();
+        for (final old in oldCerts) {
+          try { await File(old.filePath).delete(); } catch (_) {}
+        }
+        setState(() {
+          _certs.removeWhere((c) => c.licenseType == cert.licenseType);
+          _certs.add(cert);
+        });
         await _CertStorage.save(_certs);
         CertSyncer.syncAll(_certs); // fire-and-forget
       } else {

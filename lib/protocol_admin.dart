@@ -317,6 +317,20 @@ class ProtocolSyncService {
       return [];
     }
   }
+
+  Future<bool> adminDeleteCert(String id, String filePath) async {
+    final client = await _client();
+    if (client == null) return false;
+    try {
+      if (filePath.isNotEmpty) {
+        try { await client.storage.from('certs').remove([filePath]); } catch (_) {}
+      }
+      await client.from('team_certs').delete().eq('id', id);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 }
 
 
@@ -1478,6 +1492,40 @@ class _AdminCertsScreenState extends State<AdminCertsScreen> {
     }
   }
 
+  Future<void> _confirmDelete(Map<String, dynamic> cert) async {
+    final type = cert['license_type'] as String? ?? 'cert';
+    final callsign = cert['callsign'] as String? ?? '';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Certification?'),
+        content: Text('Delete $type for $callsign? This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final ok = await ProtocolSyncService.instance.adminDeleteCert(
+      cert['id'] as String,
+      cert['file_path'] as String? ?? '',
+    );
+    if (!mounted) return;
+    if (ok) {
+      setState(() => _rows.removeWhere((r) => r['id'] == cert['id']));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Certification deleted.')));
+    } else {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Delete failed — check Supabase connection.')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -1539,10 +1587,17 @@ class _AdminCertsScreenState extends State<AdminCertsScreen> {
                                         fontSize: 11, color: Colors.grey)),
                             ]),
                         isThreeLine: true,
-                        trailing: TextButton(
-                          onPressed: () => _viewCert(cert),
-                          child: const Text('View'),
-                        ),
+                        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                          TextButton(
+                            onPressed: () => _viewCert(cert),
+                            child: const Text('View'),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline, color: Colors.red),
+                            tooltip: 'Delete',
+                            onPressed: () => _confirmDelete(cert),
+                          ),
+                        ]),
                       );
                     }).toList(),
                   ),
