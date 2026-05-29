@@ -512,45 +512,39 @@ extension DeploymentOrderService on ProtocolSyncService {
     final client = await _client();
     if (client == null) throw Exception('Supabase not configured');
     final id = _newUuid();
-    // Store the file as base64 directly in the database row — no storage
-    // bucket required. Works immediately without any SQL setup.
-    final fileData = base64.encode(bytes);
+    // Store the file as base64 in the file_path column with a 'base64:' prefix.
+    // No extra column needed — works with the existing schema immediately.
+    final fileData = 'base64:${base64.encode(bytes)}';
     await client.from('deployment_orders').insert({
       'id': id,
       'title': title,
       'notes': notes,
-      'file_path': '',
+      'file_path': fileData,
       'file_name': fileName,
-      'file_data': fileData,
       'uploaded_at': DateTime.now().toIso8601String(),
       'uploaded_by': uploadedBy,
     });
   }
 
-  /// Fetches the raw file bytes for an order. Tries the inline base64 first,
-  /// then falls back to storage for orders uploaded before this change.
+  /// Fetches the raw file bytes for an order.
+  /// New orders: file_path starts with 'base64:' — decode directly.
+  /// Legacy orders: file_path is a storage path — try SDK download.
   Future<Uint8List?> fetchOrderBytes(DeploymentOrder order) async {
-    final client = await _client();
-    if (client == null) return null;
-    try {
-      final row = await client
-          .from('deployment_orders')
-          .select('file_data, file_path')
-          .eq('id', order.id)
-          .single();
-      final data = row['file_data'] as String?;
-      if (data != null && data.isNotEmpty) {
-        return base64.decode(data);
-      }
-      // Legacy: try storage download for old orders
-      if ((row['file_path'] as String? ?? '').isNotEmpty) {
+    // New format: base64 embedded in file_path
+    if (order.filePath.startsWith('base64:')) {
+      try { return base64.decode(order.filePath.substring(7)); } catch (_) {}
+    }
+    // Legacy: try storage download
+    if (order.filePath.isNotEmpty) {
+      final client = await _client();
+      if (client != null) {
         try {
           return await client.storage
               .from('deployment_orders')
-              .download(row['file_path'] as String);
+              .download(order.filePath);
         } catch (_) {}
       }
-    } catch (_) {}
+    }
     return null;
   }
 
@@ -2039,12 +2033,9 @@ create table if not exists deployment_orders (
   notes text default '',
   file_path text not null default '',
   file_name text not null default '',
-  file_data text default '',
   uploaded_at timestamptz default now(),
   uploaded_by text default ''
 );
-
-alter table deployment_orders add column if not exists file_data text default '';
 
 create table if not exists deployment_order_views (
   user_id text not null,
