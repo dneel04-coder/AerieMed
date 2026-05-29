@@ -4,10 +4,9 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:pdfrx/pdfrx.dart';
+import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:path_provider/path_provider.dart';
 import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService;
 import 'user_profile.dart' show LoginScreen;
 
@@ -2560,31 +2559,19 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
 
     try {
       if (isPdf) {
-        // Validate PDF magic bytes before attempting to open.
         final magic = bytes.length >= 4
             ? String.fromCharCodes(bytes.sublist(0, 4))
             : '';
         if (!magic.startsWith('%PDF')) {
           _showOrderError(
-            'File does not appear to be a valid PDF '
-            '(${bytes.length} bytes, magic: "$magic").\n'
-            'Ask admin to delete this order and re-upload.',
+            'Not a valid PDF (${bytes.length} bytes, header: "$magic").\n'
+            'Delete this order and re-upload.',
           );
           return;
         }
-        // Write to temp dir. On Android use Uri.file() which routes through
-        // the platform file descriptor — more reliable than the path-only API.
-        final dir = await getTemporaryDirectory();
-        final safeId = order.id.replaceAll('-', '');
-        final f = File('${dir.path}/order_$safeId.pdf');
-        await f.writeAsBytes(bytes, flush: true);
-        // Verify file was written correctly.
-        final written = await f.length();
-        if (written != bytes.length) {
-          _showOrderError('File write error: wrote $written of ${bytes.length} bytes');
-          return;
-        }
         if (!mounted) return;
+        // PdfPreview renders via bitmap on Android — more reliable than pdfrx.
+        final capturedBytes = bytes;
         await Navigator.push(context, MaterialPageRoute(
           builder: (_) => Scaffold(
             appBar: AppBar(
@@ -2596,22 +2583,48 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
                       maxLines: 1, overflow: TextOverflow.ellipsis),
               ]),
             ),
-            // Uri.file works better on Android for internal storage paths.
-            body: PdfViewer.uri(Uri.file(f.path)),
+            body: PdfPreview(
+              build: (_) async => capturedBytes,
+              allowSharing: false,
+              allowPrinting: false,
+              canChangePageFormat: false,
+              canDebug: false,
+            ),
           ),
         ));
       } else {
-        await showDialog(context: context, builder: (_) => Dialog(
-          insetPadding: const EdgeInsets.all(8),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            AppBar(
-              automaticallyImplyLeading: false,
-              title: Text(order.title, style: const TextStyle(fontSize: 14)),
-              actions: [IconButton(icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(context))],
+        // Image (JPEG, PNG, etc.)
+        if (!mounted) return;
+        await Navigator.push(context, MaterialPageRoute(
+          builder: (_) => Scaffold(
+            backgroundColor: Colors.black,
+            appBar: AppBar(
+              backgroundColor: Colors.black,
+              foregroundColor: Colors.white,
+              title: Text(order.title,
+                  style: const TextStyle(fontSize: 15, color: Colors.white)),
             ),
-            InteractiveViewer(child: Image.memory(bytes)),
-          ]),
+            body: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 5.0,
+              child: Center(
+                child: Image.memory(
+                  bytes,
+                  errorBuilder: (_, err, __) => Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        'Image could not be displayed.\n'
+                        '${bytes.length} bytes, ext: $ext\n$err',
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ));
       }
     } catch (e) {
