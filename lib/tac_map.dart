@@ -729,7 +729,13 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       setState(() {
         for (final r in users as List) {
           final u = TacUser.fromMap(r as Map<String, dynamic>);
-          _users[u.id] = u;
+          // Never replace a fresher in-memory entry (e.g. optimistic update)
+          // with a staler database row — this prevents the periodic 30-sec
+          // refresh from flickering icons off the map.
+          final existing = _users[u.id];
+          if (existing == null || u.updatedAt.isAfter(existing.updatedAt)) {
+            _users[u.id] = u;
+          }
         }
       });
     } catch (_) {}
@@ -1261,9 +1267,6 @@ class _TeamPanelState extends State<_TeamPanel> {
         ? widget.users
         : widget.users.where((u) => u.missionCode == widget.missionCode).toList();
 
-    final missions = widget.users.map((u) => u.missionCode).toSet();
-    final multiMission = missions.length > 1 || (missions.isNotEmpty && !missions.contains(widget.missionCode));
-
     return Container(
       color: Theme.of(context).colorScheme.surface,
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1276,25 +1279,24 @@ class _TeamPanelState extends State<_TeamPanel> {
               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
             ),
             const SizedBox(width: 6),
-            if (multiMission)
-              GestureDetector(
-                onTap: () => setState(() => _showAll = !_showAll),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: _showAll ? Colors.indigo : Colors.grey.shade300,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    _showAll ? 'All' : 'Mine',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      color: _showAll ? Colors.white : Colors.black87,
-                    ),
+            GestureDetector(
+              onTap: () => setState(() => _showAll = !_showAll),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _showAll ? Colors.indigo : Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  _showAll ? 'All' : 'Mine',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: _showAll ? Colors.white : Colors.black87,
                   ),
                 ),
               ),
+            ),
             const SizedBox(width: 4),
             Expanded(
               child: SingleChildScrollView(
