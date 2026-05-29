@@ -138,13 +138,14 @@ class CertSyncer {
         : 'jpg';
     final storagePath = '$userId/${cert.id}.$ext';
 
-    // Delete old Supabase rows for this user + cert type before uploading.
+    // Delete old Supabase rows for this user + cert type + state before uploading.
     try {
       final oldRows = await client
           .from('team_certs')
           .select('id, file_path')
           .eq('user_id', userId)
           .eq('license_type', cert.licenseType)
+          .eq('state', cert.state)
           .neq('id', cert.id) as List;
       for (final old in oldRows) {
         final oldPath = old['file_path'] as String? ?? '';
@@ -401,13 +402,15 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
           originalFileName: name,
           uploadedAt: DateTime.now(),
         );
-        // Remove any existing cert of the same type before adding the new one.
-        final oldCerts = _certs.where((c) => c.licenseType == cert.licenseType).toList();
+        // Replace an existing cert only when both type AND state match.
+        final oldCerts = _certs
+            .where((c) => c.licenseType == cert.licenseType && c.state == cert.state)
+            .toList();
         for (final old in oldCerts) {
           try { await File(old.filePath).delete(); } catch (_) {}
         }
         setState(() {
-          _certs.removeWhere((c) => c.licenseType == cert.licenseType);
+          _certs.removeWhere((c) => c.licenseType == cert.licenseType && c.state == cert.state);
           _certs.add(cert);
         });
         await _CertStorage.save(_certs);
