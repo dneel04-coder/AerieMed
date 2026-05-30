@@ -96,13 +96,221 @@ class _ResQruckAppState extends State<ResQruckApp> {
       home: !_authChecked
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : _loggedIn
-              ? TableOfContentsScreen(onThemeToggle: toggleTheme, onLogout: _logout)
+              ? MainShell(onThemeToggle: toggleTheme, onLogout: _logout)
               : LoginScreen(onLoggedIn: () {
                   if (mounted) setState(() => _loggedIn = true);
                 }),
     );
   }
 }
+
+// ── Bottom-nav shell ─────────────────────────────────────────────────────────
+
+class MainShell extends StatefulWidget {
+  final VoidCallback onThemeToggle;
+  final VoidCallback onLogout;
+  const MainShell({super.key, required this.onThemeToggle, required this.onLogout});
+
+  @override
+  State<MainShell> createState() => _MainShellState();
+}
+
+class _MainShellState extends State<MainShell> {
+  int _tab = 2; // start on Med
+  bool _isAdmin = false;
+
+  @override
+  void initState() {
+    super.initState();
+    ProtocolSyncService.instance.isAdminMode.then((v) {
+      if (mounted) setState(() => _isAdmin = v);
+    });
+  }
+
+  Future<void> _onTabTap(int index) async {
+    if (index == 4 && !_isAdmin) {
+      // Show credential prompt without switching tab.
+      final ok = await showAdminPinDialog(context);
+      if (!ok || !mounted) return;
+      await ProtocolSyncService.instance.setAdminMode(true);
+      if (mounted) setState(() { _isAdmin = true; _tab = 4; });
+      return;
+    }
+    setState(() => _tab = index);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(
+        index: _tab,
+        children: [
+          const TeamCommandScreen(),
+          const TacMapScreen(),
+          MedHomeScreen(onThemeToggle: widget.onThemeToggle, onLogout: widget.onLogout),
+          const CertVaultScreen(),
+          _AdminShell(
+            isAdmin: _isAdmin,
+            onUnlocked: () => setState(() { _isAdmin = true; _tab = 4; }),
+          ),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: _onTabTap,
+        destinations: const [
+          NavigationDestination(
+              icon: Icon(Icons.people_outlined),
+              selectedIcon: Icon(Icons.people),
+              label: 'Team'),
+          NavigationDestination(
+              icon: Icon(Icons.radar_outlined),
+              selectedIcon: Icon(Icons.radar),
+              label: 'Map'),
+          NavigationDestination(
+              icon: Icon(Icons.medical_services_outlined),
+              selectedIcon: Icon(Icons.medical_services),
+              label: 'Med'),
+          NavigationDestination(
+              icon: Icon(Icons.workspace_premium_outlined),
+              selectedIcon: Icon(Icons.workspace_premium),
+              label: 'Certs'),
+          NavigationDestination(
+              icon: Icon(Icons.settings_outlined),
+              selectedIcon: Icon(Icons.settings),
+              label: 'Admin'),
+        ],
+      ),
+    );
+  }
+}
+
+
+// ── Med placeholder ───────────────────────────────────────────────────────────
+
+class MedHomeScreen extends StatelessWidget {
+  final VoidCallback onThemeToggle;
+  final VoidCallback onLogout;
+  const MedHomeScreen({super.key, required this.onThemeToggle, required this.onLogout});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('ResQruck'),
+        actions: [
+          IconButton(
+              icon: const Icon(Icons.brightness_medium),
+              onPressed: onThemeToggle),
+        ],
+      ),
+      drawer: Drawer(
+        child: Column(children: [
+          DrawerHeader(
+            decoration: BoxDecoration(color: cs.primary),
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  const Icon(Icons.menu_book, color: Colors.white, size: 32),
+                  const SizedBox(height: 8),
+                  const Text('Protocols',
+                      style: TextStyle(color: Colors.white, fontSize: 22,
+                          fontWeight: FontWeight.bold)),
+                  Text('v$kCurrentVersion',
+                      style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.8), fontSize: 12)),
+                ]),
+          ),
+          ListTile(
+            leading: const Icon(Icons.menu_book_outlined),
+            title: const Text('Protocols & Clinical Tools'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(context, MaterialPageRoute(
+                builder: (_) => TableOfContentsScreen(
+                    onThemeToggle: onThemeToggle, onLogout: onLogout),
+              ));
+            },
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.logout, color: Colors.red),
+            title: const Text('Log Out', style: TextStyle(color: Colors.red)),
+            onTap: () { Navigator.pop(context); onLogout(); },
+          ),
+        ]),
+      ),
+      body: Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.medical_services_outlined, size: 80, color: cs.primary),
+          const SizedBox(height: 20),
+          Text('Medical Protocols & Tools',
+              style: Theme.of(context)
+                  .textTheme
+                  .headlineSmall
+                  ?.copyWith(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text('Tap below to browse protocols and clinical tools',
+              style: TextStyle(color: cs.onSurfaceVariant)),
+          const SizedBox(height: 32),
+          FilledButton.icon(
+            icon: const Icon(Icons.menu_book_outlined),
+            label: const Text('Protocols & Clinical Tools'),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(
+              builder: (_) => TableOfContentsScreen(
+                  onThemeToggle: onThemeToggle, onLogout: onLogout),
+            )),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+
+// ── Admin tab shell ───────────────────────────────────────────────────────────
+
+class _AdminShell extends StatelessWidget {
+  final bool isAdmin;
+  final VoidCallback onUnlocked;
+  const _AdminShell({required this.isAdmin, required this.onUnlocked});
+
+  @override
+  Widget build(BuildContext context) {
+    if (isAdmin) return const AdminPanelScreen();
+    final cs = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.lock_outline, size: 72, color: cs.primary),
+          const SizedBox(height: 16),
+          const Text('Admin Area',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text('Enter your admin credentials to continue',
+              style: TextStyle(color: cs.onSurfaceVariant)),
+          const SizedBox(height: 28),
+          FilledButton.icon(
+            icon: const Icon(Icons.lock_open_outlined),
+            label: const Text('Enter Credentials'),
+            onPressed: () async {
+              final ok = await showAdminPinDialog(context);
+              if (ok) {
+                await ProtocolSyncService.instance.setAdminMode(true);
+                onUnlocked();
+              }
+            },
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+
+// ── Protocol list (drawer content) ───────────────────────────────────────────
 
 class TableOfContentsScreen extends StatefulWidget {
   final VoidCallback onThemeToggle;
