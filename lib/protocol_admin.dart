@@ -874,8 +874,21 @@ class _ProtocolViewScreen extends StatelessWidget {
 }
 
 
-class AdminPanelScreen extends StatelessWidget {
+class AdminPanelScreen extends StatefulWidget {
   const AdminPanelScreen({super.key});
+
+  @override
+  State<AdminPanelScreen> createState() => _AdminPanelScreenState();
+}
+
+class _AdminPanelScreenState extends State<AdminPanelScreen> {
+  @override
+  void initState() {
+    super.initState();
+    ProtocolSyncService.instance.isAdminMode.then((ok) {
+      if (!ok && mounted) Navigator.pop(context);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1016,6 +1029,9 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
   @override
   void initState() {
     super.initState();
+    ProtocolSyncService.instance.isAdminMode.then((ok) {
+      if (!ok && mounted) Navigator.pop(context);
+    });
     _load();
   }
 
@@ -1381,6 +1397,9 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
   @override
   void initState() {
     super.initState();
+    ProtocolSyncService.instance.isAdminMode.then((ok) {
+      if (!ok && mounted) Navigator.pop(context);
+    });
     _load();
   }
 
@@ -1487,6 +1506,9 @@ class _AdminCertsScreenState extends State<AdminCertsScreen> {
   @override
   void initState() {
     super.initState();
+    ProtocolSyncService.instance.isAdminMode.then((ok) {
+      if (!ok && mounted) Navigator.pop(context);
+    });
     _load();
   }
 
@@ -1718,6 +1740,9 @@ class _AdminDeploymentOrdersScreenState
   @override
   void initState() {
     super.initState();
+    ProtocolSyncService.instance.isAdminMode.then((ok) {
+      if (!ok && mounted) Navigator.pop(context);
+    });
     _load();
   }
 

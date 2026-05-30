@@ -12,6 +12,9 @@ import 'package:http/io_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'protocol_admin.dart' show SupabaseService;
+import 'gps_tools.dart';
+import 'offline_maps.dart';
+import 'sun_weather.dart';
 
 // ftp.wildfire.gov uses a government CA not in Dart's default trust store.
 // Returns an http.Client that skips cert verification for that host only.
@@ -968,6 +971,11 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               ),
             ),
           IconButton(
+            icon: const Icon(Icons.build_outlined),
+            tooltip: 'Field Tools',
+            onPressed: _showFieldTools,
+          ),
+          IconButton(
             icon: const Icon(Icons.layers),
             tooltip: 'Map Layers',
             onPressed: _showLayerPicker,
@@ -1102,6 +1110,56 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             },
           ),
         ],
+      ),
+    );
+  }
+
+  void _showFieldTools() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 14, 16, 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Field Tools',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.gps_fixed, color: Colors.blue),
+            title: const Text('GPS Tools'),
+            subtitle: const Text('Coordinates, what3words, saved locations'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const GpsToolsScreen()));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.map_outlined, color: Colors.brown),
+            title: const Text('Offline Maps'),
+            subtitle: const Text('Download and manage offline tiles'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const OfflineMapsScreen()));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.wb_sunny_outlined, color: Colors.amber),
+            title: const Text('Sun & Weather'),
+            subtitle: const Text('Sunrise/sunset, weather forecast'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const SunWeatherScreen()));
+            },
+          ),
+          const SizedBox(height: 8),
+        ]),
       ),
     );
   }

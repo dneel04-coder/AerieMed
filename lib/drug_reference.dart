@@ -268,7 +268,8 @@ const List<Drug> kDrugs = [
 
 
 class DrugReferenceScreen extends StatefulWidget {
-  const DrugReferenceScreen({super.key});
+  final bool embedded;
+  const DrugReferenceScreen({super.key, this.embedded = false});
 
   @override
   State<DrugReferenceScreen> createState() => _DrugReferenceScreenState();
@@ -296,64 +297,66 @@ class _DrugReferenceScreenState extends State<DrugReferenceScreen> {
     }).toList();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Drug Reference'),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(56),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: TextField(
-              controller: _searchCtrl,
-              decoration: InputDecoration(
-                hintText: 'Search drugs...',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _query.isNotEmpty
-                    ? IconButton(icon: const Icon(Icons.clear), onPressed: () { setState(() { _query = ''; _searchCtrl.clear(); }); })
-                    : null,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                filled: true,
-                isDense: true,
-                fillColor: Theme.of(context).brightness == Brightness.light ? Colors.white : Colors.grey[800],
-              ),
-              onChanged: (v) => setState(() => _query = v),
-            ),
+  Widget _buildBody() {
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+        child: TextField(
+          controller: _searchCtrl,
+          decoration: InputDecoration(
+            hintText: 'Search drugs...',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: _query.isNotEmpty
+                ? IconButton(
+                    icon: const Icon(Icons.clear),
+                    onPressed: () => setState(() { _query = ''; _searchCtrl.clear(); }))
+                : null,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            filled: true,
+            isDense: true,
+            fillColor: Theme.of(context).brightness == Brightness.light
+                ? Colors.white
+                : Colors.grey[800],
           ),
+          onChanged: (v) => setState(() => _query = v),
         ),
       ),
-      body: Column(
-        children: [
-          SizedBox(
-            height: 44,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              itemCount: _categories.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (_, i) {
-                final cat = _categories[i];
-                final selected = _categoryFilter == cat;
-                return FilterChip(
-                  label: Text(cat, style: const TextStyle(fontSize: 12)),
-                  selected: selected,
-                  onSelected: (_) => setState(() => _categoryFilter = cat),
-                );
-              },
-            ),
-          ),
-          Expanded(
-            child: _filtered.isEmpty
-                ? const Center(child: Text('No drugs match your search.'))
-                : ListView.builder(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: _filtered.length,
-                    itemBuilder: (_, i) => _DrugCard(drug: _filtered[i]),
-                  ),
-          ),
-        ],
+      SizedBox(
+        height: 44,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          itemCount: _categories.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 8),
+          itemBuilder: (_, i) {
+            final cat = _categories[i];
+            final selected = _categoryFilter == cat;
+            return FilterChip(
+              label: Text(cat, style: const TextStyle(fontSize: 12)),
+              selected: selected,
+              onSelected: (_) => setState(() => _categoryFilter = cat),
+            );
+          },
+        ),
       ),
+      Expanded(
+        child: _filtered.isEmpty
+            ? const Center(child: Text('No drugs match your search.'))
+            : ListView.builder(
+                padding: const EdgeInsets.all(12),
+                itemCount: _filtered.length,
+                itemBuilder: (_, i) => _DrugCard(drug: _filtered[i]),
+              ),
+      ),
+    ]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.embedded) return _buildBody();
+    return Scaffold(
+      appBar: AppBar(title: const Text('Drug Reference')),
+      body: _buildBody(),
     );
   }
 }

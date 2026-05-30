@@ -453,13 +453,296 @@ class HandoffStorage {
 }
 
 
-class TeamCommandScreen extends StatelessWidget {
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+
+class TeamCommandScreen extends StatefulWidget {
   const TeamCommandScreen({super.key});
+
+  @override
+  State<TeamCommandScreen> createState() => _TeamCommandScreenState();
+}
+
+class _TeamCommandScreenState extends State<TeamCommandScreen> {
+  List<Map<String, dynamic>> _profiles = [];
+  Map<String, String> _todayAvailability = {};
+  List<DeploymentOrder> _unreadOrders = [];
+  bool _isAdmin = false;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    ProtocolSyncService.instance.isAdminMode
+        .then((v) { if (mounted) setState(() => _isAdmin = v); });
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) { if (mounted) setState(() => _loading = false); return; }
+    try {
+      final client = SupabaseService.client!;
+      final today = DateTime.now();
+      final dateStr =
+          '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+
+      final profilesRaw = await client.from('user_profiles').select('user_id, name, callsign') as List;
+      final availRaw = await client.from('team_availability').select('user_id, status').eq('date', dateStr) as List;
+      final unread = await ProtocolSyncService.instance.pendingDeploymentOrders();
+      final avail = <String, String>{};
+      for (final r in availRaw) {
+        avail[r['user_id'] as String] = r['status'] as String? ?? 'Available';
+      }
+      if (mounted) setState(() {
+        _profiles = List<Map<String, dynamic>>.from(profilesRaw);
+        _todayAvailability = avail;
+        _unreadOrders = unread;
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  int _count(List<String> statuses) => _profiles.where((p) {
+        final s = _todayAvailability[p['user_id'] as String] ?? 'Available';
+        return statuses.contains(s);
+      }).length;
+
+  void _openFull([int tab = 0]) => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => _TeamCommandTabs(initialTab: tab)));
+
+  @override
+  Widget build(BuildContext context) {
+    final available = _count(['Available', 'Partial']);
+    final deployed  = _count(['Deployed']);
+    final offDuty   = _count(['Unavailable']);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Team Command'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.open_in_new),
+            tooltip: 'Full Command View',
+            onPressed: () => _openFull(),
+          ),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+                children: [
+                  // ── Stat chips ────────────────────────────────────────────
+                  Row(children: [
+                    Expanded(child: _StatChip('Available', available,
+                        const Color(0xFF2E7D32), Icons.check_circle_outline)),
+                    const SizedBox(width: 10),
+                    Expanded(child: _StatChip('Deployed', deployed,
+                        const Color(0xFF1565C0), Icons.flight_takeoff_outlined)),
+                    const SizedBox(width: 10),
+                    Expanded(child: _StatChip('Off-Duty', offDuty,
+                        Colors.grey, Icons.do_not_disturb_outlined)),
+                  ]),
+                  const SizedBox(height: 16),
+
+                  // ── Unread orders banner ──────────────────────────────────
+                  if (_unreadOrders.isNotEmpty)
+                    GestureDetector(
+                      onTap: () => _openFull(4),
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 16),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withValues(alpha: 0.12),
+                          border: Border.all(
+                              color: Colors.orange.withValues(alpha: 0.6)),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(children: [
+                          Stack(children: [
+                            const Icon(Icons.assignment_outlined,
+                                color: Colors.orange, size: 28),
+                            Positioned(
+                              top: 0, right: 0,
+                              child: Container(
+                                padding: const EdgeInsets.all(3),
+                                decoration: const BoxDecoration(
+                                    color: Colors.red,
+                                    shape: BoxShape.circle),
+                                child: Text('${_unreadOrders.length}',
+                                    style: const TextStyle(
+                                        fontSize: 9,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                          ]),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                              Text(
+                                '${_unreadOrders.length} Unread Deployment Order${_unreadOrders.length == 1 ? '' : 's'}',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.orange)),
+                              Text(_unreadOrders.first.title,
+                                  style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.orange),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis),
+                            ]),
+                          ),
+                          const Icon(Icons.chevron_right,
+                              color: Colors.orange),
+                        ]),
+                      ),
+                    ),
+
+                  // ── QuickDeploy button ────────────────────────────────────
+                  _QuickDeployButton(
+                    isAdmin: _isAdmin,
+                    onTap: () => _openFull(_isAdmin ? 4 : 5),
+                  ),
+                  const SizedBox(height: 24),
+
+                  // ── Full Command nav ──────────────────────────────────────
+                  const _SectionHeader('Full Command'),
+                  _CommandNavTile(Icons.account_tree_outlined,
+                      'Incident Command', () => _openFull(0)),
+                  _CommandNavTile(Icons.people_outlined,
+                      'Roster & Profiles', () => _openFull(1)),
+                  _CommandNavTile(Icons.task_alt,
+                      'Tasks', () => _openFull(2)),
+                  _CommandNavTile(Icons.handshake_outlined,
+                      'Shift Handoff', () => _openFull(3)),
+                  _CommandNavTile(Icons.assignment_outlined,
+                      'Deployment Orders', () => _openFull(4)),
+                  _CommandNavTile(Icons.calendar_month_outlined,
+                      'Availability Calendar', () => _openFull(5)),
+                ],
+              ),
+            ),
+    );
+  }
+}
+
+class _StatChip extends StatelessWidget {
+  final String label;
+  final int count;
+  final Color color;
+  final IconData icon;
+  const _StatChip(this.label, this.count, this.color, this.icon);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, color: color, size: 22),
+        const SizedBox(height: 4),
+        Text('$count',
+            style: TextStyle(
+                fontSize: 22, fontWeight: FontWeight.bold, color: color)),
+        Text(label,
+            style: TextStyle(fontSize: 11, color: color),
+            textAlign: TextAlign.center),
+      ]),
+    );
+  }
+}
+
+class _QuickDeployButton extends StatelessWidget {
+  final bool isAdmin;
+  final VoidCallback onTap;
+  const _QuickDeployButton({required this.isAdmin, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: FilledButton.icon(
+        style: FilledButton.styleFrom(
+          backgroundColor: const Color(0xFF1565C0),
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle: const TextStyle(
+              fontSize: 17, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+        ),
+        icon: const Icon(Icons.flight_takeoff, size: 22),
+        label: Text(isAdmin ? '⚡  Push Deployment Order' : '⚡  Set My Status'),
+        onPressed: onTap,
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  const _SectionHeader(this.title);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(title.toUpperCase(),
+          style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.2,
+              color: Theme.of(context).colorScheme.onSurfaceVariant)),
+    );
+  }
+}
+
+class _CommandNavTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _CommandNavTile(this.icon, this.label, this.onTap);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 6),
+      child: ListTile(
+        leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
+        title: Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: onTap,
+        dense: true,
+      ),
+    );
+  }
+}
+
+
+// ── Full tabbed command view ──────────────────────────────────────────────────
+
+class _TeamCommandTabs extends StatelessWidget {
+  final int initialTab;
+  const _TeamCommandTabs({this.initialTab = 0});
 
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
       length: 6,
+      initialIndex: initialTab,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Team Command'),

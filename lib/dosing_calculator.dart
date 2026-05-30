@@ -216,7 +216,8 @@ int _broslow(double heightCm) {
 
 
 class DosingCalculatorScreen extends StatefulWidget {
-  const DosingCalculatorScreen({super.key});
+  final bool embedded;
+  const DosingCalculatorScreen({super.key, this.embedded = false});
 
   @override
   State<DosingCalculatorScreen> createState() => _DosingCalculatorScreenState();
@@ -254,15 +255,11 @@ class _DosingCalculatorScreenState extends State<DosingCalculatorScreen> {
     return f.maxDose != null && raw >= f.maxDose!;
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildBody(BuildContext context) {
     final wKg = _weightKg;
     final heightRaw = double.tryParse(_heightCtrl.text);
     final broslowEst = heightRaw != null && heightRaw > 0 ? _broslow(heightRaw) : null;
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('Dosing Calculator')),
-      body: Column(
+    return Column(
         children: [
           // Weight input panel
           Container(
@@ -391,7 +388,15 @@ class _DosingCalculatorScreenState extends State<DosingCalculatorScreen> {
                   ),
           ),
         ],
-      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.embedded) return _buildBody(context);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Dosing Calculator')),
+      body: _buildBody(context),
     );
   }
 }

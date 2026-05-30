@@ -397,6 +397,7 @@ class CertVaultScreen extends StatefulWidget {
 class _CertVaultScreenState extends State<CertVaultScreen> {
   List<UserCert> _certs = [];
   bool _loading = true;
+  CertStatus? _filter; // null = show all
 
   @override
   void initState() {
@@ -596,17 +597,37 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _certs.isEmpty
               ? _emptyState()
-              : ListView.separated(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _certs.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 10),
-                  itemBuilder: (_, i) => _CertCard(
-                    cert: _certs[i],
-                    onView: () => Navigator.push(context,
-                        MaterialPageRoute(builder: (_) => _DetailScreen(cert: _certs[i]))),
-                    onDelete: () => _delete(_certs[i]),
+              : Column(children: [
+                  _UrgencyHeader(
+                    certs: _certs,
+                    activeFilter: _filter,
+                    onFilter: (s) => setState(() => _filter = _filter == s ? null : s),
                   ),
-                ),
+                  Expanded(
+                    child: Builder(builder: (context) {
+                      final visible = _filter == null
+                          ? _certs
+                          : _certs.where((c) => c.expirationStatus == _filter).toList();
+                      if (visible.isEmpty) {
+                        return Center(
+                          child: Text('No certs match this filter',
+                              style: TextStyle(color: Colors.grey[500])),
+                        );
+                      }
+                      return ListView.separated(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: visible.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
+                        itemBuilder: (_, i) => _CertCard(
+                          cert: visible[i],
+                          onView: () => Navigator.push(context,
+                              MaterialPageRoute(builder: (_) => _DetailScreen(cert: visible[i]))),
+                          onDelete: () => _delete(visible[i]),
+                        ),
+                      );
+                    }),
+                  ),
+                ]),
       floatingActionButton: _certs.isEmpty
           ? null
           : FloatingActionButton(
@@ -640,6 +661,75 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
           ],
         ),
       );
+}
+
+
+class _UrgencyHeader extends StatelessWidget {
+  final List<UserCert> certs;
+  final CertStatus? activeFilter;
+  final ValueChanged<CertStatus> onFilter;
+  const _UrgencyHeader({required this.certs, required this.activeFilter, required this.onFilter});
+
+  @override
+  Widget build(BuildContext context) {
+    final expiring = certs.where((c) => c.expirationStatus == CertStatus.warning30).length;
+    final expired  = certs.where((c) => c.expirationStatus == CertStatus.expired).length;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        border: Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
+      ),
+      child: Wrap(spacing: 8, runSpacing: 6, children: [
+        if (expiring == 0 && expired == 0)
+          Chip(
+            label: const Text('All certs current'),
+            avatar: const Icon(Icons.check_circle_outline, size: 16, color: Colors.green),
+            backgroundColor: Colors.green.withValues(alpha: 0.12),
+            side: const BorderSide(color: Colors.green),
+            labelStyle: const TextStyle(color: Colors.green, fontWeight: FontWeight.w600),
+            padding: EdgeInsets.zero,
+          )
+        else ...[
+          if (expiring > 0)
+            FilterChip(
+              label: Text('Expiring ≤30 days: $expiring'),
+              avatar: Icon(Icons.warning_amber_rounded, size: 16,
+                  color: activeFilter == CertStatus.warning30 ? Colors.white : Colors.amber[700]),
+              selected: activeFilter == CertStatus.warning30,
+              onSelected: (_) => onFilter(CertStatus.warning30),
+              selectedColor: Colors.amber[700],
+              backgroundColor: Colors.amber.withValues(alpha: 0.12),
+              side: BorderSide(color: Colors.amber[700]!),
+              labelStyle: TextStyle(
+                  color: activeFilter == CertStatus.warning30 ? Colors.white : Colors.amber[700],
+                  fontWeight: FontWeight.w600),
+              checkmarkColor: Colors.white,
+              showCheckmark: false,
+              padding: EdgeInsets.zero,
+            ),
+          if (expired > 0)
+            FilterChip(
+              label: Text('Expired: $expired'),
+              avatar: Icon(Icons.cancel_outlined, size: 16,
+                  color: activeFilter == CertStatus.expired ? Colors.white : Colors.red),
+              selected: activeFilter == CertStatus.expired,
+              onSelected: (_) => onFilter(CertStatus.expired),
+              selectedColor: Colors.red,
+              backgroundColor: Colors.red.withValues(alpha: 0.12),
+              side: const BorderSide(color: Colors.red),
+              labelStyle: TextStyle(
+                  color: activeFilter == CertStatus.expired ? Colors.white : Colors.red,
+                  fontWeight: FontWeight.w600),
+              checkmarkColor: Colors.white,
+              showCheckmark: false,
+              padding: EdgeInsets.zero,
+            ),
+        ],
+      ]),
+    );
+  }
 }
 
 

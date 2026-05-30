@@ -13,10 +13,7 @@ import 'procedure_checklist.dart';
 import 'differential_dx.dart';
 import 'dosing_calculator.dart';
 import 'protocol_version.dart';
-import 'gps_tools.dart';
-import 'offline_maps.dart';
 import 'lz_assessment.dart';
-import 'sun_weather.dart';
 import 'team_command.dart';
 import 'mci_triage.dart';
 import 'cert_vault.dart';
@@ -155,6 +152,13 @@ class _MainShellState extends State<MainShell> {
           ),
         ],
       ),
+      floatingActionButton: _tab != 1
+          ? FloatingActionButton(
+              onPressed: () => setState(() => _tab = 1),
+              tooltip: 'Open Tac Map',
+              child: const Icon(Icons.explore),
+            )
+          : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
         onDestinationSelected: _onTabTap,
@@ -186,84 +190,198 @@ class _MainShellState extends State<MainShell> {
 }
 
 
-// ── Med placeholder ───────────────────────────────────────────────────────────
+// ── Med accent color ─────────────────────────────────────────────────────────
 
-class MedHomeScreen extends StatelessWidget {
+const Color kMedRed = Color(0xFFCC2222);
+
+// ── MedHomeScreen ─────────────────────────────────────────────────────────────
+
+class MedHomeScreen extends StatefulWidget {
   final VoidCallback onThemeToggle;
   final VoidCallback onLogout;
   const MedHomeScreen({super.key, required this.onThemeToggle, required this.onLogout});
 
   @override
+  State<MedHomeScreen> createState() => _MedHomeScreenState();
+}
+
+class _MedHomeScreenState extends State<MedHomeScreen> {
+  final _searchCtrl = TextEditingController();
+
+  @override
+  void dispose() { _searchCtrl.dispose(); super.dispose(); }
+
+  void _openSearch() {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => TableOfContentsScreen(
+          onThemeToggle: widget.onThemeToggle,
+          onLogout: widget.onLogout),
+    ));
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final cards = [
+      _MedCardData(Icons.menu_book,         'Protocols',      () => Navigator.push(context, MaterialPageRoute(builder: (_) => TableOfContentsScreen(onThemeToggle: widget.onThemeToggle, onLogout: widget.onLogout)))),
+      _MedCardData(Icons.medication,         'Drug & Dosing',  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DrugDosingScreen()))),
+      _MedCardData(Icons.account_tree,       'Decision Tree',  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DecisionTreeScreen()))),
+      _MedCardData(Icons.checklist_outlined, 'Procedures',     () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProcedureListScreen()))),
+      _MedCardData(Icons.emergency,          'MCI Triage',     () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MciTriageScreen()))),
+      _MedCardData(Icons.assignment_outlined,'Patient Report',  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PatientReportListScreen()))),
+    ];
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('ResQruck'),
+        backgroundColor: kMedRed,
+        foregroundColor: Colors.white,
+        title: const Text('ResQruck Med',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
-              icon: const Icon(Icons.brightness_medium),
-              onPressed: onThemeToggle),
+              icon: const Icon(Icons.brightness_medium, color: Colors.white),
+              onPressed: widget.onThemeToggle),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Colors.white),
+            onSelected: (v) { if (v == 'logout') widget.onLogout(); },
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'logout',
+                  child: ListTile(
+                      leading: Icon(Icons.logout, color: Colors.red),
+                      title: Text('Log Out'),
+                      contentPadding: EdgeInsets.zero)),
+            ],
+          ),
         ],
       ),
-      drawer: Drawer(
-        child: Column(children: [
-          DrawerHeader(
-            decoration: BoxDecoration(color: cs.primary),
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  const Icon(Icons.menu_book, color: Colors.white, size: 32),
-                  const SizedBox(height: 8),
-                  const Text('Protocols',
-                      style: TextStyle(color: Colors.white, fontSize: 22,
-                          fontWeight: FontWeight.bold)),
-                  Text('v$kCurrentVersion',
-                      style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.8), fontSize: 12)),
-                ]),
+      body: Column(
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+              child: GridView.builder(
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                  childAspectRatio: 1.05,
+                ),
+                itemCount: cards.length,
+                itemBuilder: (_, i) => _MedCard(data: cards[i]),
+              ),
+            ),
           ),
-          ListTile(
-            leading: const Icon(Icons.menu_book_outlined),
-            title: const Text('Protocols & Clinical Tools'),
-            onTap: () {
-              Navigator.pop(context);
-              Navigator.push(context, MaterialPageRoute(
-                builder: (_) => TableOfContentsScreen(
-                    onThemeToggle: onThemeToggle, onLogout: onLogout),
-              ));
-            },
+          // Secondary search bar — not the primary entry point.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+            child: TextField(
+              controller: _searchCtrl,
+              onSubmitted: (_) => _openSearch(),
+              onTap: _openSearch,
+              readOnly: true,
+              decoration: InputDecoration(
+                hintText: 'Search protocols, meds, procedures…',
+                prefixIcon: const Icon(Icons.search, color: kMedRed),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: kMedRed)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: kMedRed, width: 2)),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: kMedRed.withValues(alpha: 0.5))),
+                isDense: true,
+              ),
+            ),
           ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.logout, color: Colors.red),
-            title: const Text('Log Out', style: TextStyle(color: Colors.red)),
-            onTap: () { Navigator.pop(context); onLogout(); },
-          ),
-        ]),
+        ],
       ),
-      body: Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.medical_services_outlined, size: 80, color: cs.primary),
-          const SizedBox(height: 20),
-          Text('Medical Protocols & Tools',
-              style: Theme.of(context)
-                  .textTheme
-                  .headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text('Tap below to browse protocols and clinical tools',
-              style: TextStyle(color: cs.onSurfaceVariant)),
-          const SizedBox(height: 32),
-          FilledButton.icon(
-            icon: const Icon(Icons.menu_book_outlined),
-            label: const Text('Protocols & Clinical Tools'),
-            onPressed: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) => TableOfContentsScreen(
-                  onThemeToggle: onThemeToggle, onLogout: onLogout),
-            )),
+    );
+  }
+}
+
+class _MedCardData {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _MedCardData(this.icon, this.label, this.onTap);
+}
+
+class _MedCard extends StatelessWidget {
+  final _MedCardData data;
+  const _MedCard({required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark ? const Color(0xFF1A1A1A) : Colors.white;
+    return Card(
+      color: bg,
+      clipBehavior: Clip.hardEdge,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: kMedRed, width: 2),
+      ),
+      elevation: 3,
+      child: InkWell(
+        onTap: data.onTap,
+        splashColor: kMedRed.withValues(alpha: 0.15),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(data.icon, size: 48, color: kMedRed),
+              const SizedBox(height: 12),
+              Text(
+                data.label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
+              ),
+            ],
           ),
-        ]),
+        ),
+      ),
+    );
+  }
+}
+
+
+// ── Drug & Dosing (merged screen) ────────────────────────────────────────────
+
+class DrugDosingScreen extends StatelessWidget {
+  const DrugDosingScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          backgroundColor: kMedRed,
+          foregroundColor: Colors.white,
+          title: const Text('Drug & Dosing',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          bottom: const TabBar(
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            indicatorColor: Colors.white,
+            tabs: [
+              Tab(icon: Icon(Icons.medication_liquid), text: 'Drug Reference'),
+              Tab(icon: Icon(Icons.calculate), text: 'Dosing Calculator'),
+            ],
+          ),
+        ),
+        body: const TabBarView(
+          children: [
+            DrugReferenceScreen(embedded: true),
+            DosingCalculatorScreen(embedded: true),
+          ],
+        ),
       ),
     );
   }
@@ -326,7 +444,6 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
   final TextEditingController _searchController = TextEditingController();
   Set<String> favorites = {};
   List<Map<String, String>> userUploads = [];
-  bool _isAdmin = false;
 
   final Map<String, Map<String, dynamic>> medicationData = {
     'Acetaminophen': {'types': ['Pain Management'], 'abc': []},
@@ -406,13 +523,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     super.initState();
     _initRootProtocols();
     _loadData();
-    _checkAdminMode();
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdates());
-  }
-
-  Future<void> _checkAdminMode() async {
-    final isAdmin = await ProtocolSyncService.instance.isAdminMode;
-    if (mounted) setState(() => _isAdmin = isAdmin);
   }
 
   Future<void> _checkForUpdates() async {
@@ -439,22 +550,6 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
         builder: (_) => _DeploymentOrdersDialog(orders: newOrders),
       );
     }
-  }
-
-  Future<void> _toggleAdminMode() async {
-    if (_isAdmin) {
-      await ProtocolSyncService.instance.setAdminMode(false);
-      if (mounted) setState(() => _isAdmin = false);
-      return;
-    }
-    if (!mounted) return;
-    final ok = await showAdminPinDialog(context);
-    if (!ok || !mounted) return;
-    await ProtocolSyncService.instance.setAdminMode(true);
-    if (!mounted) return;
-    setState(() => _isAdmin = true);
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Admin mode activated')));
   }
 
   void _initRootProtocols() {
@@ -869,15 +964,6 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
             ),
             const Divider(height: 1),
             ListTile(
-              leading: Icon(
-                _isAdmin ? Icons.admin_panel_settings : Icons.lock_outline,
-                color: _isAdmin ? Colors.orange : null,
-              ),
-              title: Text(_isAdmin ? 'Admin Mode: ON' : 'Admin Mode'),
-              subtitle: _isAdmin ? const Text('Tap to deactivate') : null,
-              onTap: () { Navigator.pop(context); _toggleAdminMode(); },
-            ),
-            ListTile(
               leading: const Icon(Icons.upload_file),
               title: const Text('Import PDF'),
               onTap: () { Navigator.pop(context); _uploadFile(); },
@@ -912,19 +998,15 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
         _launcherSection('Clinical Tools'),
         _launcherGrid(context, const [
           _FeatureTile(Icons.account_tree, 'Decision Trees', Colors.indigo, DecisionTreeScreen()),
-          _FeatureTile(Icons.medication, 'Drug Reference', Colors.teal, DrugReferenceScreen()),
+          _FeatureTile(Icons.medication, 'Drug & Dosing', Colors.teal, DrugDosingScreen()),
           _FeatureTile(Icons.checklist, 'Procedure\nChecklists', Colors.green, ProcedureListScreen()),
           _FeatureTile(Icons.biotech, 'Differential\nDiagnosis', Colors.purple, DifferentialDxScreen()),
-          _FeatureTile(Icons.calculate, 'Dosing\nCalculator', Colors.orange, DosingCalculatorScreen()),
           _FeatureTile(Icons.assignment_outlined, 'Patient\nReports', Colors.red, PatientReportListScreen()),
           _FeatureTile(Icons.workspace_premium, 'Cert\nVault', Colors.deepPurple, CertVaultScreen()),
         ]),
         _launcherSection('Field & Navigation'),
         _launcherGrid(context, const [
-          _FeatureTile(Icons.map_outlined, 'Offline Maps', Colors.brown, OfflineMapsScreen()),
-          _FeatureTile(Icons.gps_fixed, 'GPS Tools', Colors.blue, GpsToolsScreen()),
           _FeatureTile(Icons.flight_land, 'LZ Assessment', Colors.cyan, LzAssessmentScreen()),
-          _FeatureTile(Icons.wb_sunny_outlined, 'Sun & Weather', Colors.amber, SunWeatherScreen()),
         ]),
         _launcherSection('Team Coordination'),
         _launcherGrid(context, const [
@@ -934,10 +1016,8 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
           _FeatureTile(Icons.description_outlined, 'Team\nProtocols', Colors.deepOrange, TeamProtocolsScreen()),
         ]),
         _launcherSection('Reference'),
-        _launcherGrid(context, [
-          const _FeatureTile(Icons.info_outline, 'Protocol\nVersion', Colors.blueGrey, ProtocolVersionScreen()),
-          if (_isAdmin)
-            const _FeatureTile(Icons.admin_panel_settings, 'Admin\nPanel', Colors.red, AdminPanelScreen()),
+        _launcherGrid(context, const [
+          _FeatureTile(Icons.info_outline, 'Protocol\nVersion', Colors.blueGrey, ProtocolVersionScreen()),
         ]),
       ],
     );
