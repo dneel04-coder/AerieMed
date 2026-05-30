@@ -7,7 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService;
+import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService, TeamProtocolsScreen;
 import 'user_profile.dart' show LoginScreen;
 
 enum _CertExpiry { green, yellow, red }
@@ -513,6 +513,15 @@ class _TeamCommandScreenState extends State<TeamCommandScreen> {
   void _openFull([int tab = 0]) => Navigator.push(context,
       MaterialPageRoute(builder: (_) => _TeamCommandTabs(initialTab: tab)));
 
+  void _openSection(String title, Widget content) => Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: Text(title)),
+          body: content,
+        ),
+      ));
+
   @override
   Widget build(BuildContext context) {
     final available = _count(['Available', 'Partial']);
@@ -615,20 +624,27 @@ class _TeamCommandScreenState extends State<TeamCommandScreen> {
                   ),
                   const SizedBox(height: 24),
 
-                  // ── Full Command nav ──────────────────────────────────────
-                  const _SectionHeader('Full Command'),
+                  // ── Command sections ──────────────────────────────────────
+                  const _SectionHeader('Command'),
                   _CommandNavTile(Icons.account_tree_outlined,
-                      'Incident Command', () => _openFull(0)),
+                      'Incident Command',
+                      () => _openSection('Incident Command', const _IncidentTab())),
                   _CommandNavTile(Icons.people_outlined,
-                      'Roster & Profiles', () => _openFull(1)),
-                  _CommandNavTile(Icons.task_alt,
-                      'Tasks', () => _openFull(2)),
-                  _CommandNavTile(Icons.handshake_outlined,
-                      'Shift Handoff', () => _openFull(3)),
+                      'Roster & Profiles',
+                      () => _openSection('Roster & Profiles', const _RosterTab())),
                   _CommandNavTile(Icons.assignment_outlined,
-                      'Deployment Orders', () => _openFull(4)),
+                      'Deployment Orders',
+                      () => _openSection('Deployment Orders', _DeploymentOrdersTab())),
                   _CommandNavTile(Icons.calendar_month_outlined,
-                      'Availability Calendar', () => _openFull(5)),
+                      'Availability Calendar',
+                      () => _openSection('Availability Calendar', _AvailabilityTab())),
+                  _CommandNavTile(Icons.description_outlined,
+                      'Team Protocols',
+                      () => Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => const TeamProtocolsScreen()))),
+                  _CommandNavTile(Icons.more_horiz,
+                      'Full Command View (Tasks, Handoff & more)',
+                      () => _openFull()),
                 ],
               ),
             ),
@@ -1872,23 +1888,43 @@ class _RosterTabState extends State<_RosterTab> with AutomaticKeepAliveClientMix
   Future<void> _removeDuplicateProfiles() async {
     final client = SupabaseService.client;
     if (client == null) return;
-    // Group by name (case-insensitive); keep the most recently updated row.
+
+    // Fetch which user_ids have certs so we never delete an active uploader.
+    Set<String> usersWithCerts = {};
+    try {
+      final rows = await client.from('team_certs').select('user_id') as List;
+      usersWithCerts = rows.map((r) => r['user_id'] as String).toSet();
+    } catch (_) {}
+
+    // Group by name (case-insensitive).
     final byName = <String, List<Map<String, dynamic>>>{};
     for (final p in _profileRows) {
       final key = (p['name'] as String? ?? '').toLowerCase().trim();
       if (key.isNotEmpty) byName.putIfAbsent(key, () => []).add(p);
     }
+
     int removed = 0;
     for (final group in byName.values) {
       if (group.length <= 1) continue;
+      // Sort: cert-holders first, then by most recently updated.
       group.sort((a, b) {
+        final aUid = a['user_id'] as String? ?? '';
+        final bUid = b['user_id'] as String? ?? '';
+        final aHasCerts = usersWithCerts.contains(aUid);
+        final bHasCerts = usersWithCerts.contains(bUid);
+        if (aHasCerts && !bHasCerts) return -1;
+        if (!aHasCerts && bHasCerts) return 1;
         final da = DateTime.tryParse(a['updated_at'] as String? ?? '') ?? DateTime(0);
         final db = DateTime.tryParse(b['updated_at'] as String? ?? '') ?? DateTime(0);
         return db.compareTo(da); // newest first
       });
+      // Keep index 0 (cert-holder or most recent); delete the rest.
       for (final old in group.skip(1)) {
+        final oldUid = old['user_id'] as String? ?? '';
+        // Safety: never delete a user who has certs attached.
+        if (usersWithCerts.contains(oldUid)) continue;
         try {
-          await client.from('user_profiles').delete().eq('user_id', old['user_id']);
+          await client.from('user_profiles').delete().eq('user_id', oldUid);
           removed++;
         } catch (_) {}
       }

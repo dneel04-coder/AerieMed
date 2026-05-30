@@ -13,7 +13,6 @@ import 'procedure_checklist.dart';
 import 'differential_dx.dart';
 import 'dosing_calculator.dart';
 import 'protocol_version.dart';
-import 'lz_assessment.dart';
 import 'team_command.dart';
 import 'mci_triage.dart';
 import 'cert_vault.dart';
@@ -211,23 +210,25 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
   @override
   void dispose() { _searchCtrl.dispose(); super.dispose(); }
 
-  void _openSearch() {
+  void _openSearch(String query) {
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => TableOfContentsScreen(
           onThemeToggle: widget.onThemeToggle,
-          onLogout: widget.onLogout),
+          onLogout: widget.onLogout,
+          protocolsOnly: true,
+          initialSearch: query),
     ));
   }
 
   @override
   Widget build(BuildContext context) {
     final cards = [
-      _MedCardData(Icons.menu_book,         'Protocols',      () => Navigator.push(context, MaterialPageRoute(builder: (_) => TableOfContentsScreen(onThemeToggle: widget.onThemeToggle, onLogout: widget.onLogout)))),
-      _MedCardData(Icons.medication,         'Drug & Dosing',  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DrugDosingScreen()))),
-      _MedCardData(Icons.account_tree,       'Decision Tree',  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DecisionTreeScreen()))),
-      _MedCardData(Icons.checklist_outlined, 'Procedures',     () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProcedureListScreen()))),
-      _MedCardData(Icons.emergency,          'MCI Triage',     () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MciTriageScreen()))),
-      _MedCardData(Icons.assignment_outlined,'Patient Report',  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PatientReportListScreen()))),
+      _MedCardData(Icons.menu_book,         'Protocols',     const Color(0xFFCC2222), () => Navigator.push(context, MaterialPageRoute(builder: (_) => TableOfContentsScreen(onThemeToggle: widget.onThemeToggle, onLogout: widget.onLogout, protocolsOnly: true)))),
+      _MedCardData(Icons.medication,         'Drug & Dosing', const Color(0xFF1565C0), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DrugDosingScreen()))),
+      _MedCardData(Icons.account_tree,       'Decision Tree', const Color(0xFF6A1B9A), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DecisionTreeScreen()))),
+      _MedCardData(Icons.checklist_outlined, 'Procedures',   const Color(0xFF2E7D32), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProcedureListScreen()))),
+      _MedCardData(Icons.emergency,          'MCI Triage',   const Color(0xFFE65100), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MciTriageScreen()))),
+      _MedCardData(Icons.assignment_outlined,'Patient Report',const Color(0xFF00695C), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PatientReportListScreen()))),
     ];
 
     return Scaffold(
@@ -270,17 +271,21 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
               ),
             ),
           ),
-          // Secondary search bar — not the primary entry point.
+          // True search bar — opens protocol browser pre-filtered.
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
             child: TextField(
               controller: _searchCtrl,
-              onSubmitted: (_) => _openSearch(),
-              onTap: _openSearch,
-              readOnly: true,
+              onSubmitted: (q) => _openSearch(q.trim()),
+              textInputAction: TextInputAction.search,
               decoration: InputDecoration(
                 hintText: 'Search protocols, meds, procedures…',
                 prefixIcon: const Icon(Icons.search, color: kMedRed),
+                suffixIcon: _searchCtrl.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, size: 18),
+                        onPressed: () => setState(() => _searchCtrl.clear()))
+                    : null,
                 border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: const BorderSide(color: kMedRed)),
@@ -292,6 +297,7 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
                     borderSide: BorderSide(color: kMedRed.withValues(alpha: 0.5))),
                 isDense: true,
               ),
+              onChanged: (_) => setState(() {}),
             ),
           ),
         ],
@@ -303,8 +309,9 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
 class _MedCardData {
   final IconData icon;
   final String label;
+  final Color color;
   final VoidCallback onTap;
-  const _MedCardData(this.icon, this.label, this.onTap);
+  const _MedCardData(this.icon, this.label, this.color, this.onTap);
 }
 
 class _MedCard extends StatelessWidget {
@@ -320,18 +327,18 @@ class _MedCard extends StatelessWidget {
       clipBehavior: Clip.hardEdge,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: const BorderSide(color: kMedRed, width: 2),
+        side: BorderSide(color: data.color, width: 2),
       ),
       elevation: 3,
       child: InkWell(
         onTap: data.onTap,
-        splashColor: kMedRed.withValues(alpha: 0.15),
+        splashColor: data.color.withValues(alpha: 0.15),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(data.icon, size: 48, color: kMedRed),
+              Icon(data.icon, size: 48, color: data.color),
               const SizedBox(height: 12),
               Text(
                 data.label,
@@ -433,7 +440,15 @@ class _AdminShell extends StatelessWidget {
 class TableOfContentsScreen extends StatefulWidget {
   final VoidCallback onThemeToggle;
   final VoidCallback? onLogout;
-  const TableOfContentsScreen({super.key, required this.onThemeToggle, this.onLogout});
+  final bool protocolsOnly;
+  final String initialSearch;
+  const TableOfContentsScreen({
+    super.key,
+    required this.onThemeToggle,
+    this.onLogout,
+    this.protocolsOnly = false,
+    this.initialSearch = '',
+  });
 
   @override
   State<TableOfContentsScreen> createState() => _TableOfContentsScreenState();
@@ -523,6 +538,10 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     super.initState();
     _initRootProtocols();
     _loadData();
+    if (widget.initialSearch.isNotEmpty) {
+      searchQuery = widget.initialSearch;
+      _searchController.text = widget.initialSearch;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdates());
   }
 
@@ -986,9 +1005,61 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
         ],
       ),
 
-      // ── Body: feature launcher ───────────────────────────────────────────
-      body: _buildHomeLauncher(context),
+      // ── Body ─────────────────────────────────────────────────────────────
+      body: widget.protocolsOnly
+          ? _buildProtocolBrowser()
+          : _buildHomeLauncher(context),
     );
+  }
+
+  Widget _buildProtocolBrowser() {
+    final isSearching = searchQuery.isNotEmpty;
+    final categories = allCategories;
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+        child: TextField(
+          controller: _searchController,
+          decoration: InputDecoration(
+            hintText: 'Search protocols…',
+            prefixIcon: const Icon(Icons.search, size: 20),
+            suffixIcon: searchQuery.isNotEmpty
+                ? IconButton(
+                    icon: const Icon(Icons.clear, size: 18),
+                    onPressed: () => setState(() {
+                      searchQuery = '';
+                      _searchController.clear();
+                    }))
+                : null,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+            isDense: true,
+            filled: true,
+          ),
+          onChanged: (v) => setState(() => searchQuery = v),
+        ),
+      ),
+      Expanded(
+        child: isSearching
+            ? ListView.builder(
+                itemCount: filteredItems.length,
+                itemBuilder: (_, i) {
+                  final item = filteredItems[i];
+                  final isUser = item['isUserUpload'] == true;
+                  final assetPath = isUser ? (item['path'] ?? '') : (item['asset'] ?? '');
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.picture_as_pdf, color: Colors.red, size: 20),
+                    title: Text(item['title'] ?? 'Unknown', style: const TextStyle(fontSize: 14)),
+                    onTap: () => _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser),
+                  );
+                },
+              )
+            : ListView.builder(
+                itemCount: categories.length,
+                itemBuilder: (_, i) => _buildCategoryTile(categories[i]),
+              ),
+      ),
+    ]);
   }
 
   Widget _buildHomeLauncher(BuildContext context) {
@@ -1003,10 +1074,6 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
           _FeatureTile(Icons.biotech, 'Differential\nDiagnosis', Colors.purple, DifferentialDxScreen()),
           _FeatureTile(Icons.assignment_outlined, 'Patient\nReports', Colors.red, PatientReportListScreen()),
           _FeatureTile(Icons.workspace_premium, 'Cert\nVault', Colors.deepPurple, CertVaultScreen()),
-        ]),
-        _launcherSection('Field & Navigation'),
-        _launcherGrid(context, const [
-          _FeatureTile(Icons.flight_land, 'LZ Assessment', Colors.cyan, LzAssessmentScreen()),
         ]),
         _launcherSection('Team Coordination'),
         _launcherGrid(context, const [

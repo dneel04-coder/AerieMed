@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'protocol_admin.dart' show SupabaseService;
 import 'gps_tools.dart';
+import 'lz_assessment.dart';
 import 'offline_maps.dart';
 import 'sun_weather.dart';
 
@@ -1156,6 +1157,16 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               Navigator.pop(context);
               Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const SunWeatherScreen()));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.flight_land, color: Colors.cyan),
+            title: const Text('LZ Assessment'),
+            subtitle: const Text('Landing zone safety evaluation'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const LzAssessmentScreen()));
             },
           ),
           const SizedBox(height: 8),

@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:pdfrx/pdfrx.dart';
+import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
@@ -884,17 +884,57 @@ class _DetailScreen extends StatelessWidget {
   }
 
   Widget _viewer() {
-    if (cert.isPdf) {
-      return PdfViewer.file(cert.filePath);
-    }
     final file = File(cert.filePath);
+    if (!file.existsSync()) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.cloud_off_outlined, size: 72, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            const Text('File not found on this device',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Text('The original file may have been removed by iOS.\n'
+                'Tap the sync button to restore from team storage, '
+                'or delete and re-upload this cert.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+          ]),
+        ),
+      );
+    }
+    if (cert.isPdf) {
+      return PdfPreview(
+        build: (_) => file.readAsBytes(),
+        allowSharing: false,
+        allowPrinting: false,
+        canChangePageFormat: false,
+        canDebug: false,
+      );
+    }
     return InteractiveViewer(
+      minScale: 0.5,
+      maxScale: 5.0,
       child: Center(
         child: Image.file(
           file,
           fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) =>
-              const Center(child: Icon(Icons.broken_image, size: 80, color: Colors.grey)),
+          errorBuilder: (_, err, __) => Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.broken_image, size: 72, color: Colors.grey[400]),
+                const SizedBox(height: 12),
+                const Text('Could not display image',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 6),
+                Text('$err',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+              ]),
+            ),
+          ),
         ),
       ),
     );
