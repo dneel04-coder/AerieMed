@@ -875,7 +875,8 @@ class _ProtocolViewScreen extends StatelessWidget {
 
 
 class AdminPanelScreen extends StatefulWidget {
-  const AdminPanelScreen({super.key});
+  final VoidCallback? onLeaveAdmin;
+  const AdminPanelScreen({super.key, this.onLeaveAdmin});
 
   @override
   State<AdminPanelScreen> createState() => _AdminPanelScreenState();
@@ -943,6 +944,16 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
             title: const Text('Change Admin Credentials'),
             onTap: () => _changeCredentialsDialog(context),
           ),
+          if (widget.onLeaveAdmin != null)
+            ListTile(
+              leading: const CircleAvatar(
+                  backgroundColor: Colors.red,
+                  child: Icon(Icons.logout, color: Colors.white)),
+              title: const Text('Leave Admin Mode',
+                  style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+              subtitle: const Text('Return to standard user view'),
+              onTap: widget.onLeaveAdmin,
+            ),
         ],
       ),
     );
@@ -1024,6 +1035,7 @@ class AdminProtocolScreen extends StatefulWidget {
 
 class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
   List<ProtocolEntry> _protocols = [];
+  Map<String, int> _ackCounts = {}; // protocolId → count
   bool _loading = true;
 
   @override
@@ -1038,7 +1050,24 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
   Future<void> _load() async {
     setState(() => _loading = true);
     final protocols = await ProtocolSyncService.instance.allProtocols();
-    if (mounted) setState(() { _protocols = protocols; _loading = false; });
+    // Load ack counts for all protocols in parallel.
+    final counts = <String, int>{};
+    if (SupabaseService.client != null) {
+      try {
+        final rows = await SupabaseService.client!
+            .from('protocol_acknowledgments')
+            .select('protocol_id') as List;
+        for (final r in rows) {
+          final pid = r['protocol_id'] as String? ?? '';
+          counts[pid] = (counts[pid] ?? 0) + 1;
+        }
+      } catch (_) {}
+    }
+    if (mounted) setState(() {
+      _protocols = protocols;
+      _ackCounts = counts;
+      _loading = false;
+    });
   }
 
   Future<void> _showUploadSheet({ProtocolEntry? existing}) async {
@@ -1246,11 +1275,16 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
             subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('v${entry.version}  •  ${_fmt(entry.updatedAt)}  •  by ${entry.updatedBy}',
                   style: const TextStyle(fontSize: 11)),
+              Row(children: [
+                const Icon(Icons.verified_user_outlined, size: 12, color: Colors.green),
+                const SizedBox(width: 3),
+                Text('${_ackCounts[entry.id] ?? 0} acknowledged',
+                    style: const TextStyle(fontSize: 11, color: Colors.green)),
+              ]),
               if (entry.notes.isNotEmpty)
                 Text(entry.notes,
                     style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis),
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
             ]),
             isThreeLine: entry.notes.isNotEmpty,
           ),

@@ -866,9 +866,51 @@ class _ExpirationBadge extends StatelessWidget {
 }
 
 
-class _DetailScreen extends StatelessWidget {
+class _DetailScreen extends StatefulWidget {
   final UserCert cert;
   const _DetailScreen({required this.cert});
+
+  @override
+  State<_DetailScreen> createState() => _DetailScreenState();
+}
+
+class _DetailScreenState extends State<_DetailScreen> {
+  UserCert get cert => widget.cert;
+  bool _restoring = false;
+  String? _restoreError;
+  File? _restoredFile; // non-null once downloaded from storage
+
+  @override
+  void initState() {
+    super.initState();
+    // Auto-restore from Supabase if local file is missing.
+    if (!File(cert.filePath).existsSync()) {
+      _restoreFromStorage();
+    }
+  }
+
+  Future<void> _restoreFromStorage() async {
+    setState(() { _restoring = true; _restoreError = null; });
+    try {
+      final ok = await SupabaseService.ensureInitialized();
+      if (!ok) throw Exception('Supabase not connected');
+      final client = SupabaseService.client!;
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getString('tac_user_id') ?? '';
+      final ext = cert.filePath.contains('.')
+          ? cert.filePath.split('.').last.toLowerCase()
+          : 'jpg';
+      final storagePath = '$userId/${cert.id}.$ext';
+      final bytes = await client.storage.from('certs').download(storagePath);
+      // Save back to the original vault path so future opens work.
+      final f = File(cert.filePath);
+      await f.parent.create(recursive: true);
+      await f.writeAsBytes(bytes);
+      if (mounted) setState(() { _restoredFile = f; _restoring = false; });
+    } catch (e) {
+      if (mounted) setState(() { _restoring = false; _restoreError = e.toString(); });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -884,22 +926,41 @@ class _DetailScreen extends StatelessWidget {
   }
 
   Widget _viewer() {
-    final file = File(cert.filePath);
+    // Show loading while restoring from Supabase.
+    if (_restoring) {
+      return const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        CircularProgressIndicator(),
+        SizedBox(height: 16),
+        Text('Restoring from team storage…', style: TextStyle(color: Colors.grey)),
+      ]));
+    }
+
+    // Use the just-restored file if available; otherwise fall back to stored path.
+    final file = _restoredFile ?? File(cert.filePath);
+
     if (!file.existsSync()) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.cloud_off_outlined, size: 72, color: Colors.grey[400]),
+            Icon(_restoreError != null ? Icons.cloud_off_outlined : Icons.cloud_off_outlined,
+                size: 72, color: Colors.grey[400]),
             const SizedBox(height: 16),
             const Text('File not found on this device',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
-            Text('The original file may have been removed by iOS.\n'
-                'Tap the sync button to restore from team storage, '
-                'or delete and re-upload this cert.',
+            Text(_restoreError != null
+                    ? 'Could not restore from storage:\n$_restoreError'
+                    : 'The original file may have been removed by iOS.\n'
+                      'Delete and re-upload this cert, or check your connection and retry.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry restore'),
+              onPressed: _restoreFromStorage,
+            ),
           ]),
         ),
       );

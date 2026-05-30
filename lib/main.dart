@@ -148,6 +148,10 @@ class _MainShellState extends State<MainShell> {
           _AdminShell(
             isAdmin: _isAdmin,
             onUnlocked: () => setState(() { _isAdmin = true; _tab = 4; }),
+            onLeaveAdmin: () async {
+              await ProtocolSyncService.instance.setAdminMode(false);
+              if (mounted) setState(() { _isAdmin = false; _tab = 2; });
+            },
           ),
         ],
       ),
@@ -400,11 +404,12 @@ class DrugDosingScreen extends StatelessWidget {
 class _AdminShell extends StatelessWidget {
   final bool isAdmin;
   final VoidCallback onUnlocked;
-  const _AdminShell({required this.isAdmin, required this.onUnlocked});
+  final VoidCallback onLeaveAdmin;
+  const _AdminShell({required this.isAdmin, required this.onUnlocked, required this.onLeaveAdmin});
 
   @override
   Widget build(BuildContext context) {
-    if (isAdmin) return const AdminPanelScreen();
+    if (isAdmin) return AdminPanelScreen(onLeaveAdmin: onLeaveAdmin);
     final cs = Theme.of(context).colorScheme;
     return Scaffold(
       body: Center(
