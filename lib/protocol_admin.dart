@@ -550,21 +550,30 @@ extension DeploymentOrderService on ProtocolSyncService {
   }
 
   /// Fetches the raw file bytes for an order.
-  /// New orders: file_path starts with 'base64:' — decode directly.
-  /// Legacy orders: file_path is a storage path — try SDK download.
   Future<Uint8List?> fetchOrderBytes(DeploymentOrder order) async {
-    // New format: base64 embedded in file_path
+    // Base64 embedded directly in file_path (v1.0.0+40+).
     if (order.filePath.startsWith('base64:')) {
       try { return base64.decode(order.filePath.substring(7)); } catch (_) {}
     }
-    // Legacy: try storage download
+    // Storage-backed order (URL-fixed path like "{uuid}.pdf").
     if (order.filePath.isNotEmpty) {
       final client = await _client();
       if (client != null) {
+        // 1. SDK authenticated download.
         try {
           return await client.storage
               .from('deployment_orders')
               .download(order.filePath);
+        } catch (_) {}
+        // 2. Public HTTP URL (bypasses SDK path validation entirely).
+        try {
+          const base = 'https://vlgiclyuxaleyusalexo.supabase.co';
+          final url = '$base/storage/v1/object/public/deployment_orders/${order.filePath}';
+          final resp = await http.get(Uri.parse(url))
+              .timeout(const Duration(seconds: 30));
+          if (resp.statusCode == 200 && resp.bodyBytes.isNotEmpty) {
+            return resp.bodyBytes;
+          }
         } catch (_) {}
       }
     }

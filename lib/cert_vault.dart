@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
@@ -478,9 +479,27 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
       if (!await vault.exists()) await vault.create(recursive: true);
 
       final id = DateTime.now().millisecondsSinceEpoch.toString();
-      final ext = name.contains('.') ? name.split('.').last : 'jpg';
-      final dest = '${vault.path}/${id}_cert.$ext';
+      var ext = name.contains('.') ? name.split('.').last.toLowerCase() : 'jpg';
+      var dest = '${vault.path}/${id}_cert.$ext';
       await File(src).copy(dest);
+
+      // Convert HEIC/HEIF to PNG using the native iOS image decoder so the
+      // cert is viewable cross-platform (Android cannot decode HEIC natively).
+      if (isImage && (ext == 'heic' || ext == 'heif')) {
+        try {
+          final rawBytes = await File(dest).readAsBytes();
+          final codec = await ui.instantiateImageCodec(rawBytes);
+          final frame = await codec.getNextFrame();
+          final pngData = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+          if (pngData != null && pngData.lengthInBytes > 1000) {
+            final pngDest = '${vault.path}/${id}_cert.png';
+            await File(pngDest).writeAsBytes(pngData.buffer.asUint8List());
+            await File(dest).delete();
+            dest = pngDest;
+            ext = 'png';
+          }
+        } catch (_) {} // keep original if conversion fails
+      }
 
       String? ocr;
       if (isImage) ocr = await _runOcr(dest);
