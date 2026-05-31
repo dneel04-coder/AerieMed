@@ -119,12 +119,20 @@ class TacUser {
         updatedAt: _parseTs(m['updated_at'] as String?),
       );
 
-  // Supabase sometimes returns timestamps with a space instead of 'T'.
+  // Parse Supabase timestamps robustly — handle space separator, bare +00, etc.
   static DateTime _parseTs(String? s) {
     if (s == null || s.isEmpty) return DateTime(2000);
-    final n = s.replaceFirstMapped(
-        RegExp(r'^(\d{4}-\d{2}-\d{2}) '), (m) => '${m[1]}T');
-    return DateTime.tryParse(n) ?? DateTime(2000);
+    var n = s.trim()
+        // "2025-01-15 12:34:56+00" → "2025-01-15T12:34:56+00"
+        .replaceFirstMapped(
+            RegExp(r'^(\d{4}-\d{2}-\d{2}) '), (m) => '${m[1]}T')
+        // "+00" without ":00" → "+00:00"
+        .replaceFirstMapped(
+            RegExp(r'([+-]\d{2})$'), (m) => '${m[1]}:00');
+    return DateTime.tryParse(n) ??
+        // Last resort: strip timezone entirely, treat as UTC
+        DateTime.tryParse(n.replaceAll(RegExp(r'[+-]\d{2}:\d{2}$'), 'Z')) ??
+        DateTime(2000);
   }
 }
 
@@ -562,6 +570,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   _IncidentOverlay? _incidentOverlay;
   bool _markerTableWarned = false;
   bool _sharingLocation = true;
+  bool _showAllMissions = false; // false = my mission only on map + panel
 
   @override
   void initState() {
@@ -576,13 +585,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _missionCode = prefs.getString(_kMissionCode) ?? '';
     _isAdmin = prefs.getBool(_kIsAdmin) ?? false;
 
-    // Remove own stale row from any previous session.
+    // Remove only own stale row from a previous session — never touch other users' rows.
     try { await _supabase.from('tac_users').delete().eq('id', _userId); } catch (_) {}
-    // Purge any rows from other users that haven't updated in >30 minutes.
-    try {
-      final cutoff = DateTime.now().subtract(const Duration(minutes: 30)).toUtc().toIso8601String();
-      await _supabase.from('tac_users').delete().lt('updated_at', cutoff);
-    } catch (_) {}
 
     await _requestLocation();
     _startLocationPublish();
@@ -853,8 +857,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
     final staleThreshold = DateTime.now().subtract(const Duration(minutes: 15));
     for (final user in _users.values) {
-      // Skip entries not updated in the last 30 minutes (stale/crashed sessions).
       if (user.updatedAt.isBefore(staleThreshold)) continue;
+      // When "Mine" is selected, only show users on the current mission.
+      if (!_showAllMissions && user.missionCode != _missionCode && user.id != _userId) continue;
       final isMe = user.id == _userId;
       final sameMission = user.missionCode == _missionCode;
       final color = isMe
@@ -971,6 +976,24 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 backgroundColor: Colors.orange,
               ),
             ),
+          // Mine / All missions toggle — controls both map markers and team panel.
+          GestureDetector(
+            onTap: () => setState(() => _showAllMissions = !_showAllMissions),
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+              decoration: BoxDecoration(
+                color: _showAllMissions ? Colors.indigo : Colors.white24,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white38),
+              ),
+              child: Text(
+                _showAllMissions ? 'All' : 'Mine',
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.build_outlined),
             tooltip: 'Field Tools',
@@ -1103,6 +1126,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             myId: _userId,
             missionCode: _missionCode,
             isAdmin: _isAdmin,
+            showAll: _showAllMissions,
             placingType: _placingType,
             onPlaceType: (t) => setState(() => _placingType = _placingType == t ? null : t),
             onKickUser: (id) async {
@@ -1309,6 +1333,7 @@ class _TeamPanel extends StatefulWidget {
   final String myId;
   final String missionCode;
   final bool isAdmin;
+  final bool showAll;
   final TacMarkerType? placingType;
   final ValueChanged<TacMarkerType> onPlaceType;
   final ValueChanged<String> onKickUser;
@@ -1318,6 +1343,7 @@ class _TeamPanel extends StatefulWidget {
     required this.myId,
     required this.missionCode,
     required this.isAdmin,
+    required this.showAll,
     required this.placingType,
     required this.onPlaceType,
     required this.onKickUser,
@@ -1328,11 +1354,9 @@ class _TeamPanel extends StatefulWidget {
 }
 
 class _TeamPanelState extends State<_TeamPanel> {
-  bool _showAll = false;
-
   @override
   Widget build(BuildContext context) {
-    final visibleUsers = _showAll
+    final visibleUsers = widget.showAll
         ? widget.users
         : widget.users.where((u) => u.missionCode == widget.missionCode).toList();
 
@@ -1344,27 +1368,8 @@ class _TeamPanelState extends State<_TeamPanel> {
         children: [
           Row(children: [
             Text(
-              _showAll ? 'ALL MISSIONS' : 'TEAM — ${widget.missionCode}',
+              widget.showAll ? 'ALL MISSIONS' : 'TEAM — ${widget.missionCode}',
               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () => setState(() => _showAll = !_showAll),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: _showAll ? Colors.indigo : Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  _showAll ? 'All' : 'Mine',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    color: _showAll ? Colors.white : Colors.black87,
-                  ),
-                ),
-              ),
             ),
             const SizedBox(width: 4),
             Expanded(
@@ -1442,7 +1447,7 @@ class _TeamPanelState extends State<_TeamPanel> {
   }
 
   Widget _userChip(TacUser u, bool isMe) {
-    final label = _showAll && u.missionCode != widget.missionCode
+    final label = widget.showAll && u.missionCode != widget.missionCode
         ? '${u.callsign} (${u.missionCode})'
         : u.callsign;
     return Chip(

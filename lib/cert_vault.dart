@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
@@ -974,30 +975,59 @@ class _DetailScreenState extends State<_DetailScreen> {
         canDebug: false,
       );
     }
-    return InteractiveViewer(
-      minScale: 0.5,
-      maxScale: 5.0,
-      child: Center(
-        child: Image.file(
-          file,
-          fit: BoxFit.contain,
-          errorBuilder: (_, err, __) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.broken_image, size: 72, color: Colors.grey[400]),
-                const SizedBox(height: 12),
-                const Text('Could not display image',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 6),
-                Text('$err',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 11, color: Colors.grey[500])),
-              ]),
+    // Load bytes and use Image.memory — more reliable for HEIC and
+    // other formats that Image.file can misidentify by extension.
+    return FutureBuilder<Uint8List>(
+      future: file.readAsBytes(),
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (!snap.hasData || snap.data!.isEmpty) {
+          return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.broken_image, size: 72, color: Colors.grey[400]),
+            const SizedBox(height: 12),
+            const Text('File is empty or unreadable',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.refresh),
+              label: const Text('Try restore from storage'),
+              onPressed: _restoreFromStorage,
+            ),
+          ]));
+        }
+        return InteractiveViewer(
+          minScale: 0.5,
+          maxScale: 5.0,
+          child: Center(
+            child: Image.memory(
+              snap.data!,
+              fit: BoxFit.contain,
+              errorBuilder: (_, err, __) => Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.broken_image, size: 72, color: Colors.grey[400]),
+                    const SizedBox(height: 12),
+                    const Text('Image format not supported',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    Text('${snap.data!.length} bytes  •  ${file.path.split('.').last.toUpperCase()}',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry / re-sync'),
+                      onPressed: _restoreFromStorage,
+                    ),
+                  ]),
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
