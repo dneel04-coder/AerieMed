@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:battery_plus/battery_plus.dart';
 import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -69,25 +70,96 @@ const _kUserId = 'tac_user_id';
 enum TacMarkerType {
   patient,
   extractionStart,
-  extractionEnd;
+  extractionEnd,
+  waypoint;
 
   String get label => switch (this) {
-        patient => 'Patient',
+        patient        => 'Patient',
         extractionStart => 'Extract Start',
-        extractionEnd => 'Extract End',
+        extractionEnd  => 'Extract End',
+        waypoint       => 'Waypoint',
       };
 
   Color get color => switch (this) {
-        patient => Colors.red,
+        patient        => Colors.red,
         extractionStart => Colors.orange,
-        extractionEnd => Colors.green,
+        extractionEnd  => Colors.green,
+        waypoint       => const Color(0xFF9C27B0),
       };
 
   IconData get icon => switch (this) {
-        patient => Icons.personal_injury,
+        patient        => Icons.personal_injury,
         extractionStart => Icons.flag,
-        extractionEnd => Icons.local_hospital,
+        extractionEnd  => Icons.local_hospital,
+        waypoint       => Icons.place,
       };
+}
+
+// ── Check-in statuses ─────────────────────────────────────────────────────────
+const _kStatuses = [
+  'Active', 'En Route', 'On Scene', 'At Hospital', 'Standby', 'Off Duty',
+];
+
+Color _statusColor(String s) => switch (s) {
+  'Active'      => Colors.teal,
+  'En Route'    => Colors.amber,
+  'On Scene'    => Colors.green,
+  'At Hospital' => Colors.purple,
+  'Standby'     => Colors.orange,
+  'Off Duty'    => Colors.grey,
+  _             => Colors.teal,
+};
+
+// ── Zone types ────────────────────────────────────────────────────────────────
+const _kZoneTypes = ['Perimeter', 'LZ', 'Base Camp', 'Staging', 'Custom'];
+
+class TacZone {
+  final String id, missionCode, name, zoneType, createdBy;
+  final double lat, lng, radiusM;
+
+  TacZone({required this.id, required this.missionCode, required this.name,
+      required this.zoneType, required this.lat, required this.lng,
+      required this.radiusM, required this.createdBy});
+
+  Color get color => switch (zoneType) {
+    'Perimeter' => Colors.red,
+    'LZ'        => Colors.cyan,
+    'Base Camp' => Colors.green,
+    'Staging'   => Colors.orange,
+    _           => Colors.purple,
+  };
+
+  factory TacZone.fromMap(Map<String, dynamic> m) => TacZone(
+      id: m['id'] as String,
+      missionCode: m['mission_code'] as String? ?? '',
+      name: m['name'] as String? ?? 'Zone',
+      zoneType: m['zone_type'] as String? ?? 'Custom',
+      lat: (m['lat'] as num).toDouble(),
+      lng: (m['lng'] as num).toDouble(),
+      radiusM: (m['radius_m'] as num).toDouble(),
+      createdBy: m['created_by'] as String? ?? '');
+}
+
+// ── SOS event ─────────────────────────────────────────────────────────────────
+class TacSosEvent {
+  final String id, userId, callsign, missionCode;
+  final double lat, lng;
+  final DateTime triggeredAt;
+  final bool resolved;
+
+  TacSosEvent({required this.id, required this.userId, required this.callsign,
+      required this.missionCode, required this.lat, required this.lng,
+      required this.triggeredAt, required this.resolved});
+
+  factory TacSosEvent.fromMap(Map<String, dynamic> m) => TacSosEvent(
+      id: m['id'] as String,
+      userId: m['user_id'] as String,
+      callsign: m['callsign'] as String? ?? 'Unknown',
+      missionCode: m['mission_code'] as String? ?? '',
+      lat: (m['lat'] as num).toDouble(),
+      lng: (m['lng'] as num).toDouble(),
+      triggeredAt: DateTime.tryParse(m['triggered_at'] as String? ?? '') ?? DateTime.now(),
+      resolved: m['resolved_at'] != null);
 }
 
 class TacUser {
@@ -98,6 +170,8 @@ class TacUser {
   final double lng;
   final bool isAdmin;
   final DateTime updatedAt;
+  final int? batteryLevel;
+  final String status;
 
   TacUser({
     required this.id,
@@ -107,6 +181,8 @@ class TacUser {
     required this.lng,
     required this.isAdmin,
     required this.updatedAt,
+    this.batteryLevel,
+    this.status = 'Active',
   });
 
   factory TacUser.fromMap(Map<String, dynamic> m) => TacUser(
@@ -117,6 +193,8 @@ class TacUser {
         lng: (m['lng'] as num).toDouble(),
         isAdmin: m['is_admin'] as bool? ?? false,
         updatedAt: _parseTs(m['updated_at'] as String?),
+        batteryLevel: m['battery_level'] as int?,
+        status: m['status'] as String? ?? 'Active',
       );
 
   // Parse Supabase timestamps robustly — handle space separator, bare +00, etc.
@@ -570,7 +648,18 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   _IncidentOverlay? _incidentOverlay;
   bool _markerTableWarned = false;
   bool _sharingLocation = true;
-  bool _showAllMissions = false; // false = my mission only on map + panel
+  bool _showAllMissions = true;
+
+  // Life360-style features
+  final Battery _batteryPlugin = Battery();
+  int? _myBattery;
+  String _myStatus = 'Active';
+  final Map<String, List<LatLng>> _breadcrumbs = {};
+  int _breadcrumbTick = 0;
+  bool _showTrails = true;
+  final List<TacZone> _zones = [];
+  final List<TacSosEvent> _activeSos = [];
+  bool _placingZone = false;
 
   @override
   void initState() {
@@ -585,13 +674,27 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _missionCode = prefs.getString(_kMissionCode) ?? '';
     _isAdmin = prefs.getBool(_kIsAdmin) ?? false;
 
-    // Remove only own stale row from a previous session — never touch other users' rows.
     try { await _supabase.from('tac_users').delete().eq('id', _userId); } catch (_) {}
 
+    _readBattery();
     await _requestLocation();
     _startLocationPublish();
     _subscribeRealtime();
     _loadInitialData();
+  }
+
+  Future<void> _readBattery() async {
+    try {
+      final level = await _batteryPlugin.batteryLevel;
+      if (mounted) setState(() => _myBattery = level);
+      // Refresh battery every 5 minutes
+      Timer.periodic(const Duration(minutes: 5), (_) async {
+        try {
+          final l = await _batteryPlugin.batteryLevel;
+          if (mounted) setState(() => _myBattery = l);
+        } catch (_) {}
+      });
+    } catch (_) {}
   }
 
   Future<void> _requestLocation() async {
@@ -660,27 +763,39 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     if (mounted) {
       setState(() {
         _users[_userId] = TacUser(
-          id: _userId,
-          callsign: _callsign,
-          missionCode: _missionCode,
-          lat: _myLocation!.latitude,
-          lng: _myLocation!.longitude,
-          isAdmin: _isAdmin,
-          updatedAt: DateTime.now(),
+          id: _userId, callsign: _callsign, missionCode: _missionCode,
+          lat: _myLocation!.latitude, lng: _myLocation!.longitude,
+          isAdmin: _isAdmin, updatedAt: DateTime.now(),
+          batteryLevel: _myBattery, status: _myStatus,
         );
       });
     }
     try {
       await _supabase.from('tac_users').upsert({
-        'id': _userId,
-        'mission_code': _missionCode,
+        'id': _userId, 'mission_code': _missionCode,
         'callsign': _callsign,
-        'lat': _myLocation!.latitude,
-        'lng': _myLocation!.longitude,
+        'lat': _myLocation!.latitude, 'lng': _myLocation!.longitude,
         'is_admin': _isAdmin,
         'updated_at': DateTime.now().toIso8601String(),
+        'battery_level': _myBattery,
+        'status': _myStatus,
       });
     } catch (_) {}
+    // Write breadcrumb every 3rd publish (~30 s)
+    _breadcrumbTick++;
+    if (_breadcrumbTick % 3 == 0) {
+      final pt = _myLocation!;
+      final trail = _breadcrumbs.putIfAbsent(_userId, () => []);
+      trail.add(pt);
+      if (trail.length > 60) trail.removeAt(0);
+      try {
+        await _supabase.from('tac_breadcrumbs').insert({
+          'user_id': _userId, 'callsign': _callsign,
+          'mission_code': _missionCode,
+          'lat': pt.latitude, 'lng': pt.longitude,
+        });
+      } catch (_) {}
+    }
   }
 
   void _subscribeRealtime() {
@@ -723,8 +838,53 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 setState(() => _markers[m.id] = m);
               }
             })
+        .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'tac_zones',
+            filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: 'mission_code',
+                value: _missionCode),
+            callback: (payload) {
+              if (!mounted) return;
+              if (payload.eventType == PostgresChangeEvent.delete) {
+                final id = payload.oldRecord['id'] as String?;
+                if (id != null) setState(() => _zones.removeWhere((z) => z.id == id));
+              } else {
+                final z = TacZone.fromMap(payload.newRecord);
+                setState(() {
+                  _zones.removeWhere((x) => x.id == z.id);
+                  _zones.add(z);
+                });
+              }
+            })
+        .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'tac_sos',
+            filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: 'mission_code',
+                value: _missionCode),
+            callback: (payload) {
+              if (!mounted) return;
+              final updated = TacSosEvent.fromMap(payload.newRecord.isNotEmpty
+                  ? payload.newRecord
+                  : payload.oldRecord);
+              setState(() {
+                _activeSos.removeWhere((s) => s.id == updated.id);
+                if (!updated.resolved) _activeSos.add(updated);
+              });
+              if (!updated.resolved && updated.userId != _userId) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text('🚨 SOS from ${updated.callsign}!'),
+                  backgroundColor: Colors.red,
+                  duration: const Duration(seconds: 10),
+                ));
+              }
+            })
         .subscribe();
-    // Periodic fallback re-fetch in case any realtime events are missed
     _refreshTimer = Timer.periodic(
         const Duration(seconds: 30), (_) => _loadInitialData());
   }
@@ -769,11 +929,53 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           ? 'tac_markers table not found — open Tac Map Settings and re-run the setup SQL'
           : 'Could not load markers: ${e is PostgrestException ? e.message : e}';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(msg),
-        backgroundColor: Colors.orange,
+        content: Text(msg), backgroundColor: Colors.orange,
         duration: const Duration(seconds: 8),
       ));
     }
+
+    // Zones
+    try {
+      final zoneRows = await _supabase.from('tac_zones').select()
+          .eq('mission_code', _missionCode) as List;
+      if (!mounted) return;
+      setState(() {
+        _zones.clear();
+        _zones.addAll(zoneRows.map((r) => TacZone.fromMap(r as Map<String, dynamic>)));
+      });
+    } catch (_) {}
+
+    // Active SOS
+    try {
+      final sosRows = await _supabase.from('tac_sos').select()
+          .eq('mission_code', _missionCode)
+          .filter('resolved_at', 'is', null) as List;
+      if (!mounted) return;
+      setState(() {
+        _activeSos.clear();
+        _activeSos.addAll(sosRows.map((r) => TacSosEvent.fromMap(r as Map<String, dynamic>)));
+      });
+    } catch (_) {}
+
+    // Breadcrumbs for this mission (last 200 points per user)
+    try {
+      final crumbRows = await _supabase.from('tac_breadcrumbs').select()
+          .eq('mission_code', _missionCode)
+          .order('recorded_at', ascending: true)
+          .limit(500) as List;
+      if (!mounted) return;
+      final newCrumbs = <String, List<LatLng>>{};
+      for (final r in crumbRows) {
+        final uid = r['user_id'] as String;
+        newCrumbs.putIfAbsent(uid, () => [])
+            .add(LatLng((r['lat'] as num).toDouble(), (r['lng'] as num).toDouble()));
+      }
+      setState(() {
+        for (final e in newCrumbs.entries) {
+          _breadcrumbs[e.key] = e.value;
+        }
+      });
+    } catch (_) {}
   }
 
   static bool _isMarkerTableMissing(Object e) {
@@ -825,8 +1027,184 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   }
 
   Future<void> _deleteMarker(String id) async {
+    try { await _supabase.from('tac_markers').delete().eq('id', id); } catch (_) {}
+  }
+
+  // ── SOS ───────────────────────────────────────────────────────────────────
+  Future<void> _triggerSos() async {
+    if (_myLocation == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Colors.red[900],
+        title: const Text('🚨 Send SOS?', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This will alert ALL team members immediately.',
+          style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white70))),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('SEND SOS')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
     try {
-      await _supabase.from('tac_markers').delete().eq('id', id);
+      await _supabase.from('tac_sos').insert({
+        'user_id': _userId, 'callsign': _callsign,
+        'mission_code': _missionCode,
+        'lat': _myLocation!.latitude, 'lng': _myLocation!.longitude,
+      });
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('SOS failed: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<void> _resolveSos(String sosId) async {
+    try {
+      await _supabase.from('tac_sos').update({
+        'resolved_at': DateTime.now().toIso8601String(),
+        'resolved_by': _callsign,
+      }).eq('id', sosId);
+      setState(() => _activeSos.removeWhere((s) => s.id == sosId));
+    } catch (_) {}
+  }
+
+  // ── Zones ─────────────────────────────────────────────────────────────────
+  void _startZonePlacement() {
+    setState(() => _placingZone = true);
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('Tap the map to place zone centre'),
+      duration: Duration(seconds: 5),
+    ));
+  }
+
+  Future<void> _createZone(LatLng pos) async {
+    setState(() => _placingZone = false);
+    String? name; String zoneType = 'LZ'; double radiusM = 100;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(builder: (ctx, ss) => AlertDialog(
+        title: const Text('Add Zone'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Zone name', border: OutlineInputBorder()),
+            onChanged: (v) => name = v.trim(),
+          ),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            value: zoneType,
+            decoration: const InputDecoration(labelText: 'Type', border: OutlineInputBorder()),
+            items: _kZoneTypes.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+            onChanged: (v) => ss(() => zoneType = v ?? 'LZ'),
+          ),
+          const SizedBox(height: 10),
+          TextFormField(
+            initialValue: '100',
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Radius (metres)', border: OutlineInputBorder()),
+            onChanged: (v) => radiusM = double.tryParse(v) ?? 100,
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Create')),
+        ],
+      )),
+    );
+    if (result != true || name == null || name!.isEmpty) return;
+    try {
+      await _supabase.from('tac_zones').insert({
+        'mission_code': _missionCode, 'name': name,
+        'zone_type': zoneType, 'lat': pos.latitude, 'lng': pos.longitude,
+        'radius_m': radiusM, 'created_by': _callsign,
+      });
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Zone create failed: $e')));
+    }
+  }
+
+  Future<void> _deleteZone(TacZone zone) async {
+    try {
+      await _supabase.from('tac_zones').delete().eq('id', zone.id);
+      setState(() => _zones.remove(zone));
+    } catch (_) {}
+  }
+
+  // ── Status ────────────────────────────────────────────────────────────────
+  void _pickStatus() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Padding(
+            padding: EdgeInsets.all(14),
+            child: Text('My Check-in Status',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+          const Divider(height: 1),
+          ..._kStatuses.map((s) => ListTile(
+            leading: CircleAvatar(
+              radius: 10,
+              backgroundColor: _statusColor(s),
+            ),
+            title: Text(s),
+            selected: _myStatus == s,
+            onTap: () {
+              Navigator.pop(context);
+              setState(() => _myStatus = s);
+              _publishLocation(); // push update immediately
+            },
+          )),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
+
+  // ── Waypoint ──────────────────────────────────────────────────────────────
+  Future<void> _placeWaypoint(LatLng pos) async {
+    String? label;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Name this waypoint'),
+        content: TextField(
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Waypoint name', border: OutlineInputBorder()),
+          onChanged: (v) => label = v.trim(),
+          onSubmitted: (_) => Navigator.pop(context, true),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Place')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final tempId = 'tmp_${DateTime.now().millisecondsSinceEpoch}';
+    final wpLabel = label?.isNotEmpty == true ? label! : 'WP';
+    setState(() {
+      _markers[tempId] = TacMarker(
+        id: tempId, type: TacMarkerType.waypoint, label: wpLabel,
+        lat: pos.latitude, lng: pos.longitude,
+        placedBy: _callsign, createdAt: DateTime.now(),
+      );
+      _placingType = null;
+    });
+    try {
+      await _supabase.from('tac_markers').insert({
+        'mission_code': _missionCode, 'type': TacMarkerType.waypoint.name,
+        'label': wpLabel, 'lat': pos.latitude, 'lng': pos.longitude,
+        'placed_by': _callsign,
+      });
+      if (mounted) setState(() => _markers.remove(tempId));
     } catch (_) {}
   }
 
@@ -854,65 +1232,134 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
   List<Marker> _buildMapMarkers() {
     final markers = <Marker>[];
+    final now = DateTime.now();
+    final staleThreshold = now.subtract(const Duration(minutes: 15));
 
-    final staleThreshold = DateTime.now().subtract(const Duration(minutes: 15));
+    // ── User location pins ────────────────────────────────────────────────
     for (final user in _users.values) {
       if (user.updatedAt.isBefore(staleThreshold)) continue;
-      // When "Mine" is selected, only show users on the current mission.
       if (!_showAllMissions && user.missionCode != _missionCode && user.id != _userId) continue;
       final isMe = user.id == _userId;
       final sameMission = user.missionCode == _missionCode;
-      final color = isMe
-          ? Colors.teal
-          : sameMission
-              ? Colors.blue
-              : Colors.deepOrange;
-      final label = user.callsign;
+      final statusCol = _statusColor(user.status);
+      final baseColor = isMe ? Colors.teal : sameMission ? Colors.blue : Colors.deepOrange;
+      final minutesAgo = now.difference(user.updatedAt).inMinutes;
+      final timeLabel = minutesAgo < 1 ? 'now' : '${minutesAgo}m';
+      final battLabel = user.batteryLevel != null ? '🔋${user.batteryLevel}%' : '';
+      // SOS highlight
+      final hasSos = _activeSos.any((s) => s.userId == user.id);
       markers.add(Marker(
         point: LatLng(user.lat, user.lng),
-        width: 96,
-        height: 60,
+        width: 100,
+        height: hasSos ? 82 : 72,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Container(
-              constraints: const BoxConstraints(maxWidth: 90),
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(4),
-                boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 3, offset: Offset(1, 1))],
+            if (hasSos)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(4)),
+                child: const Text('🚨 SOS', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
               ),
-              child: Text(label,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+            Container(
+              constraints: const BoxConstraints(maxWidth: 96),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+              decoration: BoxDecoration(
+                color: hasSos ? Colors.red : baseColor,
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: statusCol, width: 1.5),
+                boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 3, offset: Offset(1,1))],
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Text(user.callsign,
+                    textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                if (battLabel.isNotEmpty || timeLabel.isNotEmpty)
+                  Text('$battLabel${battLabel.isNotEmpty && timeLabel.isNotEmpty ? ' · ' : ''}$timeLabel',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 8)),
+                if (user.status != 'Active')
+                  Text(user.status,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: statusCol == Colors.teal ? Colors.white : statusCol,
+                          fontSize: 7, fontWeight: FontWeight.w600)),
+              ]),
             ),
             Icon(isMe ? Icons.person_pin : Icons.person_pin_circle,
-                color: color, size: 34,
+                color: hasSos ? Colors.red : baseColor, size: 32,
                 shadows: const [Shadow(color: Colors.black45, blurRadius: 4)]),
           ],
         ),
       ));
     }
 
+    // ── Zone labels ───────────────────────────────────────────────────────
+    for (final zone in _zones) {
+      markers.add(Marker(
+        point: LatLng(zone.lat, zone.lng),
+        width: 90, height: 24,
+        child: GestureDetector(
+          onLongPress: _isAdmin ? () => _confirmDeleteZone(zone) : null,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: zone.color.withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(zone.name,
+                textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
+          ),
+        ),
+      ));
+    }
+
+    // ── Tac markers (patient, exfil, waypoints) ───────────────────────────
     for (final m in _markers.values) {
       markers.add(Marker(
         point: LatLng(m.lat, m.lng),
-        width: 48,
-        height: 48,
+        width: m.type == TacMarkerType.waypoint ? 72 : 48,
+        height: m.type == TacMarkerType.waypoint ? 56 : 48,
         child: GestureDetector(
           onLongPress: () => _confirmDeleteMarker(m),
-          child: Icon(m.type.icon, color: m.type.color, size: 40,
+          child: m.type == TacMarkerType.waypoint
+              ? Column(mainAxisSize: MainAxisSize.min, children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(
+                        color: TacMarkerType.waypoint.color, borderRadius: BorderRadius.circular(4)),
+                    child: Text(m.label.isNotEmpty ? m.label : 'WP',
+                        style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                  ),
+                  Icon(TacMarkerType.waypoint.icon, color: TacMarkerType.waypoint.color, size: 28,
+                      shadows: const [Shadow(color: Colors.black45, blurRadius: 3)]),
+                ])
+              : Icon(m.type.icon, color: m.type.color, size: 40,
               shadows: const [Shadow(color: Colors.black54, blurRadius: 4)]),
         ),
       ));
     }
 
     return markers;
+  }
+
+  void _confirmDeleteZone(TacZone zone) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Remove Zone?'),
+        content: Text('Remove "${zone.name}" (${zone.zoneType})?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () { Navigator.pop(context); _deleteZone(zone); },
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
   }
 
   LatLng? _extractionStart() {
@@ -953,16 +1400,35 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   @override
   Widget build(BuildContext context) {
     final extractStart = _extractionStart();
-    final extractEnd = _extractionEnd();
+    final extractEnd   = _extractionEnd();
 
+    // Exfil route + breadcrumb trails
     final polylines = <Polyline>[];
     if (extractStart != null && extractEnd != null) {
-      polylines.add(Polyline(
-        points: [extractStart, extractEnd],
-        color: Colors.orange,
-        strokeWidth: 3,
-      ));
+      polylines.add(Polyline(points: [extractStart, extractEnd],
+          color: Colors.orange, strokeWidth: 3));
     }
+    if (_showTrails) {
+      final trailColors = [Colors.teal, Colors.blue, Colors.deepOrange,
+                           Colors.purple, Colors.green, Colors.amber];
+      var ci = 0;
+      for (final entry in _breadcrumbs.entries) {
+        if (entry.value.length < 2) continue;
+        final col = trailColors[ci % trailColors.length];
+        polylines.add(Polyline(points: entry.value,
+            color: col.withValues(alpha: 0.55), strokeWidth: 2.5));
+        ci++;
+      }
+    }
+
+    // Zone circles
+    final zoneCircles = _zones.map((z) => CircleMarker(
+        point: LatLng(z.lat, z.lng),
+        radius: z.radiusM,
+        useRadiusInMeter: true,
+        color: z.color.withValues(alpha: 0.15),
+        borderColor: z.color,
+        borderStrokeWidth: 2.5)).toList();
 
     return Scaffold(
       appBar: AppBar(
@@ -976,23 +1442,41 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 backgroundColor: Colors.orange,
               ),
             ),
-          // Mine / All missions toggle — controls both map markers and team panel.
+          // All users / My mission toggle — all users visible by default.
           GestureDetector(
             onTap: () => setState(() => _showAllMissions = !_showAllMissions),
             child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+              margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
-                color: _showAllMissions ? Colors.indigo : Colors.white24,
+                color: _showAllMissions ? Colors.white : Colors.white24,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white38),
+                border: Border.all(color: Colors.white54),
               ),
-              child: Text(
-                _showAllMissions ? 'All' : 'Mine',
-                style: const TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(
+                  _showAllMissions ? Icons.people : Icons.person,
+                  size: 13,
+                  color: _showAllMissions ? Colors.indigo : Colors.white,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  _showAllMissions ? 'All Users' : 'My Mission',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: _showAllMissions ? Colors.indigo : Colors.white,
+                  ),
+                ),
+              ]),
             ),
+          ),
+          // Trail toggle
+          IconButton(
+            icon: Icon(_showTrails ? Icons.route : Icons.route_outlined,
+                color: _showTrails ? Colors.amber : null),
+            tooltip: _showTrails ? 'Hide Trails' : 'Show Trails',
+            onPressed: () => setState(() => _showTrails = !_showTrails),
           ),
           IconButton(
             icon: const Icon(Icons.build_outlined),
@@ -1016,21 +1500,26 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             onPressed: _sharingLocation ? _stopSharing : _startSharing,
           ),
           PopupMenuButton(itemBuilder: (_) => [
-            const PopupMenuItem(value: 'leave', child: Text('Leave Mission')),
-            const PopupMenuItem(value: 'recenter', child: Text('Re-center')),
+            const PopupMenuItem(value: 'leave',            child: Text('Leave Mission')),
+            const PopupMenuItem(value: 'recenter',         child: Text('Re-center')),
+            const PopupMenuItem(value: 'status',           child: Text('My Check-in Status')),
+            if (_isAdmin)
+              const PopupMenuItem(value: 'add_zone', child: Text('Add Zone')),
             const PopupMenuItem(value: 'supabase_settings', child: Text('Supabase Settings / SQL')),
             if (_incidentOverlay != null)
-              const PopupMenuItem(value: 'clear_overlay', child: Text('Clear Incident Overlay')),
-            const PopupMenuItem(value: 'clear_patient', child: Text('Clear Patient Marker')),
-            const PopupMenuItem(value: 'clear_exfil_start', child: Text('Clear Exfil Start')),
-            const PopupMenuItem(value: 'clear_exfil_end', child: Text('Clear Exfil End')),
+              const PopupMenuItem(value: 'clear_overlay',  child: Text('Clear Incident Overlay')),
+            const PopupMenuItem(value: 'clear_patient',    child: Text('Clear Patient Marker')),
+            const PopupMenuItem(value: 'clear_exfil_start',child: Text('Clear Exfil Start')),
+            const PopupMenuItem(value: 'clear_exfil_end',  child: Text('Clear Exfil End')),
           ], onSelected: (v) async {
-            if (v == 'leave') _leaveMission();
+            if (v == 'leave')             _leaveMission();
             if (v == 'recenter' && _myLocation != null) _mapCtrl.move(_myLocation!, 14);
-            if (v == 'clear_overlay') setState(() => _incidentOverlay = null);
-            if (v == 'clear_patient') _clearMarkersByType(TacMarkerType.patient);
+            if (v == 'status')            _pickStatus();
+            if (v == 'add_zone')          _startZonePlacement();
+            if (v == 'clear_overlay')     setState(() => _incidentOverlay = null);
+            if (v == 'clear_patient')     _clearMarkersByType(TacMarkerType.patient);
             if (v == 'clear_exfil_start') _clearMarkersByType(TacMarkerType.extractionStart);
-            if (v == 'clear_exfil_end') _clearMarkersByType(TacMarkerType.extractionEnd);
+            if (v == 'clear_exfil_end')   _clearMarkersByType(TacMarkerType.extractionEnd);
             if (v == 'supabase_settings') {
               await Navigator.push(context, MaterialPageRoute(
                 builder: (_) => _SupabaseConfigScreen(onSaved: () => Navigator.pop(context)),
@@ -1041,6 +1530,30 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       ),
       body: Column(
         children: [
+          // SOS alert banner
+          if (_activeSos.isNotEmpty)
+            Material(
+              color: Colors.red,
+              child: InkWell(
+                onTap: () => _mapCtrl.move(LatLng(_activeSos.first.lat, _activeSos.first.lng), 14),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  child: Row(children: [
+                    const Icon(Icons.sos, color: Colors.white, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(
+                      '🚨 SOS — ${_activeSos.map((s) => s.callsign).join(', ')} needs help! Tap to locate.',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                    )),
+                    if (_isAdmin) ...[
+                      TextButton(
+                        onPressed: () => _resolveSos(_activeSos.first.id),
+                        child: const Text('Resolve', style: TextStyle(color: Colors.white))),
+                    ],
+                  ]),
+                ),
+              ),
+            ),
           Expanded(
             child: Stack(
               children: [
@@ -1052,6 +1565,12 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                     onMapReady: () {
                       _mapReady = true;
                       if (_myLocation != null) _mapCtrl.move(_myLocation!, 14);
+                    },
+                    onTap: (_, point) {
+                      if (_placingZone) { _createZone(point); return; }
+                      if (_placingType == TacMarkerType.waypoint) {
+                        _placeWaypoint(point); return;
+                      }
                     },
                   ),
                   children: [
@@ -1070,8 +1589,21 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                         ],
                       ),
                     PolylineLayer(polylines: polylines),
+                    if (zoneCircles.isNotEmpty) CircleLayer(circles: zoneCircles),
                     MarkerLayer(markers: _buildMapMarkers()),
                   ],
+                ),
+                // SOS FAB — bottom-left, above the team panel
+                Positioned(
+                  left: 12, bottom: 12,
+                  child: FloatingActionButton(
+                    heroTag: 'sos_fab',
+                    onPressed: _triggerSos,
+                    backgroundColor: Colors.red,
+                    foregroundColor: Colors.white,
+                    tooltip: 'Send SOS',
+                    child: const Icon(Icons.sos, size: 28),
+                  ),
                 ),
                 // Placement overlay — sits above the map and captures taps
                 // directly, bypassing flutter_map's gesture arena entirely.
@@ -1403,6 +1935,7 @@ class _TeamPanelState extends State<_TeamPanel> {
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: TacMarkerType.values.map((t) {
+                    // Waypoint placement is handled separately (needs name dialog)
                     final active = widget.placingType == t;
                     return Padding(
                       padding: const EdgeInsets.only(right: 6),

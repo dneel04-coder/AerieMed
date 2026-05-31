@@ -2195,6 +2195,61 @@ do \$\$ begin
   create policy "public_access" on user_profiles
     for all using (true) with check (true);
 exception when duplicate_object then null; end \$\$;
+
+-- ── TacMap Life360 features ────────────────────────────────────────────────
+
+alter table tac_users add column if not exists battery_level int;
+alter table tac_users add column if not exists status text default 'Active';
+
+create table if not exists tac_breadcrumbs (
+  id uuid default gen_random_uuid() primary key,
+  user_id text not null,
+  callsign text not null,
+  mission_code text not null,
+  lat double precision not null,
+  lng double precision not null,
+  recorded_at timestamptz default now()
+);
+alter table tac_breadcrumbs enable row level security;
+do \$\$ begin
+  create policy "public_access" on tac_breadcrumbs
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+
+create table if not exists tac_zones (
+  id uuid default gen_random_uuid() primary key,
+  mission_code text not null,
+  name text not null,
+  zone_type text not null default 'Custom',
+  lat double precision not null,
+  lng double precision not null,
+  radius_m double precision not null default 100,
+  created_by text not null default '',
+  created_at timestamptz default now()
+);
+alter table tac_zones enable row level security;
+do \$\$ begin
+  create policy "public_access" on tac_zones
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+
+create table if not exists tac_sos (
+  id uuid default gen_random_uuid() primary key,
+  user_id text not null,
+  callsign text not null,
+  mission_code text not null,
+  lat double precision not null,
+  lng double precision not null,
+  message text default '',
+  triggered_at timestamptz default now(),
+  resolved_at timestamptz,
+  resolved_by text default ''
+);
+alter table tac_sos enable row level security;
+do \$\$ begin
+  create policy "public_access" on tac_sos
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
 ''';
 
 

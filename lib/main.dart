@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
+import 'resqruck_assistant.dart';
 import 'user_profile.dart';
 import 'patient_report.dart';
 import 'decision_tree.dart';
@@ -156,10 +157,18 @@ class _MainShellState extends State<MainShell> {
         ],
       ),
       floatingActionButton: _tab != 1
-          ? FloatingActionButton(
-              onPressed: () => setState(() => _tab = 1),
-              tooltip: 'Open Tac Map',
-              child: const Icon(Icons.explore),
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const AssistantFab(),
+                const SizedBox(height: 12),
+                FloatingActionButton(
+                  heroTag: 'compass_fab',
+                  onPressed: () => setState(() => _tab = 1),
+                  tooltip: 'Open Tac Map',
+                  child: const Icon(Icons.explore),
+                ),
+              ],
             )
           : null,
       bottomNavigationBar: NavigationBar(
