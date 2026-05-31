@@ -59,10 +59,14 @@ class SupabaseService {
   static Future<void> _runMigrations() async {
     if (_migrated) return;
     _migrated = true;
-    // Probe whether the expiration_date column exists so callers can skip it if absent.
+    final client = Supabase.instance.client;
+    // Call the SECURITY DEFINER RPC that creates all missing tables/columns.
+    // If the function doesn't exist yet (admin hasn't run setup SQL), this
+    // fails silently — features degrade gracefully until the SQL is run once.
+    try { await client.rpc('resqruck_auto_migrate'); } catch (_) {}
+    // Probe expiration_date so cert sync can skip it if absent.
     try {
-      await Supabase.instance.client
-          .from('team_certs').select('expiration_date').limit(1);
+      await client.from('team_certs').select('expiration_date').limit(1);
       hasExpirationCol = true;
     } catch (_) {
       hasExpirationCol = false;
@@ -2196,60 +2200,85 @@ do \$\$ begin
     for all using (true) with check (true);
 exception when duplicate_object then null; end \$\$;
 
--- ── TacMap Life360 features ────────────────────────────────────────────────
+-- ── Auto-migration function (called by the app on every startup) ──────────
+-- SECURITY DEFINER means it runs as the DB owner even when called by the
+-- anon key — so the app can apply schema changes without admin intervention
+-- after this SQL has been run once.
 
-alter table tac_users add column if not exists battery_level int;
-alter table tac_users add column if not exists status text default 'Active';
+create or replace function resqruck_auto_migrate()
+returns void
+language plpgsql
+security definer
+as \$func\$
+begin
+  -- tac_users: Life360 columns
+  alter table if exists tac_users add column if not exists battery_level int;
+  alter table if exists tac_users add column if not exists status text default 'Active';
 
-create table if not exists tac_breadcrumbs (
-  id uuid default gen_random_uuid() primary key,
-  user_id text not null,
-  callsign text not null,
-  mission_code text not null,
-  lat double precision not null,
-  lng double precision not null,
-  recorded_at timestamptz default now()
-);
-alter table tac_breadcrumbs enable row level security;
-do \$\$ begin
-  create policy "public_access" on tac_breadcrumbs
-    for all using (true) with check (true);
-exception when duplicate_object then null; end \$\$;
+  -- tac_breadcrumbs
+  create table if not exists tac_breadcrumbs (
+    id uuid default gen_random_uuid() primary key,
+    user_id text not null,
+    callsign text not null,
+    mission_code text not null,
+    lat double precision not null,
+    lng double precision not null,
+    recorded_at timestamptz default now()
+  );
+  begin
+    alter table tac_breadcrumbs enable row level security;
+    create policy "public_access" on tac_breadcrumbs
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
 
-create table if not exists tac_zones (
-  id uuid default gen_random_uuid() primary key,
-  mission_code text not null,
-  name text not null,
-  zone_type text not null default 'Custom',
-  lat double precision not null,
-  lng double precision not null,
-  radius_m double precision not null default 100,
-  created_by text not null default '',
-  created_at timestamptz default now()
-);
-alter table tac_zones enable row level security;
-do \$\$ begin
-  create policy "public_access" on tac_zones
-    for all using (true) with check (true);
-exception when duplicate_object then null; end \$\$;
+  -- tac_zones
+  create table if not exists tac_zones (
+    id uuid default gen_random_uuid() primary key,
+    mission_code text not null,
+    name text not null,
+    zone_type text not null default 'Custom',
+    lat double precision not null,
+    lng double precision not null,
+    radius_m double precision not null default 100,
+    created_by text not null default '',
+    created_at timestamptz default now()
+  );
+  begin
+    alter table tac_zones enable row level security;
+    create policy "public_access" on tac_zones
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
 
-create table if not exists tac_sos (
-  id uuid default gen_random_uuid() primary key,
-  user_id text not null,
-  callsign text not null,
-  mission_code text not null,
-  lat double precision not null,
-  lng double precision not null,
-  message text default '',
-  triggered_at timestamptz default now(),
-  resolved_at timestamptz,
-  resolved_by text default ''
-);
-alter table tac_sos enable row level security;
-do \$\$ begin
-  create policy "public_access" on tac_sos
-    for all using (true) with check (true);
-exception when duplicate_object then null; end \$\$;
+  -- tac_sos
+  create table if not exists tac_sos (
+    id uuid default gen_random_uuid() primary key,
+    user_id text not null,
+    callsign text not null,
+    mission_code text not null,
+    lat double precision not null,
+    lng double precision not null,
+    message text default '',
+    triggered_at timestamptz default now(),
+    resolved_at timestamptz,
+    resolved_by text default ''
+  );
+  begin
+    alter table tac_sos enable row level security;
+    create policy "public_access" on tac_sos
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+
+  -- team_certs: expiration date column
+  alter table if exists team_certs add column if not exists expiration_date date;
+end;
+\$func\$;
+
+-- Allow the anon key (used by the app) to call this function.
+grant execute on function resqruck_auto_migrate() to anon;
+grant execute on function resqruck_auto_migrate() to authenticated;
 ''';
 
 
