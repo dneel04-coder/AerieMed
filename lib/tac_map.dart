@@ -669,108 +669,246 @@ class _TakLiveScreenState extends State<_TakLiveScreen> {
           )).toList()
         : <Marker>[];
 
+    // ATAK-style layout: full-screen map with overlay panels, no standard AppBar
+    const bg = Color(0xFF0D1117);
+    const fg = Colors.white;
+    const dim = Color(0xFF8B949E);
+    const cyan = Colors.cyanAccent;
+
+    final mapCenter = _mapReady ? _mapCtrl.camera.center : (_myLocation ?? const LatLng(37.0902, -95.7129));
+    final zoom = _mapReady ? _mapCtrl.camera.zoom : 13.0;
+    final latStr = mapCenter.latitude.toStringAsFixed(5);
+    final lonStr = mapCenter.longitude.toStringAsFixed(5);
+
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0D1117),
-        foregroundColor: Colors.white,
-        title: Row(children: [
-          const Text('TAK MAP', style: TextStyle(fontSize: 14, letterSpacing: 1.2,
-              fontWeight: FontWeight.bold)),
-          const SizedBox(width: 8),
-          if (_takPositions.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-              decoration: BoxDecoration(
-                  color: Colors.cyanAccent.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.cyanAccent, width: 0.8)),
-              child: Text('${_takPositions.length} LIVE',
-                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 10,
-                      fontWeight: FontWeight.bold)),
+      // No AppBar — ATAK is full-screen map
+      body: SafeArea(
+        child: Stack(children: [
+          // ── Full-screen map ───────────────────────────────────────────────
+          FlutterMap(
+            mapController: _mapCtrl,
+            options: MapOptions(
+              initialCenter: _myLocation ?? const LatLng(37.0902, -95.7129),
+              initialZoom: _myLocation != null ? 13 : 4,
+              onMapReady: () {
+                _mapReady = true;
+                if (_myLocation != null) _mapCtrl.move(_myLocation!, 13);
+              },
+              onPositionChanged: (_, __) => setState(() {}),
             ),
-        ]),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.radar,
-                color: _showTak ? Colors.cyanAccent : Colors.white30),
-            tooltip: 'Toggle TAK positions',
-            onPressed: () => setState(() => _showTak = !_showTak),
-          ),
-          IconButton(
-            icon: Icon(Icons.place,
-                color: _showPoi ? Colors.orangeAccent : Colors.white30),
-            tooltip: 'Toggle POIs',
-            onPressed: () => setState(() => _showPoi = !_showPoi),
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
-            onPressed: _init,
-          ),
-        ],
-      ),
-      body: Stack(children: [
-        FlutterMap(
-          mapController: _mapCtrl,
-          options: MapOptions(
-            initialCenter: _myLocation ?? const LatLng(37.0902, -95.7129),
-            initialZoom: _myLocation != null ? 13 : 4,
-            onMapReady: () {
-              _mapReady = true;
-              if (_myLocation != null) _mapCtrl.move(_myLocation!, 13);
-            },
-          ),
-          children: [
-            TileLayer(
-              urlTemplate: _kDarkTileUrl,
-              userAgentPackageName: 'com.resqruck.app',
-              tileProvider: _CachedTileProvider(),
-            ),
-            if (takMarkers.isNotEmpty) MarkerLayer(markers: takMarkers),
-            if (poiMarkers.isNotEmpty) MarkerLayer(markers: poiMarkers),
-            if (_myLocation != null)
-              MarkerLayer(markers: [
-                Marker(
-                  point: _myLocation!,
-                  width: 20, height: 20,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.teal,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
+            children: [
+              TileLayer(
+                urlTemplate: _kDarkTileUrl,
+                userAgentPackageName: 'com.resqruck.app',
+                tileProvider: _CachedTileProvider(),
+              ),
+              if (takMarkers.isNotEmpty) MarkerLayer(markers: takMarkers),
+              if (poiMarkers.isNotEmpty) MarkerLayer(markers: poiMarkers),
+              if (_myLocation != null)
+                MarkerLayer(markers: [
+                  Marker(
+                    point: _myLocation!,
+                    width: 24, height: 24,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00B4D8),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 2),
+                        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 4)],
+                      ),
                     ),
                   ),
+                ]),
+            ],
+          ),
+
+          // ── Top header bar (ATAK style) ───────────────────────────────────
+          Positioned(
+            top: 0, left: 0, right: 0,
+            child: Container(
+              color: bg.withValues(alpha: 0.88),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(children: [
+                // Grid/heading indicator
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: cyan.withValues(alpha: 0.5)),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                  child: const Text('TAK', style: TextStyle(color: cyan,
+                      fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                ),
+                const SizedBox(width: 8),
+                if (_takPositions.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: cyan.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    child: Text('${_takPositions.length} LIVE',
+                        style: const TextStyle(color: cyan, fontSize: 10,
+                            fontWeight: FontWeight.bold)),
+                  ),
+                const Spacer(),
+                // GPS fix indicator
+                Icon(Icons.gps_fixed, size: 13,
+                    color: _myLocation != null ? Colors.greenAccent : Colors.redAccent),
+                const SizedBox(width: 4),
+                Text(_myLocation != null ? 'GPS FIX' : 'NO FIX',
+                    style: TextStyle(
+                        fontSize: 10, fontWeight: FontWeight.bold,
+                        color: _myLocation != null ? Colors.greenAccent : Colors.redAccent)),
+              ]),
+            ),
+          ),
+
+          // ── Right tool panel (vertical) ───────────────────────────────────
+          Positioned(
+            right: 8, top: 50,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _atakTool(Icons.add, 'Zoom in', bg, fg, () {
+                  final z = (zoom + 1).clamp(3.0, 20.0);
+                  _mapCtrl.move(_mapCtrl.camera.center, z);
+                }),
+                const SizedBox(height: 2),
+                _atakTool(Icons.remove, 'Zoom out', bg, fg, () {
+                  final z = (zoom - 1).clamp(3.0, 20.0);
+                  _mapCtrl.move(_mapCtrl.camera.center, z);
+                }),
+                const SizedBox(height: 8),
+                _atakTool(Icons.my_location, 'Re-centre', bg,
+                    _myLocation != null ? cyan : Colors.white30, () {
+                  if (_myLocation != null) _mapCtrl.move(_myLocation!, 14);
+                }),
+                const SizedBox(height: 8),
+                _atakTool(Icons.radar, 'TAK layer', bg,
+                    _showTak ? cyan : Colors.white30,
+                    () => setState(() => _showTak = !_showTak)),
+                const SizedBox(height: 2),
+                _atakTool(Icons.place, 'POI layer', bg,
+                    _showPoi ? Colors.orangeAccent : Colors.white30,
+                    () => setState(() => _showPoi = !_showPoi)),
+                const SizedBox(height: 8),
+                _atakTool(Icons.refresh, 'Refresh', bg, dim, _init),
+                const SizedBox(height: 8),
+                _atakTool(Icons.group_add, 'Join Mission', Colors.teal, fg,
+                    widget.onJoinMission),
+              ],
+            ),
+          ),
+
+          // ── Compass (top-right, ATAK style) ──────────────────────────────
+          Positioned(
+            top: 52, right: 60,
+            child: Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                color: bg.withValues(alpha: 0.8),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Stack(alignment: Alignment.center, children: [
+                const Text('N', style: TextStyle(color: Colors.redAccent,
+                    fontSize: 11, fontWeight: FontWeight.bold, height: 1)),
+                Positioned(
+                  bottom: 4,
+                  child: Text('S', style: TextStyle(color: dim, fontSize: 8)),
                 ),
               ]),
-          ],
-        ),
-        // Empty state
-        if (_takPositions.isEmpty && _pois.isEmpty)
-          Center(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.radar_outlined, size: 64, color: Colors.cyanAccent.withValues(alpha: 0.4)),
-              const SizedBox(height: 12),
-              const Text('No TAK positions received yet',
-                  style: TextStyle(color: Colors.white54, fontSize: 14)),
-              const SizedBox(height: 4),
-              const Text('Waiting for ATAK feed…',
-                  style: TextStyle(color: Colors.white30, fontSize: 12)),
-            ]),
+            ),
           ),
-        // Join Mission FAB
-        Positioned(
-          bottom: 24, right: 16,
-          child: FloatingActionButton.extended(
-            onPressed: widget.onJoinMission,
-            backgroundColor: Colors.teal,
-            foregroundColor: Colors.white,
-            icon: const Icon(Icons.group_add),
-            label: const Text('Join Mission',
-                style: TextStyle(fontWeight: FontWeight.bold)),
+
+          // ── Zoom level badge ──────────────────────────────────────────────
+          Positioned(
+            top: 52, left: 8,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(
+                color: bg.withValues(alpha: 0.8),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Text('Z${zoom.round()}',
+                  style: TextStyle(color: dim, fontSize: 10,
+                      fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+            ),
           ),
+
+          // ── Empty state ────────────────────────────────────────────────────
+          if (_takPositions.isEmpty && _pois.isEmpty)
+            Center(
+              child: IgnorePointer(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.radar_outlined, size: 56,
+                      color: cyan.withValues(alpha: 0.3)),
+                  const SizedBox(height: 10),
+                  const Text('Waiting for ATAK feed…',
+                      style: TextStyle(color: Colors.white38, fontSize: 13)),
+                ]),
+              ),
+            ),
+
+          // ── Bottom coordinate / info bar ──────────────────────────────────
+          Positioned(
+            bottom: 0, left: 0, right: 0,
+            child: Container(
+              color: bg.withValues(alpha: 0.92),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(children: [
+                // Coordinates
+                Icon(Icons.gps_not_fixed, size: 12, color: dim),
+                const SizedBox(width: 5),
+                Text('$latStr, $lonStr',
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 11,
+                        fontFamily: 'monospace')),
+                const Spacer(),
+                // Active TAK contacts
+                if (_takPositions.isNotEmpty) ...[
+                  Icon(Icons.people_outline, size: 12, color: cyan),
+                  const SizedBox(width: 3),
+                  Text('${_takPositions.length}',
+                      style: const TextStyle(color: cyan, fontSize: 11,
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(width: 10),
+                ],
+                // POI count
+                if (_pois.isNotEmpty) ...[
+                  Icon(Icons.place_outlined, size: 12,
+                      color: Colors.orangeAccent),
+                  const SizedBox(width: 3),
+                  Text('${_pois.length}',
+                      style: const TextStyle(color: Colors.orangeAccent,
+                          fontSize: 11, fontWeight: FontWeight.bold)),
+                ],
+              ]),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _atakTool(IconData icon, String tip, Color bg, Color fg, VoidCallback onTap) {
+    return Tooltip(
+      message: tip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 36, height: 36,
+          decoration: BoxDecoration(
+            color: bg.withValues(alpha: 0.88),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: Colors.white10),
+          ),
+          child: Icon(icon, color: fg, size: 18),
         ),
-      ]),
+      ),
     );
   }
 }

@@ -2417,6 +2417,7 @@ class _TasksTabState extends State<_TasksTab> with AutomaticKeepAliveClientMixin
   bool get wantKeepAlive => true;
   List<OpTask> _tasks = [];
   List<TeamMember> _members = [];
+  List<String> _assignableNames = []; // roster + Supabase profiles
   bool _loading = true;
   String _filter = 'Active';
 
@@ -2426,7 +2427,29 @@ class _TasksTabState extends State<_TasksTab> with AutomaticKeepAliveClientMixin
   Future<void> _load() async {
     final tasks = await TaskStorage.load();
     final members = await RosterStorage.load();
-    if (mounted) setState(() { _tasks = tasks; _members = members; _loading = false; });
+    // Build assignable names: local roster + Supabase user_profiles
+    final names = <String>{};
+    for (final m in members) { names.add(m.displayName); }
+    try {
+      final ok = await SupabaseService.ensureInitialized();
+      if (ok) {
+        final rows = await SupabaseService.client!
+            .from('user_profiles')
+            .select('name, callsign')
+            .order('name') as List;
+        for (final r in rows) {
+          final name = r['name'] as String? ?? '';
+          final cs   = r['callsign'] as String? ?? '';
+          if (name.isNotEmpty) names.add(cs.isNotEmpty ? '$name ($cs)' : name);
+        }
+      }
+    } catch (_) {}
+    if (mounted) setState(() {
+      _tasks = tasks;
+      _members = members;
+      _assignableNames = names.toList()..sort();
+      _loading = false;
+    });
   }
 
   List<OpTask> get _filtered => _tasks.where((t) {
@@ -2440,7 +2463,7 @@ class _TasksTabState extends State<_TasksTab> with AutomaticKeepAliveClientMixin
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      builder: (_) => _TaskFormSheet(existing: existing, members: _members),
+      builder: (_) => _TaskFormSheet(existing: existing, members: _members, assignableNames: _assignableNames),
     );
     if (result == true) _load();
   }
@@ -2660,7 +2683,8 @@ class _TasksTabState extends State<_TasksTab> with AutomaticKeepAliveClientMixin
 class _TaskFormSheet extends StatefulWidget {
   final OpTask? existing;
   final List<TeamMember> members;
-  const _TaskFormSheet({this.existing, required this.members});
+  final List<String> assignableNames;
+  const _TaskFormSheet({this.existing, required this.members, this.assignableNames = const []});
   @override
   State<_TaskFormSheet> createState() => _TaskFormSheetState();
 }
@@ -2747,17 +2771,29 @@ class _TaskFormSheetState extends State<_TaskFormSheet> {
             ),
           ]),
           const SizedBox(height: 10),
-          // Assignee
+          // Assignee — populated from Supabase user_profiles + local roster
           DropdownButtonFormField<String>(
-            initialValue: _assignedTo.isEmpty ? null : _assignedTo,
-            decoration: const InputDecoration(labelText: 'Assigned To', border: OutlineInputBorder(), isDense: true,
-              contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 9)),
+            value: _assignedTo.isEmpty ? null : _assignedTo,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: 'Assigned To',
+              border: OutlineInputBorder(), isDense: true,
+              contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+              prefixIcon: Icon(Icons.person_outline, size: 18),
+            ),
             items: [
               const DropdownMenuItem(value: '', child: Text('Unassigned')),
-              ...widget.members.map((m) => DropdownMenuItem(
-                value: m.displayName,
-                child: Row(children: [_CertBadge(m.certification), const SizedBox(width: 6), Text(m.displayName)]),
-              )),
+              ...(() {
+                // Merge Supabase names with local roster names (deduplicated)
+                final all = <String>{
+                  ...widget.assignableNames,
+                  ...widget.members.map((m) => m.displayName),
+                }.toList()..sort();
+                return all.map((name) => DropdownMenuItem(
+                  value: name,
+                  child: Text(name, overflow: TextOverflow.ellipsis),
+                ));
+              })(),
             ],
             onChanged: (v) => setState(() => _assignedTo = v ?? ''),
           ),
