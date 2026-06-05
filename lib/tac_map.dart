@@ -409,12 +409,373 @@ class _TacMapScreenState extends State<TacMapScreen> {
 
   @override
   Widget build(BuildContext context) => switch (_phase) {
-        _Phase.loading => const Scaffold(body: Center(child: CircularProgressIndicator())),
+        _Phase.loading  => const Scaffold(body: Center(child: CircularProgressIndicator())),
         _Phase.noConfig => _SupabaseConfigScreen(onSaved: _onConfigSaved),
-        _Phase.noSession => _MissionSetupScreen(onJoined: _onSessionJoined),
-        _Phase.active => _ActiveMapScreen(onLeft: _onLeft),
+        // Show live TAK map immediately — mission joining is optional via FAB
+        _Phase.noSession => _TakLiveScreen(onJoinMission: () {
+            showModalBottomSheet(
+              context: context,
+              isScrollControlled: true,
+              useSafeArea: true,
+              builder: (_) => _MissionSetupScreen(onJoined: () {
+                Navigator.pop(context); // close sheet
+                _onSessionJoined();     // switch to active map
+              }),
+            );
+          }),
+        _Phase.active   => _ActiveMapScreen(onLeft: _onLeft),
       };
 }
+
+// ── Live TAK map — visible immediately without joining a mission ──────────────
+
+class _TakLiveScreen extends StatefulWidget {
+  final VoidCallback onJoinMission;
+  const _TakLiveScreen({required this.onJoinMission});
+
+  @override
+  State<_TakLiveScreen> createState() => _TakLiveScreenState();
+}
+
+class _TakLiveScreenState extends State<_TakLiveScreen> {
+  final _mapCtrl = MapController();
+  LatLng? _myLocation;
+  final Map<String, TakPosition> _takPositions = {};
+  final List<TacPoi> _pois = [];
+  bool _showTak = true;
+  bool _showPoi = true;
+  RealtimeChannel? _channel;
+  bool _mapReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    // Get device location for initial centre
+    try {
+      final perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) await Geolocator.requestPermission();
+      final pos = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
+      if (mounted) setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
+      if (_mapReady && _myLocation != null) _mapCtrl.move(_myLocation!, 13);
+    } catch (_) {}
+
+    // Load TAK data
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok || !mounted) return;
+    final client = SupabaseService.client!;
+    try {
+      final rows = await client.from('team_positions').select() as List;
+      if (!mounted) return;
+      setState(() {
+        for (final r in rows) {
+          final p = TakPosition.fromMap(r as Map<String, dynamic>);
+          _takPositions[p.callsign] = p;
+        }
+      });
+    } catch (_) {}
+    try {
+      final rows = await client.from('tac_pois').select() as List;
+      if (!mounted) return;
+      setState(() {
+        _pois.clear();
+        _pois.addAll(rows.map((r) => TacPoi.fromMap(r as Map<String, dynamic>)));
+      });
+    } catch (_) {}
+
+    // Realtime subscription
+    _channel = client
+        .channel('tak_live_preview')
+        .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'team_positions',
+            callback: (payload) {
+              if (!mounted) return;
+              if (payload.eventType == PostgresChangeEvent.delete) {
+                final cs = payload.oldRecord['callsign'] as String?;
+                if (cs != null) setState(() => _takPositions.remove(cs));
+              } else {
+                final p = TakPosition.fromMap(payload.newRecord);
+                setState(() => _takPositions[p.callsign] = p);
+              }
+            })
+        .subscribe();
+  }
+
+  @override
+  void dispose() {
+    _channel?.unsubscribe();
+    super.dispose();
+  }
+
+  String _ago(DateTime dt) {
+    final d = DateTime.now().difference(dt);
+    if (d.inSeconds < 60) return '${d.inSeconds}s ago';
+    if (d.inMinutes < 60) return '${d.inMinutes}m ago';
+    return '${d.inHours}h ago';
+  }
+
+  void _showSheet(TakPosition p) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A2E),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+        child: Column(mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            CircleAvatar(
+                backgroundColor: p.statusColor.withValues(alpha: 0.2),
+                child: Icon(Icons.person_pin, color: p.statusColor, size: 22)),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(p.callsign, style: const TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text(p.role, style: const TextStyle(color: Colors.white54, fontSize: 13)),
+            ])),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                  color: p.statusColor.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: p.statusColor)),
+              child: Text(p.status,
+                  style: TextStyle(color: p.statusColor,
+                      fontWeight: FontWeight.w600, fontSize: 12)),
+            ),
+          ]),
+          const Divider(color: Colors.white12, height: 24),
+          _row(Icons.gps_fixed, 'Position',
+              '${p.lat.toStringAsFixed(5)}, ${p.lon.toStringAsFixed(5)}'),
+          const SizedBox(height: 8),
+          _row(Icons.access_time, 'Last seen', _ago(p.lastUpdated)),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.white24),
+                  foregroundColor: Colors.white70),
+              icon: const Icon(Icons.my_location, size: 16),
+              label: const Text('Centre on this position'),
+              onPressed: () {
+                Navigator.pop(context);
+                _mapCtrl.move(LatLng(p.lat, p.lon), 15);
+              },
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _row(IconData icon, String label, String value) => Row(children: [
+        Icon(icon, size: 15, color: Colors.white38),
+        const SizedBox(width: 8),
+        Text('$label  ', style: const TextStyle(color: Colors.white38, fontSize: 12)),
+        Expanded(child: Text(value,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            overflow: TextOverflow.ellipsis)),
+      ]);
+
+  @override
+  Widget build(BuildContext context) {
+    final stale = DateTime.now().subtract(const Duration(minutes: 5));
+
+    final takMarkers = _showTak
+        ? _takPositions.values.map((p) {
+            final isStale = p.lastUpdated.isBefore(stale);
+            final col = isStale ? Colors.white24 : p.statusColor;
+            return Marker(
+              point: LatLng(p.lat, p.lon),
+              width: 88, height: 60,
+              child: GestureDetector(
+                onTap: () => _showSheet(p),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Container(
+                    constraints: const BoxConstraints(maxWidth: 84),
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0D1117).withValues(alpha: 0.88),
+                      borderRadius: BorderRadius.circular(5),
+                      border: Border.all(color: col, width: 1.5),
+                    ),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text(p.callsign, maxLines: 1, overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: col, fontSize: 9, fontWeight: FontWeight.bold)),
+                      Text(_ago(p.lastUpdated),
+                          style: TextStyle(color: col.withValues(alpha: 0.7), fontSize: 7)),
+                    ]),
+                  ),
+                  Icon(Icons.navigation, color: col, size: 28,
+                      shadows: const [Shadow(color: Colors.black87, blurRadius: 4)]),
+                ]),
+              ),
+            );
+          }).toList()
+        : <Marker>[];
+
+    final poiMarkers = _showPoi
+        ? _pois.map((poi) => Marker(
+            point: LatLng(poi.lat, poi.lng),
+            width: 64, height: 52,
+            child: GestureDetector(
+              onTap: () => showModalBottomSheet(
+                context: context,
+                backgroundColor: const Color(0xFF1A1A2E),
+                shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+                builder: (_) => Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+                  child: Column(mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      Icon(poi.icon, color: poi.color, size: 24),
+                      const SizedBox(width: 12),
+                      Expanded(child: Text(poi.name,
+                          style: const TextStyle(fontSize: 17,
+                              fontWeight: FontWeight.bold, color: Colors.white))),
+                    ]),
+                    if (poi.notes.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Text(poi.notes, style: const TextStyle(color: Colors.white70)),
+                    ],
+                  ]),
+                ),
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0D1117).withValues(alpha: 0.88),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: poi.color),
+                  ),
+                  child: Text(poi.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: poi.color, fontSize: 8, fontWeight: FontWeight.w600)),
+                ),
+                Icon(poi.icon, color: poi.color, size: 24,
+                    shadows: const [Shadow(color: Colors.black87, blurRadius: 3)]),
+              ]),
+            ),
+          )).toList()
+        : <Marker>[];
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0D1117),
+        foregroundColor: Colors.white,
+        title: Row(children: [
+          const Text('TAK MAP', style: TextStyle(fontSize: 14, letterSpacing: 1.2,
+              fontWeight: FontWeight.bold)),
+          const SizedBox(width: 8),
+          if (_takPositions.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                  color: Colors.cyanAccent.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.cyanAccent, width: 0.8)),
+              child: Text('${_takPositions.length} LIVE',
+                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 10,
+                      fontWeight: FontWeight.bold)),
+            ),
+        ]),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.radar,
+                color: _showTak ? Colors.cyanAccent : Colors.white30),
+            tooltip: 'Toggle TAK positions',
+            onPressed: () => setState(() => _showTak = !_showTak),
+          ),
+          IconButton(
+            icon: Icon(Icons.place,
+                color: _showPoi ? Colors.orangeAccent : Colors.white30),
+            tooltip: 'Toggle POIs',
+            onPressed: () => setState(() => _showPoi = !_showPoi),
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
+            onPressed: _init,
+          ),
+        ],
+      ),
+      body: Stack(children: [
+        FlutterMap(
+          mapController: _mapCtrl,
+          options: MapOptions(
+            initialCenter: _myLocation ?? const LatLng(37.0902, -95.7129),
+            initialZoom: _myLocation != null ? 13 : 4,
+            onMapReady: () {
+              _mapReady = true;
+              if (_myLocation != null) _mapCtrl.move(_myLocation!, 13);
+            },
+          ),
+          children: [
+            TileLayer(
+              urlTemplate: _kDarkTileUrl,
+              userAgentPackageName: 'com.resqruck.app',
+              tileProvider: _CachedTileProvider(),
+            ),
+            if (takMarkers.isNotEmpty) MarkerLayer(markers: takMarkers),
+            if (poiMarkers.isNotEmpty) MarkerLayer(markers: poiMarkers),
+            if (_myLocation != null)
+              MarkerLayer(markers: [
+                Marker(
+                  point: _myLocation!,
+                  width: 20, height: 20,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.teal,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                  ),
+                ),
+              ]),
+          ],
+        ),
+        // Empty state
+        if (_takPositions.isEmpty && _pois.isEmpty)
+          Center(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.radar_outlined, size: 64, color: Colors.cyanAccent.withValues(alpha: 0.4)),
+              const SizedBox(height: 12),
+              const Text('No TAK positions received yet',
+                  style: TextStyle(color: Colors.white54, fontSize: 14)),
+              const SizedBox(height: 4),
+              const Text('Waiting for ATAK feed…',
+                  style: TextStyle(color: Colors.white30, fontSize: 12)),
+            ]),
+          ),
+        // Join Mission FAB
+        Positioned(
+          bottom: 24, right: 16,
+          child: FloatingActionButton.extended(
+            onPressed: widget.onJoinMission,
+            backgroundColor: Colors.teal,
+            foregroundColor: Colors.white,
+            icon: const Icon(Icons.group_add),
+            label: const Text('Join Mission',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 class _SupabaseConfigScreen extends StatefulWidget {
   final VoidCallback onSaved;
