@@ -110,6 +110,7 @@ class Incident {
   String compiledBy, incidentLead;
   List<String> membersPresent;
   List<IcRole> roles;
+  bool locked; // archived incidents are locked; admin can unlock for editing
 
   Incident({
     required this.id,
@@ -123,6 +124,7 @@ class Incident {
     this.incidentLead = '',
     List<String>? membersPresent,
     List<IcRole>? roles,
+    this.locked = false,
   }) : membersPresent = membersPresent ?? [],
        roles = roles ?? _defaultRoles();
 
@@ -155,6 +157,7 @@ class Incident {
         'compiledBy': compiledBy, 'incidentLead': incidentLead,
         'membersPresent': membersPresent,
         'roles': roles.map((r) => r.toJson()).toList(),
+        'locked': locked,
       };
 
   factory Incident.fromJson(Map<String, dynamic> j) => Incident(
@@ -171,6 +174,7 @@ class Incident {
         roles: (j['roles'] as List? ?? [])
             .map((e) => IcRole.fromJson(e as Map<String, dynamic>))
             .toList(),
+        locked: j['locked'] as bool? ?? false,
       );
 }
 
@@ -801,14 +805,108 @@ class _IncidentTabState extends State<_IncidentTab> with AutomaticKeepAliveClien
 
   List<Incident> _incidents = [];
   bool _loading = true;
+  bool _isAdmin = false;
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() {
+    super.initState();
+    _load();
+    ProtocolSyncService.instance.isAdminMode
+        .then((v) { if (mounted) setState(() => _isAdmin = v); });
+  }
 
   Future<void> _load() async {
     final d = await IncidentStorage.load();
     if (mounted) setState(() { _incidents = d; _loading = false; });
   }
+
+  void _viewArchivedIncident(Incident inc) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.65,
+        maxChildSize: 0.95,
+        builder: (_, ctrl) => ListView(
+          controller: ctrl,
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+          children: [
+            Row(children: [
+              Expanded(child: Text(inc.displayTitle,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.grey.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.lock_outline, size: 13, color: Colors.orange),
+                  const SizedBox(width: 4),
+                  Text(inc.status, style: const TextStyle(fontSize: 11,
+                      color: Colors.orange, fontWeight: FontWeight.w600)),
+                ]),
+              ),
+            ]),
+            const SizedBox(height: 4),
+            Text(inc.timeDisplay, style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+            const Divider(height: 24),
+            if (inc.type.isNotEmpty) _incRow('Type', inc.type),
+            if (inc.location.isNotEmpty) _incRow('Location', inc.location),
+            if (inc.compiledBy.isNotEmpty) _incRow('Compiled by', inc.compiledBy),
+            if (inc.incidentLead.isNotEmpty) _incRow('Lead', inc.incidentLead),
+            if (inc.membersPresent.isNotEmpty)
+              _incRow('Personnel', inc.membersPresent.join(', ')),
+            if (inc.notes.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              const Text('Notes', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              const SizedBox(height: 4),
+              Text(inc.notes, style: const TextStyle(fontSize: 13)),
+            ],
+            if (inc.roles.any((r) => r.assignedTo.isNotEmpty)) ...[
+              const Divider(height: 24),
+              const Text('IC STRUCTURE', style: TextStyle(fontWeight: FontWeight.bold,
+                  fontSize: 11, color: Colors.grey, letterSpacing: 0.8)),
+              const SizedBox(height: 8),
+              ...inc.roles.where((r) => r.assignedTo.isNotEmpty).map((r) =>
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Row(children: [
+                      Expanded(child: Text(r.title,
+                          style: const TextStyle(fontSize: 12, color: Colors.grey))),
+                      Text(r.assignedTo,
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                    ]),
+                  )),
+            ],
+            const SizedBox(height: 16),
+            if (_isAdmin && inc.locked)
+              FilledButton.icon(
+                icon: const Icon(Icons.lock_open_outlined),
+                label: const Text('Unlock for Editing'),
+                style: FilledButton.styleFrom(backgroundColor: Colors.orange),
+                onPressed: () {
+                  Navigator.pop(context);
+                  inc.locked = false;
+                  IncidentStorage.save(inc).then((_) => _load());
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _incRow(String label, String value) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      SizedBox(width: 100,
+          child: Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12))),
+      Expanded(child: Text(value, style: const TextStyle(fontSize: 13))),
+    ]),
+  );
 
   Incident? get _active =>
       _incidents.where((i) => i.status == 'Active').firstOrNull;
@@ -910,24 +1008,59 @@ class _IncidentTabState extends State<_IncidentTab> with AutomaticKeepAliveClien
                 child: Text('ARCHIVED', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey, letterSpacing: 1)),
               ),
               const SizedBox(height: 4),
-              ..._incidents.where((i) => i.status != 'Active').map((inc) => Card(
-                    margin: const EdgeInsets.only(bottom: 6),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: Colors.grey.withValues(alpha: 0.15),
-                        child: const Icon(Icons.folder_outlined, color: Colors.grey, size: 20),
-                      ),
-                      title: Text(inc.displayTitle),
-                      subtitle: Text('${inc.status}  •  ${inc.timeDisplay}', style: const TextStyle(fontSize: 11)),
-                      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                        IconButton(icon: const Icon(Icons.edit_outlined, size: 18), onPressed: () => _openForm(inc)),
-                        IconButton(icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red), onPressed: () async {
-                          await IncidentStorage.delete(inc.id);
-                          _load();
-                        }),
-                      ]),
+              ..._incidents.where((i) => i.status != 'Active').map((inc) {
+                final isLocked = inc.locked;
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: Colors.grey.withValues(alpha: 0.15),
+                      child: Icon(isLocked ? Icons.lock_outline : Icons.folder_outlined,
+                          color: isLocked ? Colors.orange : Colors.grey, size: 20),
                     ),
-                  )),
+                    title: Row(children: [
+                      Expanded(child: Text(inc.displayTitle)),
+                      if (isLocked)
+                        const Padding(
+                          padding: EdgeInsets.only(left: 4),
+                          child: Tooltip(
+                            message: 'Locked — admin can unlock to edit',
+                            child: Icon(Icons.lock, size: 13, color: Colors.orange),
+                          ),
+                        ),
+                    ]),
+                    subtitle: Text('${inc.status}  •  ${inc.timeDisplay}',
+                        style: const TextStyle(fontSize: 11)),
+                    trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                      // View always available
+                      IconButton(
+                        icon: const Icon(Icons.visibility_outlined, size: 18),
+                        tooltip: 'View incident',
+                        onPressed: () => _viewArchivedIncident(inc),
+                      ),
+                      if (!isLocked) ...[
+                        IconButton(icon: const Icon(Icons.edit_outlined, size: 18),
+                            onPressed: () => _openForm(inc)),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                          onPressed: () async {
+                            await IncidentStorage.delete(inc.id);
+                            _load();
+                          }),
+                      ] else if (_isAdmin)
+                        IconButton(
+                          icon: const Icon(Icons.lock_open_outlined, size: 18, color: Colors.orange),
+                          tooltip: 'Unlock for editing',
+                          onPressed: () async {
+                            inc.locked = false;
+                            await IncidentStorage.save(inc);
+                            _load();
+                          }),
+                    ]),
+                    onTap: () => _viewArchivedIncident(inc),
+                  ),
+                );
+              }),
             ],
           ],
         ),
@@ -1182,6 +1315,8 @@ class _IncidentFormSheetState extends State<_IncidentFormSheet> {
     inc.compiledBy     = _compiledBy;
     inc.incidentLead   = _incidentLead;
     inc.membersPresent = _membersPresent;
+    // Auto-lock when incident is archived (non-Active status).
+    if (_status != 'Active') inc.locked = true;
     await IncidentStorage.save(inc);
     if (mounted) Navigator.pop(context, true);
   }
@@ -2310,11 +2445,101 @@ class _TasksTabState extends State<_TasksTab> with AutomaticKeepAliveClientMixin
     if (result == true) _load();
   }
 
-  Future<void> _cycleStatus(OpTask t) async {
-    final idx = _kTaskStatuses.indexOf(t.status);
-    t.status = _kTaskStatuses[(idx + 1) % _kTaskStatuses.length];
-    await TaskStorage.save(t);
-    _load();
+  void _openTaskDetail(OpTask t) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => StatefulBuilder(builder: (ctx, ss) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.6,
+          maxChildSize: 0.92,
+          builder: (_, ctrl) => ListView(
+            controller: ctrl,
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+            children: [
+              // Title + edit button
+              Row(children: [
+                Expanded(child: Text(t.title.isEmpty ? '(untitled)' : t.title,
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+                IconButton(
+                  icon: const Icon(Icons.edit_outlined),
+                  onPressed: () { Navigator.pop(ctx); _openForm(t); },
+                ),
+              ]),
+              if (t.description.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(t.description, style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+              ],
+              const Divider(height: 24),
+              // Priority + assigned
+              Row(children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: _priorityColor(t.priority).withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _priorityColor(t.priority).withValues(alpha: 0.4)),
+                  ),
+                  child: Text(t.priority, style: TextStyle(
+                      fontSize: 11, color: _priorityColor(t.priority), fontWeight: FontWeight.w600)),
+                ),
+                if (t.assignedTo.isNotEmpty) ...[
+                  const SizedBox(width: 10),
+                  const Icon(Icons.person_outline, size: 14, color: Colors.grey),
+                  const SizedBox(width: 4),
+                  Text(t.assignedTo, style: const TextStyle(fontSize: 13, color: Colors.grey)),
+                ],
+              ]),
+              if (t.notes.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                const Text('Notes', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                const SizedBox(height: 4),
+                Text(t.notes, style: const TextStyle(fontSize: 13)),
+              ],
+              const Divider(height: 24),
+              const Text('STATUS', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold,
+                  color: Colors.grey, letterSpacing: 0.8)),
+              const SizedBox(height: 10),
+              // Status buttons
+              Wrap(spacing: 8, runSpacing: 8, children: _kTaskStatuses.map((s) {
+                final selected = t.status == s;
+                final col = _taskStatusColor(s);
+                return GestureDetector(
+                  onTap: () async {
+                    t.status = s;
+                    await TaskStorage.save(t);
+                    ss(() {}); // refresh sheet
+                    _load();   // refresh list
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: selected ? col : col.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: col.withValues(alpha: selected ? 1 : 0.4),
+                          width: selected ? 2 : 1),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      if (selected) ...[
+                        Icon(Icons.check_circle, size: 14,
+                            color: selected ? Colors.white : col),
+                        const SizedBox(width: 4),
+                      ],
+                      Text(s, style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: selected ? Colors.white : col)),
+                    ]),
+                  ),
+                );
+              }).toList()),
+            ],
+          ),
+        );
+      }),
+    );
   }
 
   @override
@@ -2421,7 +2646,7 @@ class _TasksTabState extends State<_TasksTab> with AutomaticKeepAliveClientMixin
                     _load();
                   }),
                 ]),
-                onTap: () => _cycleStatus(t),
+                onTap: () => _openTaskDetail(t),
               ),
             ),
           ],
