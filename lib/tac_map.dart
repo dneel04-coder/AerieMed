@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:archive/archive.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -246,6 +247,116 @@ class TacMarker {
         createdAt: DateTime.tryParse(m['created_at'] as String? ?? '') ?? DateTime.now(),
       );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TAK / ATAK INTEGRATION — team_positions table
+// ═══════════════════════════════════════════════════════════════════════════
+
+class TakPosition {
+  final String id;
+  final String callsign;
+  final double lat;
+  final double lon;
+  final String role;
+  final String status;
+  final DateTime lastUpdated;
+
+  TakPosition({
+    required this.id,
+    required this.callsign,
+    required this.lat,
+    required this.lon,
+    required this.role,
+    required this.status,
+    required this.lastUpdated,
+  });
+
+  factory TakPosition.fromMap(Map<String, dynamic> m) => TakPosition(
+        id: m['id'] as String? ?? '',
+        callsign: m['callsign'] as String? ?? 'Unknown',
+        lat: (m['lat'] as num?)?.toDouble() ?? 0,
+        lon: (m['lon'] as num?)?.toDouble() ?? 0,
+        role: m['role'] as String? ?? '',
+        status: m['status'] as String? ?? 'Unknown',
+        lastUpdated: DateTime.tryParse(m['last_updated'] as String? ?? '') ?? DateTime.now(),
+      );
+
+  Color get statusColor => switch (status.toLowerCase()) {
+        'active' || 'green'    => Colors.greenAccent,
+        'caution' || 'yellow'  => Colors.amberAccent,
+        'emergency' || 'red'   => Colors.redAccent,
+        _                      => Colors.cyanAccent,
+      };
+}
+
+class TacPoi {
+  final String id;
+  final String name;
+  final String type;
+  final double lat;
+  final double lng;
+  final String notes;
+
+  const TacPoi({
+    required this.id,
+    required this.name,
+    required this.type,
+    required this.lat,
+    required this.lng,
+    this.notes = '',
+  });
+
+  factory TacPoi.fromMap(Map<String, dynamic> m) => TacPoi(
+        id: m['id'] as String? ?? '',
+        name: m['name'] as String? ?? 'POI',
+        type: m['type'] as String? ?? 'generic',
+        lat: (m['lat'] as num?)?.toDouble() ?? 0,
+        lng: (m['lng'] as num?)?.toDouble() ?? 0,
+        notes: m['notes'] as String? ?? '',
+      );
+
+  IconData get icon => switch (type.toLowerCase()) {
+        'medical'   => Icons.local_hospital,
+        'lz'        => Icons.flight_land,
+        'staging'   => Icons.flag,
+        'hazard'    => Icons.warning_amber,
+        'rally'     => Icons.people,
+        _           => Icons.place,
+      };
+
+  Color get color => switch (type.toLowerCase()) {
+        'medical'  => Colors.greenAccent,
+        'lz'       => Colors.cyanAccent,
+        'staging'  => Colors.orangeAccent,
+        'hazard'   => Colors.redAccent,
+        'rally'    => Colors.purpleAccent,
+        _          => Colors.white70,
+      };
+}
+
+// ── Offline-capable tile provider using disk cache ───────────────────────────
+// Tiles are persisted to the device using flutter_cache_manager (bundled with
+// cached_network_image). Cache key includes z/x/y so each tile is stored
+// individually and survives app restarts for no-signal environments.
+class _CachedTileProvider extends TileProvider {
+  @override
+  ImageProvider<Object> getImage(
+      TileCoordinates coordinates, TileLayer options) {
+    final url = getTileUrl(coordinates, options);
+    return CachedNetworkImageProvider(
+      url,
+      cacheKey: 'tile_${coordinates.z}_${coordinates.x}_${coordinates.y}',
+    );
+  }
+}
+
+// ── Dark CartoDB tile URL (default for tactical dark-theme use) ───────────────
+const _kDarkTileUrl =
+    'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
+const _kDarkTileAttrib =
+    '© OpenStreetMap contributors © CARTO';
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 class TacMapScreen extends StatefulWidget {
   const TacMapScreen({super.key});
@@ -661,6 +772,13 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   final List<TacSosEvent> _activeSos = [];
   bool _placingZone = false;
 
+  // TAK / ATAK layer
+  final Map<String, TakPosition> _takPositions = {};
+  final List<TacPoi> _pois = [];
+  bool _showTakLayer = true;
+  bool _showPoiLayer = true;
+  RealtimeChannel? _takChannel;
+
   @override
   void initState() {
     super.initState();
@@ -681,6 +799,177 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _startLocationPublish();
     _subscribeRealtime();
     _loadInitialData();
+    _subscribeTakPositions();
+    _loadTakData();
+  }
+
+  // ── TAK / ATAK integration ────────────────────────────────────────────────
+
+  Future<void> _loadTakData() async {
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) return;
+    final client = SupabaseService.client!;
+    // team_positions (ATAK CoT feed)
+    try {
+      final rows = await client.from('team_positions').select() as List;
+      if (!mounted) return;
+      setState(() {
+        for (final r in rows) {
+          final p = TakPosition.fromMap(r as Map<String, dynamic>);
+          _takPositions[p.callsign] = p;
+        }
+      });
+    } catch (_) {}
+    // POIs — optional table, degrade gracefully if absent
+    try {
+      final rows = await client.from('tac_pois').select() as List;
+      if (!mounted) return;
+      setState(() {
+        _pois.clear();
+        _pois.addAll(rows.map((r) => TacPoi.fromMap(r as Map<String, dynamic>)));
+      });
+    } catch (_) {}
+  }
+
+  void _subscribeTakPositions() {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    _takChannel = client
+        .channel('tak_positions')
+        .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'team_positions',
+            callback: (payload) {
+              if (!mounted) return;
+              if (payload.eventType == PostgresChangeEvent.delete) {
+                final cs = payload.oldRecord['callsign'] as String?;
+                if (cs != null) setState(() => _takPositions.remove(cs));
+              } else {
+                final p = TakPosition.fromMap(payload.newRecord);
+                setState(() => _takPositions[p.callsign] = p);
+              }
+            })
+        .subscribe();
+  }
+
+  void _showTakSheet(TakPosition p) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A2E),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            CircleAvatar(
+              backgroundColor: p.statusColor.withValues(alpha: 0.2),
+              child: Icon(Icons.person_pin, color: p.statusColor, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(p.callsign, style: const TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text(p.role, style: TextStyle(color: Colors.white54, fontSize: 13)),
+            ])),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                  color: p.statusColor.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: p.statusColor, width: 1)),
+              child: Text(p.status,
+                  style: TextStyle(color: p.statusColor, fontWeight: FontWeight.w600, fontSize: 12)),
+            ),
+          ]),
+          const Divider(color: Colors.white12, height: 24),
+          _takRow(Icons.gps_fixed, 'Position',
+              '${p.lat.toStringAsFixed(5)}, ${p.lon.toStringAsFixed(5)}'),
+          const SizedBox(height: 8),
+          _takRow(Icons.access_time, 'Last Updated', _fmtTakTime(p.lastUpdated)),
+          const SizedBox(height: 8),
+          _takRow(Icons.military_tech, 'Role', p.role.isEmpty ? '—' : p.role),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.white24),
+                  foregroundColor: Colors.white70),
+              icon: const Icon(Icons.my_location, size: 16),
+              label: const Text('Centre map on this position'),
+              onPressed: () {
+                Navigator.pop(context);
+                _mapCtrl.move(LatLng(p.lat, p.lon), 15);
+              },
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  void _showPoiSheet(TacPoi poi) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A2E),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            CircleAvatar(
+              backgroundColor: poi.color.withValues(alpha: 0.2),
+              child: Icon(poi.icon, color: poi.color, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(poi.name, style: const TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text(poi.type.toUpperCase(),
+                  style: TextStyle(color: poi.color, fontSize: 12, letterSpacing: 0.8)),
+            ])),
+          ]),
+          if (poi.notes.isNotEmpty) ...[
+            const Divider(color: Colors.white12, height: 24),
+            Text(poi.notes, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          ],
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.white24),
+                  foregroundColor: Colors.white70),
+              icon: const Icon(Icons.my_location, size: 16),
+              label: const Text('Centre map on POI'),
+              onPressed: () {
+                Navigator.pop(context);
+                _mapCtrl.move(LatLng(poi.lat, poi.lng), 15);
+              },
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _takRow(IconData icon, String label, String value) => Row(children: [
+        Icon(icon, size: 16, color: Colors.white38),
+        const SizedBox(width: 8),
+        Text('$label  ', style: const TextStyle(color: Colors.white38, fontSize: 12)),
+        Expanded(child: Text(value,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            overflow: TextOverflow.ellipsis)),
+      ]);
+
+  String _fmtTakTime(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    return '${diff.inHours}h ago';
   }
 
   Future<void> _readBattery() async {
@@ -1227,7 +1516,78 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _locationTimer?.cancel();
     _refreshTimer?.cancel();
     _realtimeChannel?.unsubscribe();
+    _takChannel?.unsubscribe();
     super.dispose();
+  }
+
+  // ── TAK position markers ──────────────────────────────────────────────────
+  List<Marker> _buildTakMarkers() {
+    return _takPositions.values.map((p) {
+      final age = DateTime.now().difference(p.lastUpdated);
+      final stale = age.inMinutes > 5;
+      final color = stale ? Colors.white24 : p.statusColor;
+      return Marker(
+        point: LatLng(p.lat, p.lon),
+        width: 90,
+        height: 64,
+        child: GestureDetector(
+          onTap: () => _showTakSheet(p),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              constraints: const BoxConstraints(maxWidth: 86),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0D1117).withValues(alpha: 0.85),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: color, width: 1.5),
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Text(p.callsign,
+                    textAlign: TextAlign.center, maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: color, fontSize: 9,
+                        fontWeight: FontWeight.bold)),
+                Text(_fmtTakTime(p.lastUpdated),
+                    style: TextStyle(
+                        color: color.withValues(alpha: 0.7), fontSize: 7)),
+              ]),
+            ),
+            Icon(Icons.navigation, color: color, size: 28,
+                shadows: const [Shadow(color: Colors.black87, blurRadius: 4)]),
+          ]),
+        ),
+      );
+    }).toList();
+  }
+
+  // ── POI markers ───────────────────────────────────────────────────────────
+  List<Marker> _buildPoiMarkers() {
+    return _pois.map((poi) => Marker(
+      point: LatLng(poi.lat, poi.lng),
+      width: 70,
+      height: 58,
+      child: GestureDetector(
+        onTap: () => _showPoiSheet(poi),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            constraints: const BoxConstraints(maxWidth: 66),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0D1117).withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: poi.color, width: 1),
+            ),
+            child: Text(poi.name,
+                textAlign: TextAlign.center, maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: poi.color, fontSize: 8,
+                    fontWeight: FontWeight.w600)),
+          ),
+          Icon(poi.icon, color: poi.color, size: 26,
+              shadows: const [Shadow(color: Colors.black87, blurRadius: 4)]),
+        ]),
+      ),
+    )).toList();
   }
 
   List<Marker> _buildMapMarkers() {
@@ -1471,6 +1831,20 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               ]),
             ),
           ),
+          // TAK layer toggle
+          IconButton(
+            icon: Icon(Icons.radar,
+                color: _showTakLayer ? Colors.cyanAccent : Colors.white38),
+            tooltip: _showTakLayer ? 'Hide TAK Positions' : 'Show TAK Positions',
+            onPressed: () => setState(() => _showTakLayer = !_showTakLayer),
+          ),
+          // POI layer toggle
+          IconButton(
+            icon: Icon(Icons.place,
+                color: _showPoiLayer ? Colors.orangeAccent : Colors.white38),
+            tooltip: _showPoiLayer ? 'Hide POIs' : 'Show POIs',
+            onPressed: () => setState(() => _showPoiLayer = !_showPoiLayer),
+          ),
           // Trail toggle
           IconButton(
             icon: Icon(_showTrails ? Icons.route : Icons.route_outlined,
@@ -1574,9 +1948,15 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                     },
                   ),
                   children: [
+                    // Offline-cached tile layer — dark CartoDB default,
+                    // other layers selectable via the layers picker.
                     TileLayer(
-                      urlTemplate: _baseLayer.urlTemplate,
+                      urlTemplate: _baseLayer == _BaseLayer.osm
+                          ? _kDarkTileUrl
+                          : _baseLayer.urlTemplate,
                       userAgentPackageName: 'com.resqruck.app',
+                      tileProvider: _CachedTileProvider(),
+                      additionalOptions: const {},
                     ),
                     if (_incidentOverlay != null)
                       OverlayImageLayer(
@@ -1590,6 +1970,13 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                       ),
                     PolylineLayer(polylines: polylines),
                     if (zoneCircles.isNotEmpty) CircleLayer(circles: zoneCircles),
+                    // TAK / ATAK positions layer
+                    if (_showTakLayer && _takPositions.isNotEmpty)
+                      MarkerLayer(markers: _buildTakMarkers()),
+                    // POI layer
+                    if (_showPoiLayer && _pois.isNotEmpty)
+                      MarkerLayer(markers: _buildPoiMarkers()),
+                    // Own team markers (always on top)
                     MarkerLayer(markers: _buildMapMarkers()),
                   ],
                 ),
