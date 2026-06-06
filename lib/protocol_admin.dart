@@ -773,9 +773,17 @@ class _TeamProtocolsScreenState extends State<TeamProtocolsScreen> {
       context,
       MaterialPageRoute(builder: (_) => _ProtocolViewScreen(file: file, entry: entry)),
     );
-    // Acknowledge after viewing
-    await ProtocolSyncService.instance.acknowledgeProtocol(entry.id);
-    if (mounted) setState(() => _ackedIds.add(entry.id));
+    if (!mounted) return;
+    // Prompt explicit acknowledgment after the user has seen the document.
+    final confirmed = await showReadAcknowledgment(
+      context,
+      title: entry.name,
+      docType: 'Protocol',
+    );
+    if (confirmed) {
+      await ProtocolSyncService.instance.acknowledgeProtocol(entry.id);
+      if (mounted) setState(() => _ackedIds.add(entry.id));
+    }
   }
 
   @override
@@ -2284,3 +2292,99 @@ grant execute on function resqruck_auto_migrate() to authenticated;
 
 String _fmt(DateTime dt) =>
     '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+
+// ── Read-acknowledgment prompt ────────────────────────────────────────────────
+
+/// Shows a bottom sheet asking the user to confirm they have read [title].
+/// Returns `true` if the user tapped "I Have Read This", `false` otherwise.
+Future<bool> showReadAcknowledgment(
+  BuildContext context, {
+  required String title,
+  required String docType, // e.g. 'Deployment Order' or 'Protocol'
+}) async {
+  return await showModalBottomSheet<bool>(
+        context: context,
+        isDismissible: true,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        builder: (_) => _ReadAckSheet(title: title, docType: docType),
+      ) ??
+      false;
+}
+
+class _ReadAckSheet extends StatelessWidget {
+  final String title;
+  final String docType;
+  const _ReadAckSheet({required this.title, required this.docType});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final icon = docType == 'Protocol'
+        ? Icons.description_outlined
+        : Icons.assignment_outlined;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 14, 24, 24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // Drag handle
+          Container(width: 36, height: 4,
+              decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2))),
+          const SizedBox(height: 20),
+          // Icon badge
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+                color: cs.primaryContainer, shape: BoxShape.circle),
+            child: Icon(icon, color: cs.onPrimaryContainer, size: 28),
+          ),
+          const SizedBox(height: 14),
+          Text('Acknowledge $docType',
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          Text(title,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: Colors.blue.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: Colors.blue.withValues(alpha: 0.2))),
+            child: const Text(
+              'By tapping "I Have Read This", you confirm you have read '
+              'and understood this document. Your acknowledgment is recorded '
+              'with your name and the current date and time.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+            ),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              icon: const Icon(Icons.check_circle_outline),
+              label: const Text('I Have Read This'),
+              onPressed: () => Navigator.pop(context, true),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: TextButton(
+              style: TextButton.styleFrom(foregroundColor: Colors.grey),
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Close Without Acknowledging'),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}

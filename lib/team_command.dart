@@ -7,7 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService, TeamProtocolsScreen;
+import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService, TeamProtocolsScreen, showReadAcknowledgment;
 import 'user_profile.dart' show LoginScreen;
 
 enum _CertExpiry { green, yellow, red }
@@ -3120,7 +3120,6 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
     final bytes = await ProtocolSyncService.instance.fetchOrderBytes(order);
 
     setState(() => _downloading.remove(order.id));
-    await ProtocolSyncService.instance.markDeploymentOrderViewed(order.id);
     if (!mounted) return;
 
     if (bytes == null) {
@@ -3206,6 +3205,18 @@ class _DeploymentOrdersTabState extends State<_DeploymentOrdersTab>
             ),
           ),
         ));
+      }
+      // After viewer closes — prompt acknowledgment.
+      if (mounted) {
+        final confirmed = await showReadAcknowledgment(
+          context,
+          title: order.title,
+          docType: 'Deployment Order',
+        );
+        if (confirmed) {
+          await ProtocolSyncService.instance.markDeploymentOrderViewed(order.id);
+          if (mounted) setState(() {});
+        }
       }
     } catch (e) {
       if (mounted) _showOrderError('Open failed: $e');
@@ -3443,7 +3454,73 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
       _myUserId = List.generate(12, (_) => rng.nextInt(16).toRadixString(16)).join();
       await prefs.setString('tac_user_id', _myUserId);
     }
+    await _cleanCalendar();
     await _load();
+  }
+
+  /// Removes orphaned and duplicate calendar entries.
+  /// - Orphaned: user_id not present in user_profiles
+  /// - Duplicate: same callsign (case-insensitive) across multiple user_ids;
+  ///   keeps the canonical user_id (the one still in user_profiles)
+  Future<void> _cleanCalendar() async {
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) return;
+    final client = SupabaseService.client!;
+    try {
+      // 1. Fetch all valid profiles
+      final profiles = await client
+          .from('user_profiles')
+          .select('user_id, name, callsign') as List;
+      if (profiles.isEmpty) return; // safety — don't wipe calendar if profiles table is empty
+
+      final validIds = <String>{};
+      // callsign/name → canonical user_id (case-insensitive)
+      final csToUid = <String, String>{};
+      for (final p in profiles) {
+        final uid  = p['user_id'] as String;
+        final name = (p['name'] as String? ?? '').toLowerCase().trim();
+        final cs   = (p['callsign'] as String? ?? '').toLowerCase().trim();
+        validIds.add(uid);
+        if (name.isNotEmpty) csToUid[name] = uid;
+        if (cs.isNotEmpty)   csToUid[cs]   = uid;
+      }
+
+      // 2. Fetch all user_ids present in team_availability
+      final avail = await client
+          .from('team_availability')
+          .select('user_id, callsign') as List;
+
+      final seenUids = <String, String>{}; // user_id → lowercase callsign
+      for (final r in avail) {
+        final uid = r['user_id'] as String;
+        final cs  = (r['callsign'] as String? ?? '').toLowerCase().trim();
+        seenUids[uid] = cs;
+      }
+
+      // 3. Delete orphaned user_ids (no matching user_profile)
+      final orphaned = seenUids.keys.where((uid) => !validIds.contains(uid)).toList();
+      for (final uid in orphaned) {
+        await client.from('team_availability').delete().eq('user_id', uid);
+      }
+
+      // 4. Among valid user_ids, remove duplicates by callsign (case-insensitive)
+      //    Keep the canonical user_id; delete the rest.
+      final csGroups = <String, List<String>>{}; // lowercase cs → [user_ids with that cs]
+      for (final uid in seenUids.keys.where((u) => validIds.contains(u))) {
+        final cs = seenUids[uid]!;
+        if (cs.isNotEmpty) csGroups.putIfAbsent(cs, () => []).add(uid);
+      }
+      for (final entry in csGroups.entries) {
+        if (entry.value.length <= 1) continue;
+        final canonicalUid = csToUid[entry.key];
+        if (canonicalUid == null) continue;
+        for (final uid in entry.value) {
+          if (uid != canonicalUid) {
+            await client.from('team_availability').delete().eq('user_id', uid);
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _load() async {

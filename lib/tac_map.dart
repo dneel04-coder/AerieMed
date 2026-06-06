@@ -404,26 +404,14 @@ class _TacMapScreenState extends State<TacMapScreen> {
   }
 
   void _onConfigSaved() => _init();
-  void _onSessionJoined() => setState(() => _phase = _Phase.active);
   void _onLeft() => setState(() => _phase = _Phase.noSession);
 
   @override
   Widget build(BuildContext context) => switch (_phase) {
         _Phase.loading  => const Scaffold(body: Center(child: CircularProgressIndicator())),
         _Phase.noConfig => _SupabaseConfigScreen(onSaved: _onConfigSaved),
-        // Show live TAK map immediately — mission joining is optional via FAB
-        _Phase.noSession => _TakLiveScreen(onJoinMission: () {
-            showModalBottomSheet(
-              context: context,
-              isScrollControlled: true,
-              useSafeArea: true,
-              builder: (_) => _MissionSetupScreen(onJoined: () {
-                Navigator.pop(context); // close sheet
-                _onSessionJoined();     // switch to active map
-              }),
-            );
-          }),
-        _Phase.active   => _ActiveMapScreen(onLeft: _onLeft),
+        // ATAK map is always shown — mission is optional, managed inside the screen
+        _ => _ActiveMapScreen(onLeft: _onLeft),
       };
 }
 
@@ -1259,6 +1247,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   bool _markerTableWarned = false;
   bool _sharingLocation = true;
   bool _showAllMissions = true;
+  bool _hasMission = false; // true once callsign + missionCode are set
 
   // Life360-style features
   final Battery _batteryPlugin = Battery();
@@ -1290,16 +1279,47 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _callsign = prefs.getString(_kCallsign) ?? '';
     _missionCode = prefs.getString(_kMissionCode) ?? '';
     _isAdmin = prefs.getBool(_kIsAdmin) ?? false;
+    _hasMission = _callsign.isNotEmpty && _missionCode.isNotEmpty;
 
-    try { await _supabase.from('tac_users').delete().eq('id', _userId); } catch (_) {}
+    // Clean up own stale row
+    if (_userId.isNotEmpty) {
+      try { await _supabase.from('tac_users').delete().eq('id', _userId); } catch (_) {}
+    }
 
     _readBattery();
     await _requestLocation();
-    _startLocationPublish();
+    // Only broadcast location when in an active mission
+    if (_hasMission) _startLocationPublish();
     _subscribeRealtime();
     _loadInitialData();
     _subscribeTakPositions();
     _loadTakData();
+  }
+
+  /// Join a mission — shows setup sheet, then enables location broadcast.
+  Future<void> _joinMission() async {
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => _MissionSetupScreen(onJoined: () {
+        Navigator.pop(context);
+        _reloadMissionState();
+      }),
+    );
+  }
+
+  Future<void> _reloadMissionState() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _callsign = prefs.getString(_kCallsign) ?? '';
+        _missionCode = prefs.getString(_kMissionCode) ?? '';
+        _isAdmin = prefs.getBool(_kIsAdmin) ?? false;
+        _hasMission = _callsign.isNotEmpty && _missionCode.isNotEmpty;
+      });
+    }
+    if (_hasMission) _startLocationPublish();
   }
 
   // ── TAK / ATAK integration ────────────────────────────────────────────────
@@ -2007,7 +2027,25 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     await prefs.remove(_kCallsign);
     await prefs.remove(_kMissionCode);
     await prefs.remove(_kIsAdmin);
-    widget.onLeft();
+    if (mounted) {
+      setState(() {
+        _callsign = '';
+        _missionCode = '';
+        _isAdmin = false;
+        _hasMission = false;
+        _users.clear();
+        _markers.clear();
+      });
+    }
+  }
+
+  void _clearRoutes() {
+    setState(() => _breadcrumbs.clear());
+    try {
+      _supabase.from('tac_breadcrumbs')
+          .delete()
+          .eq('user_id', _userId);
+    } catch (_) {}
   }
 
   @override
@@ -2258,11 +2296,14 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    const bg  = Color(0xFF0D1117);
+    const dim = Color(0xFF8B949E);
+    const cyan = Colors.cyanAccent;
+
+    // ── Polylines: exfil route + breadcrumb trails ─────────────────────────
+    final polylines = <Polyline>[];
     final extractStart = _extractionStart();
     final extractEnd   = _extractionEnd();
-
-    // Exfil route + breadcrumb trails
-    final polylines = <Polyline>[];
     if (extractStart != null && extractEnd != null) {
       polylines.add(Polyline(points: [extractStart, extractEnd],
           color: Colors.orange, strokeWidth: 3));
@@ -2273,287 +2314,465 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       var ci = 0;
       for (final entry in _breadcrumbs.entries) {
         if (entry.value.length < 2) continue;
-        final col = trailColors[ci % trailColors.length];
         polylines.add(Polyline(points: entry.value,
-            color: col.withValues(alpha: 0.55), strokeWidth: 2.5));
+            color: trailColors[ci % trailColors.length].withValues(alpha: 0.55),
+            strokeWidth: 2.5));
         ci++;
       }
     }
 
-    // Zone circles
+    // ── Zone circles ───────────────────────────────────────────────────────
     final zoneCircles = _zones.map((z) => CircleMarker(
-        point: LatLng(z.lat, z.lng),
-        radius: z.radiusM,
+        point: LatLng(z.lat, z.lng), radius: z.radiusM,
         useRadiusInMeter: true,
         color: z.color.withValues(alpha: 0.15),
-        borderColor: z.color,
-        borderStrokeWidth: 2.5)).toList();
+        borderColor: z.color, borderStrokeWidth: 2.5)).toList();
 
+    final mapCenter = _mapReady
+        ? _mapCtrl.camera.center
+        : (_myLocation ?? const LatLng(37.0902, -95.7129));
+    final zoom = _mapReady ? _mapCtrl.camera.zoom : 14.0;
+
+    // ── ATAK full-screen layout: no AppBar, overlay panels ────────────────
     return Scaffold(
-      appBar: AppBar(
-        title: Text('TAC MAP — $_missionCode'),
-        actions: [
-          if (_isAdmin)
-            const Padding(
-              padding: EdgeInsets.only(right: 8),
-              child: Chip(
-                label: Text('ADMIN', style: TextStyle(fontSize: 10)),
-                backgroundColor: Colors.orange,
-              ),
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(children: [
+          // ── Full-screen map ─────────────────────────────────────────────
+          FlutterMap(
+            mapController: _mapCtrl,
+            options: MapOptions(
+              initialCenter: _myLocation ?? const LatLng(37.0902, -95.7129),
+              initialZoom: _myLocation != null ? 14 : 4,
+              onMapReady: () {
+                _mapReady = true;
+                if (_myLocation != null) _mapCtrl.move(_myLocation!, 14);
+              },
+              onPositionChanged: (_, __) => setState(() {}),
+              onTap: (_, point) {
+                if (_placingZone) { _createZone(point); return; }
+                if (_placingType == TacMarkerType.waypoint) { _placeWaypoint(point); return; }
+              },
             ),
-          // All users / My mission toggle — all users visible by default.
-          GestureDetector(
-            onTap: () => setState(() => _showAllMissions = !_showAllMissions),
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: _showAllMissions ? Colors.white : Colors.white24,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white54),
+            children: [
+              TileLayer(
+                urlTemplate: _baseLayer == _BaseLayer.osm
+                    ? _kDarkTileUrl : _baseLayer.urlTemplate,
+                userAgentPackageName: 'com.resqruck.app',
+                tileProvider: _CachedTileProvider(),
+                additionalOptions: const {},
               ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(
-                  _showAllMissions ? Icons.people : Icons.person,
-                  size: 13,
-                  color: _showAllMissions ? Colors.indigo : Colors.white,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  _showAllMissions ? 'All Users' : 'My Mission',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: _showAllMissions ? Colors.indigo : Colors.white,
+              if (_incidentOverlay != null)
+                OverlayImageLayer(overlayImages: [
+                  OverlayImage(
+                    bounds: _incidentOverlay!.bounds,
+                    imageProvider: MemoryImage(_incidentOverlay!.imageBytes),
+                    opacity: 0.7,
                   ),
+                ]),
+              PolylineLayer(polylines: polylines),
+              if (zoneCircles.isNotEmpty) CircleLayer(circles: zoneCircles),
+              if (_showTakLayer && _takPositions.isNotEmpty)
+                MarkerLayer(markers: _buildTakMarkers()),
+              if (_showPoiLayer && _pois.isNotEmpty)
+                MarkerLayer(markers: _buildPoiMarkers()),
+              MarkerLayer(markers: _buildMapMarkers()),
+            ],
+          ),
+
+          // ── SOS alert banner ────────────────────────────────────────────
+          if (_activeSos.isNotEmpty)
+            Positioned(top: 0, left: 0, right: 0,
+              child: Material(color: Colors.red,
+                child: InkWell(
+                  onTap: () => _mapCtrl.move(
+                      LatLng(_activeSos.first.lat, _activeSos.first.lng), 14),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    child: Row(children: [
+                      const Icon(Icons.sos, color: Colors.white, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(
+                        '🚨 SOS — ${_activeSos.map((s) => s.callsign).join(', ')}',
+                        style: const TextStyle(color: Colors.white,
+                            fontWeight: FontWeight.bold, fontSize: 12))),
+                      if (_isAdmin)
+                        TextButton(onPressed: () => _resolveSos(_activeSos.first.id),
+                            child: const Text('Resolve',
+                                style: TextStyle(color: Colors.white, fontSize: 11))),
+                    ]),
+                  ),
+                )),
+            ),
+
+          // ── ATAK top header bar ─────────────────────────────────────────
+          Positioned(
+            top: _activeSos.isNotEmpty ? 36 : 0,
+            left: 0, right: 0,
+            child: Container(
+              color: bg.withValues(alpha: 0.9),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              child: Row(children: [
+                // TAK label
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: cyan.withValues(alpha: 0.6)),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                  child: const Text('TAK', style: TextStyle(color: cyan,
+                      fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
                 ),
+                const SizedBox(width: 6),
+                // Mission code
+                if (_hasMission)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.teal.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    child: Text(_missionCode,
+                        style: const TextStyle(color: Colors.tealAccent,
+                            fontSize: 10, fontWeight: FontWeight.bold)),
+                  )
+                else
+                  const Text('NO MISSION',
+                      style: TextStyle(color: Colors.white30, fontSize: 9,
+                          letterSpacing: 0.5)),
+                const SizedBox(width: 6),
+                if (_takPositions.isNotEmpty)
+                  Text('${_takPositions.length} ATAK',
+                      style: const TextStyle(color: cyan, fontSize: 9,
+                          fontWeight: FontWeight.bold)),
+                const Spacer(),
+                if (_isAdmin)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.25),
+                        borderRadius: BorderRadius.circular(3)),
+                    child: const Text('ADMIN',
+                        style: TextStyle(color: Colors.orange, fontSize: 9,
+                            fontWeight: FontWeight.bold)),
+                  ),
+                const SizedBox(width: 6),
+                // GPS status
+                Icon(Icons.gps_fixed, size: 11,
+                    color: _myLocation != null ? Colors.greenAccent : Colors.red),
+                const SizedBox(width: 3),
+                Text(_myLocation != null ? 'FIX' : 'NO FIX',
+                    style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold,
+                        color: _myLocation != null ? Colors.greenAccent : Colors.red)),
+                if (_myBattery != null) ...[
+                  const SizedBox(width: 8),
+                  Icon(
+                    _myBattery! > 60 ? Icons.battery_full
+                        : _myBattery! > 20 ? Icons.battery_3_bar
+                        : Icons.battery_alert,
+                    size: 12,
+                    color: _myBattery! > 20 ? Colors.white54 : Colors.redAccent),
+                  Text('${_myBattery}%',
+                      style: TextStyle(fontSize: 9,
+                          color: _myBattery! > 20 ? Colors.white54 : Colors.redAccent)),
+                ],
               ]),
             ),
           ),
-          // TAK layer toggle
-          IconButton(
-            icon: Icon(Icons.radar,
-                color: _showTakLayer ? Colors.cyanAccent : Colors.white38),
-            tooltip: _showTakLayer ? 'Hide TAK Positions' : 'Show TAK Positions',
-            onPressed: () => setState(() => _showTakLayer = !_showTakLayer),
+
+          // ── Compass (ATAK style) ────────────────────────────────────────
+          Positioned(
+            top: (_activeSos.isNotEmpty ? 36 : 0) + 34,
+            right: 52,
+            child: Container(
+              width: 32, height: 32,
+              decoration: BoxDecoration(
+                  color: bg.withValues(alpha: 0.85),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white12)),
+              child: const Stack(alignment: Alignment.center, children: [
+                Text('N', style: TextStyle(color: Colors.redAccent,
+                    fontSize: 11, fontWeight: FontWeight.bold)),
+                Positioned(bottom: 3,
+                    child: Text('S', style: TextStyle(
+                        color: Color(0xFF8B949E), fontSize: 7))),
+              ]),
+            ),
           ),
-          // POI layer toggle
-          IconButton(
-            icon: Icon(Icons.place,
-                color: _showPoiLayer ? Colors.orangeAccent : Colors.white38),
-            tooltip: _showPoiLayer ? 'Hide POIs' : 'Show POIs',
-            onPressed: () => setState(() => _showPoiLayer = !_showPoiLayer),
+
+          // ── Zoom badge ─────────────────────────────────────────────────
+          Positioned(
+            top: (_activeSos.isNotEmpty ? 36 : 0) + 34,
+            left: 8,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                  color: bg.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(3),
+                  border: Border.all(color: Colors.white10)),
+              child: Text('Z${zoom.round()}',
+                  style: TextStyle(color: dim, fontSize: 9,
+                      fontWeight: FontWeight.bold)),
+            ),
           ),
-          // Trail toggle
-          IconButton(
-            icon: Icon(_showTrails ? Icons.route : Icons.route_outlined,
-                color: _showTrails ? Colors.amber : null),
-            tooltip: _showTrails ? 'Hide Trails' : 'Show Trails',
-            onPressed: () => setState(() => _showTrails = !_showTrails),
+
+          // ── Right tool panel ────────────────────────────────────────────
+          Positioned(
+            right: 8,
+            top: (_activeSos.isNotEmpty ? 36 : 0) + 34,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              // Zoom
+              _atakBtn(Icons.add, bg, Colors.white70,
+                  () { final z = (zoom + 1).clamp(3.0, 20.0);
+                        _mapCtrl.move(_mapCtrl.camera.center, z); }),
+              const SizedBox(height: 1),
+              _atakBtn(Icons.remove, bg, Colors.white70,
+                  () { final z = (zoom - 1).clamp(3.0, 20.0);
+                        _mapCtrl.move(_mapCtrl.camera.center, z); }),
+              const SizedBox(height: 6),
+              // Re-centre
+              _atakBtn(Icons.my_location, bg,
+                  _myLocation != null ? cyan : Colors.white24,
+                  () { if (_myLocation != null) _mapCtrl.move(_myLocation!, 14); }),
+              const SizedBox(height: 6),
+              // Layer toggles
+              _atakBtn(Icons.radar, bg,
+                  _showTakLayer ? cyan : Colors.white24,
+                  () => setState(() => _showTakLayer = !_showTakLayer)),
+              const SizedBox(height: 1),
+              _atakBtn(Icons.place, bg,
+                  _showPoiLayer ? Colors.orangeAccent : Colors.white24,
+                  () => setState(() => _showPoiLayer = !_showPoiLayer)),
+              const SizedBox(height: 1),
+              _atakBtn(Icons.route, bg,
+                  _showTrails ? Colors.amber : Colors.white24,
+                  () => setState(() => _showTrails = !_showTrails)),
+              const SizedBox(height: 6),
+              // Mine / All users
+              _atakBtn(
+                  _showAllMissions ? Icons.people : Icons.person,
+                  bg, _showAllMissions ? cyan : Colors.white38,
+                  () => setState(() => _showAllMissions = !_showAllMissions)),
+              const SizedBox(height: 6),
+              // Location share
+              _atakBtn(
+                  _sharingLocation ? Icons.location_on : Icons.location_off,
+                  bg, _sharingLocation ? Colors.greenAccent : Colors.redAccent,
+                  _sharingLocation ? _stopSharing : _startSharing),
+              const SizedBox(height: 6),
+              // Wildfire overlay
+              _atakBtn(Icons.local_fire_department, bg, Colors.deepOrangeAccent,
+                  _showIncidentBrowser),
+              const SizedBox(height: 1),
+              // Tile layers picker
+              _atakBtn(Icons.layers, bg, Colors.white54, _showLayerPicker),
+              const SizedBox(height: 1),
+              // Field tools (GPS, LZ, Offline maps)
+              _atakBtn(Icons.build_outlined, bg, Colors.white54, _showFieldTools),
+              const SizedBox(height: 6),
+              // SOS
+              _atakBtn(Icons.sos, Colors.red, Colors.white, _triggerSos),
+              const SizedBox(height: 6),
+              // Overflow menu
+              _atakPopup(bg, dim),
+            ]),
           ),
-          IconButton(
-            icon: const Icon(Icons.build_outlined),
-            tooltip: 'Field Tools',
-            onPressed: _showFieldTools,
-          ),
-          IconButton(
-            icon: const Icon(Icons.layers),
-            tooltip: 'Map Layers',
-            onPressed: _showLayerPicker,
-          ),
-          IconButton(
-            icon: const Icon(Icons.local_fire_department),
-            tooltip: 'Wildfire Incident Maps',
-            onPressed: _showIncidentBrowser,
-          ),
-          IconButton(
-            icon: Icon(_sharingLocation ? Icons.location_on : Icons.location_off,
-                color: _sharingLocation ? null : Colors.red),
-            tooltip: _sharingLocation ? 'Stop Sharing Location' : 'Start Sharing Location',
-            onPressed: _sharingLocation ? _stopSharing : _startSharing,
-          ),
-          PopupMenuButton(itemBuilder: (_) => [
-            const PopupMenuItem(value: 'leave',            child: Text('Leave Mission')),
-            const PopupMenuItem(value: 'recenter',         child: Text('Re-center')),
-            const PopupMenuItem(value: 'status',           child: Text('My Check-in Status')),
-            if (_isAdmin)
-              const PopupMenuItem(value: 'add_zone', child: Text('Add Zone')),
-            const PopupMenuItem(value: 'supabase_settings', child: Text('Supabase Settings / SQL')),
-            if (_incidentOverlay != null)
-              const PopupMenuItem(value: 'clear_overlay',  child: Text('Clear Incident Overlay')),
-            const PopupMenuItem(value: 'clear_patient',    child: Text('Clear Patient Marker')),
-            const PopupMenuItem(value: 'clear_exfil_start',child: Text('Clear Exfil Start')),
-            const PopupMenuItem(value: 'clear_exfil_end',  child: Text('Clear Exfil End')),
-          ], onSelected: (v) async {
-            if (v == 'leave')             _leaveMission();
-            if (v == 'recenter' && _myLocation != null) _mapCtrl.move(_myLocation!, 14);
-            if (v == 'status')            _pickStatus();
-            if (v == 'add_zone')          _startZonePlacement();
-            if (v == 'clear_overlay')     setState(() => _incidentOverlay = null);
-            if (v == 'clear_patient')     _clearMarkersByType(TacMarkerType.patient);
-            if (v == 'clear_exfil_start') _clearMarkersByType(TacMarkerType.extractionStart);
-            if (v == 'clear_exfil_end')   _clearMarkersByType(TacMarkerType.extractionEnd);
-            if (v == 'supabase_settings') {
-              await Navigator.push(context, MaterialPageRoute(
-                builder: (_) => _SupabaseConfigScreen(onSaved: () => Navigator.pop(context)),
-              ));
-            }
-          }),
-        ],
-      ),
-      body: Column(
-        children: [
-          // SOS alert banner
-          if (_activeSos.isNotEmpty)
-            Material(
-              color: Colors.red,
-              child: InkWell(
-                onTap: () => _mapCtrl.move(LatLng(_activeSos.first.lat, _activeSos.first.lng), 14),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  child: Row(children: [
-                    const Icon(Icons.sos, color: Colors.white, size: 20),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(
-                      '🚨 SOS — ${_activeSos.map((s) => s.callsign).join(', ')} needs help! Tap to locate.',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
-                    )),
-                    if (_isAdmin) ...[
-                      TextButton(
-                        onPressed: () => _resolveSos(_activeSos.first.id),
-                        child: const Text('Resolve', style: TextStyle(color: Colors.white))),
-                    ],
+
+          // ── Join Mission button (when no mission) ───────────────────────
+          if (!_hasMission)
+            Positioned(
+              bottom: 56, left: 0, right: 0,
+              child: Center(
+                child: GestureDetector(
+                  onTap: _joinMission,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.teal,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: const [BoxShadow(
+                          color: Colors.black54, blurRadius: 8, offset: Offset(0, 3))],
+                    ),
+                    child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.group_add, color: Colors.white, size: 18),
+                      SizedBox(width: 8),
+                      Text('Join Mission', style: TextStyle(color: Colors.white,
+                          fontWeight: FontWeight.bold, fontSize: 14)),
+                    ]),
+                  ),
+                ),
+              ),
+            ),
+
+          // ── Marker placement overlay ────────────────────────────────────
+          if (_placingType != null)
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (details) {
+                  if (!_mapReady) return;
+                  final point = _mapCtrl.camera.pointToLatLng(
+                      Point(details.localPosition.dx, details.localPosition.dy));
+                  _placeMarker(point, _placingType!);
+                },
+                child: Container(
+                  color: Colors.black26,
+                  alignment: Alignment.center,
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(_placingType!.icon, color: _placingType!.color, size: 52),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                      decoration: BoxDecoration(
+                          color: _placingType!.color,
+                          borderRadius: BorderRadius.circular(8)),
+                      child: Text('Tap to place ${_placingType!.label}',
+                          style: const TextStyle(color: Colors.white,
+                              fontWeight: FontWeight.bold)),
+                    ),
                   ]),
                 ),
               ),
             ),
-          Expanded(
-            child: Stack(
-              children: [
-                FlutterMap(
-                  mapController: _mapCtrl,
-                  options: MapOptions(
-                    initialCenter: _myLocation ?? const LatLng(37.0902, -95.7129),
-                    initialZoom: _myLocation != null ? 14 : 4,
-                    onMapReady: () {
-                      _mapReady = true;
-                      if (_myLocation != null) _mapCtrl.move(_myLocation!, 14);
-                    },
-                    onTap: (_, point) {
-                      if (_placingZone) { _createZone(point); return; }
-                      if (_placingType == TacMarkerType.waypoint) {
-                        _placeWaypoint(point); return;
-                      }
-                    },
-                  ),
-                  children: [
-                    // Offline-cached tile layer — dark CartoDB default,
-                    // other layers selectable via the layers picker.
-                    TileLayer(
-                      urlTemplate: _baseLayer == _BaseLayer.osm
-                          ? _kDarkTileUrl
-                          : _baseLayer.urlTemplate,
-                      userAgentPackageName: 'com.resqruck.app',
-                      tileProvider: _CachedTileProvider(),
-                      additionalOptions: const {},
-                    ),
-                    if (_incidentOverlay != null)
-                      OverlayImageLayer(
-                        overlayImages: [
-                          OverlayImage(
-                            bounds: _incidentOverlay!.bounds,
-                            imageProvider: MemoryImage(_incidentOverlay!.imageBytes),
-                            opacity: 0.7,
-                          ),
-                        ],
-                      ),
-                    PolylineLayer(polylines: polylines),
-                    if (zoneCircles.isNotEmpty) CircleLayer(circles: zoneCircles),
-                    // TAK / ATAK positions layer
-                    if (_showTakLayer && _takPositions.isNotEmpty)
-                      MarkerLayer(markers: _buildTakMarkers()),
-                    // POI layer
-                    if (_showPoiLayer && _pois.isNotEmpty)
-                      MarkerLayer(markers: _buildPoiMarkers()),
-                    // Own team markers (always on top)
-                    MarkerLayer(markers: _buildMapMarkers()),
-                  ],
-                ),
-                // SOS FAB — bottom-left, above the team panel
-                Positioned(
-                  left: 12, bottom: 12,
-                  child: FloatingActionButton(
-                    heroTag: 'sos_fab',
-                    onPressed: _triggerSos,
-                    backgroundColor: Colors.red,
-                    foregroundColor: Colors.white,
-                    tooltip: 'Send SOS',
-                    child: const Icon(Icons.sos, size: 28),
+
+          // ── Zone placement hint ─────────────────────────────────────────
+          if (_placingZone)
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (d) {
+                  if (!_mapReady) return;
+                  _createZone(_mapCtrl.camera.pointToLatLng(
+                      Point(d.localPosition.dx, d.localPosition.dy)));
+                },
+                child: Container(
+                  color: Colors.black26,
+                  alignment: Alignment.center,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                    decoration: BoxDecoration(
+                        color: Colors.purple, borderRadius: BorderRadius.circular(8)),
+                    child: const Text('Tap to place zone centre',
+                        style: TextStyle(color: Colors.white,
+                            fontWeight: FontWeight.bold)),
                   ),
                 ),
-                // Placement overlay — sits above the map and captures taps
-                // directly, bypassing flutter_map's gesture arena entirely.
-                if (_placingType != null)
-                  Positioned.fill(
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTapUp: (details) {
-                        if (!_mapReady) return;
-                        final point = _mapCtrl.camera.pointToLatLng(
-                          Point(
-                            details.localPosition.dx,
-                            details.localPosition.dy,
-                          ),
-                        );
-                        _placeMarker(point, _placingType!);
-                      },
-                      child: Container(
-                        color: Colors.black12,
-                        alignment: Alignment.center,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(_placingType!.icon,
-                                color: _placingType!.color, size: 52),
-                            const SizedBox(height: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 14, vertical: 7),
-                              decoration: BoxDecoration(
-                                color: _placingType!.color,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                'Tap map to place ${_placingType!.label}',
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
+              ),
             ),
+
+          // ── Bottom: TEAM panel + coordinate bar ─────────────────────────
+          Positioned(
+            bottom: 0, left: 0, right: 0,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              if (_hasMission)
+                _TeamPanel(
+                  users: _users.values.where((u) => u.updatedAt
+                      .isAfter(DateTime.now().subtract(const Duration(minutes: 15))))
+                      .toList(),
+                  myId: _userId,
+                  missionCode: _missionCode,
+                  isAdmin: _isAdmin,
+                  showAll: _showAllMissions,
+                  placingType: _placingType,
+                  onPlaceType: (t) =>
+                      setState(() => _placingType = _placingType == t ? null : t),
+                  onKickUser: (id) async {
+                    try { await _supabase.from('tac_users').delete().eq('id', id); }
+                    catch (_) {}
+                    setState(() => _users.remove(id));
+                  },
+                ),
+              // Coordinate bar
+              Container(
+                color: bg.withValues(alpha: 0.9),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                child: Row(children: [
+                  Icon(Icons.gps_not_fixed, size: 11, color: dim),
+                  const SizedBox(width: 5),
+                  Text(
+                    '${mapCenter.latitude.toStringAsFixed(5)},  '
+                    '${mapCenter.longitude.toStringAsFixed(5)}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 10,
+                        fontFamily: 'monospace')),
+                  const Spacer(),
+                  if (_myStatus != 'Active')
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                          color: _statusColor(_myStatus).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(3)),
+                      child: Text(_myStatus,
+                          style: TextStyle(color: _statusColor(_myStatus),
+                              fontSize: 9, fontWeight: FontWeight.bold)),
+                    ),
+                ]),
+              ),
+            ]),
           ),
-          _TeamPanel(
-            users: _users.values.where((u) =>
-                u.updatedAt.isAfter(DateTime.now().subtract(const Duration(minutes: 15)))).toList(),
-            myId: _userId,
-            missionCode: _missionCode,
-            isAdmin: _isAdmin,
-            showAll: _showAllMissions,
-            placingType: _placingType,
-            onPlaceType: (t) => setState(() => _placingType = _placingType == t ? null : t),
-            onKickUser: (id) async {
-              try { await _supabase.from('tac_users').delete().eq('id', id); } catch (_) {}
-              setState(() => _users.remove(id));
-            },
-          ),
-        ],
+        ]),
       ),
+    );
+  }
+
+  /// Compact ATAK-style square tool button.
+  Widget _atakBtn(IconData icon, Color bg, Color fg, VoidCallback onTap) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 36, height: 36,
+          decoration: BoxDecoration(
+              color: bg.withValues(alpha: 0.9),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: Colors.white10)),
+          child: Icon(icon, color: fg, size: 17),
+        ),
+      );
+
+  /// Overflow ⋮ popup menu — all secondary actions.
+  Widget _atakPopup(Color bg, Color fg) {
+    return PopupMenuButton<String>(
+      icon: Container(
+        width: 36, height: 36,
+        decoration: BoxDecoration(
+            color: bg.withValues(alpha: 0.9),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: Colors.white10)),
+        child: Icon(Icons.more_vert, color: fg, size: 17),
+      ),
+      padding: EdgeInsets.zero,
+      itemBuilder: (_) => [
+        if (_hasMission)
+          const PopupMenuItem(value: 'leave',    child: Text('Leave Mission')),
+        const PopupMenuItem(value: 'join',        child: Text('Join / Change Mission')),
+        const PopupMenuItem(value: 'recenter',    child: Text('Re-centre')),
+        const PopupMenuItem(value: 'status',      child: Text('My Check-in Status')),
+        const PopupMenuItem(value: 'clear_routes',child: Text('Clear Routes')),
+        if (_isAdmin)
+          const PopupMenuItem(value: 'add_zone',  child: Text('Add Zone')),
+        const PopupMenuItem(value: 'settings',    child: Text('Supabase Settings')),
+        if (_incidentOverlay != null)
+          const PopupMenuItem(value: 'clear_overlay', child: Text('Clear Fire Overlay')),
+        const PopupMenuItem(value: 'clear_patient',    child: Text('Clear Patient Marker')),
+        const PopupMenuItem(value: 'clear_exfil_start',child: Text('Clear Exfil Start')),
+        const PopupMenuItem(value: 'clear_exfil_end',  child: Text('Clear Exfil End')),
+      ],
+      onSelected: (v) async {
+        if (v == 'leave')             _leaveMission();
+        if (v == 'join')              _joinMission();
+        if (v == 'recenter' && _myLocation != null)
+          _mapCtrl.move(_myLocation!, 14);
+        if (v == 'status')            _pickStatus();
+        if (v == 'clear_routes')      _clearRoutes();
+        if (v == 'add_zone')          _startZonePlacement();
+        if (v == 'clear_overlay')     setState(() => _incidentOverlay = null);
+        if (v == 'clear_patient')     _clearMarkersByType(TacMarkerType.patient);
+        if (v == 'clear_exfil_start') _clearMarkersByType(TacMarkerType.extractionStart);
+        if (v == 'clear_exfil_end')   _clearMarkersByType(TacMarkerType.extractionEnd);
+        if (v == 'settings') {
+          await Navigator.push(context, MaterialPageRoute(
+              builder: (_) => _SupabaseConfigScreen(onSaved: () => Navigator.pop(context))));
+        }
+      },
     );
   }
 
