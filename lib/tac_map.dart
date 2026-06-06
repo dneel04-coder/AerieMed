@@ -350,11 +350,11 @@ class _CachedTileProvider extends TileProvider {
   }
 }
 
-// ── Dark CartoDB tile URL (default for tactical dark-theme use) ───────────────
+// ── Dark CartoDB tile URL — {s} subdomain rotated by flutter_map for load balance
+// Using {r} retina suffix improves rendering on high-DPI screens.
 const _kDarkTileUrl =
-    'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
-const _kDarkTileAttrib =
-    '© OpenStreetMap contributors © CARTO';
+    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+const _kDarkTileSubdomains = <String>['a', 'b', 'c', 'd'];
 
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -688,6 +688,7 @@ class _TakLiveScreenState extends State<_TakLiveScreen> {
             children: [
               TileLayer(
                 urlTemplate: _kDarkTileUrl,
+                subdomains: _kDarkTileSubdomains,
                 userAgentPackageName: 'com.resqruck.app',
                 tileProvider: _CachedTileProvider(),
               ),
@@ -2358,9 +2359,10 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               TileLayer(
                 urlTemplate: _baseLayer == _BaseLayer.osm
                     ? _kDarkTileUrl : _baseLayer.urlTemplate,
+                subdomains: _baseLayer == _BaseLayer.osm
+                    ? _kDarkTileSubdomains : const <String>[],
                 userAgentPackageName: 'com.resqruck.app',
                 tileProvider: _CachedTileProvider(),
-                additionalOptions: const {},
               ),
               if (_incidentOverlay != null)
                 OverlayImageLayer(overlayImages: [

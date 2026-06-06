@@ -148,8 +148,19 @@ class _CertStorage {
 
 
 class CertSyncer {
+  /// Delete a cert row and its storage file.
+  static Future<void> _deleteCertRow(
+      dynamic client, Map<String, dynamic> row) async {
+    final oldPath = row['file_path'] as String? ?? '';
+    if (oldPath.isNotEmpty) {
+      try { await client.storage.from('certs').remove([oldPath]); } catch (_) {}
+    }
+    try { await client.from('team_certs').delete().eq('id', row['id']); } catch (_) {}
+  }
+
   static Future<void> _trySyncCert(
-      UserCert cert, String userId, String callsign) async {
+      UserCert cert, String userId, String callsign,
+      {String fullName = ''}) async {
     final client = SupabaseService.client;
     if (client == null) return;
     final ext = cert.filePath.contains('.')
@@ -157,23 +168,46 @@ class CertSyncer {
         : 'jpg';
     final storagePath = '$userId/${cert.id}.$ext';
 
-    // Delete old Supabase rows for this user + cert type + state before uploading.
+    // Build lowercase identifiers for this person.
+    final lowerCallsign = callsign.toLowerCase().trim();
+    final lowerName = fullName.toLowerCase().trim();
+
+    // 1. Delete same-user_id rows for same type+state (own duplicates).
     try {
-      final oldRows = await client
+      final sameUserRows = await client
           .from('team_certs')
           .select('id, file_path')
           .eq('user_id', userId)
           .eq('license_type', cert.licenseType)
           .eq('state', cert.state)
           .neq('id', cert.id) as List;
-      for (final old in oldRows) {
-        final oldPath = old['file_path'] as String? ?? '';
-        if (oldPath.isNotEmpty) {
-          try { await client.storage.from('certs').remove([oldPath]); } catch (_) {}
-        }
-        try { await client.from('team_certs').delete().eq('id', old['id']); } catch (_) {}
+      for (final old in sameUserRows) {
+        await _deleteCertRow(client, old as Map<String, dynamic>);
       }
     } catch (_) {}
+
+    // 2. Delete cross-user_id rows where the callsign/name matches this person
+    //    (handles reinstalls and mixed callsign/name uploads).
+    if (lowerCallsign.isNotEmpty || lowerName.isNotEmpty) {
+      try {
+        final crossRows = await client
+            .from('team_certs')
+            .select('id, file_path, callsign')
+            .eq('license_type', cert.licenseType)
+            .eq('state', cert.state)
+            .neq('user_id', userId) as List;
+        for (final old in crossRows) {
+          final oldCs = (old['callsign'] as String? ?? '').toLowerCase().trim();
+          // Match if the old row's callsign equals this person's callsign or full name.
+          final matches =
+              (lowerCallsign.isNotEmpty && oldCs == lowerCallsign) ||
+              (lowerName.isNotEmpty && oldCs == lowerName);
+          if (matches) {
+            await _deleteCertRow(client, old as Map<String, dynamic>);
+          }
+        }
+      } catch (_) {}
+    }
 
     // Storage upload is best-effort — if the bucket doesn't exist yet the
     // metadata row still gets written so the cert appears in the admin panel.
@@ -218,6 +252,7 @@ class CertSyncer {
       await prefs.setString('tac_user_id', userId);
     }
     final callsign = prefs.getString('tac_callsign') ?? 'Unknown';
+    final fullName = prefs.getString('profile_name') ?? '';
     // Purge legacy duplicate rows (same user_id + type + state, different callsign/id).
     final client = SupabaseService.client;
     if (client != null) {
@@ -247,7 +282,7 @@ class CertSyncer {
       } catch (_) {}
     }
     for (final cert in certs) {
-      await _trySyncCert(cert, userId, callsign);
+      await _trySyncCert(cert, userId, callsign, fullName: fullName);
     }
   }
 }

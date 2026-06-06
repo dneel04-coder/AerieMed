@@ -345,15 +345,23 @@ class ProtocolSyncService {
               .select()
               .order('uploaded_at', ascending: false) as List)
           .cast<Map<String, dynamic>>();
-      // Deduplicate: for the same (user_id, license_type, state) keep only the
-      // most recent row — handles legacy duplicates uploaded under different callsigns.
-      final seen = <String>{};
+      // Pass 1: dedup by user_id|type|state (same-user duplicates).
+      final seenUid = <String>{};
       final deduped = <Map<String, dynamic>>[];
       for (final r in all) {
         final key = '${r['user_id']}|${r['license_type']}|${r['state']}';
-        if (seen.add(key)) deduped.add(r);
+        if (seenUid.add(key)) deduped.add(r);
       }
-      return deduped;
+      // Pass 2: dedup by normalised-callsign|type|state across different user_ids
+      // (same person uploaded under their name AND callsign, or after reinstall).
+      final seenCs = <String>{};
+      final final2 = <Map<String, dynamic>>[];
+      for (final r in deduped) {
+        final cs = (r['callsign'] as String? ?? '').toLowerCase().trim();
+        final key = '$cs|${r['license_type']}|${r['state']}';
+        if (cs.isEmpty || seenCs.add(key)) final2.add(r);
+      }
+      return final2;
     } catch (_) {
       return [];
     }
