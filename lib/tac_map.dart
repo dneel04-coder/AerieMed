@@ -350,10 +350,9 @@ class _CachedTileProvider extends TileProvider {
   }
 }
 
-// ── Dark CartoDB tile URL — {s} subdomain rotated by flutter_map for load balance
-// Using {r} retina suffix improves rendering on high-DPI screens.
+// ── Dark CartoDB tile URL — {s} subdomain rotated for load balancing
 const _kDarkTileUrl =
-    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
 const _kDarkTileSubdomains = <String>['a', 'b', 'c', 'd'];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1256,7 +1255,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   String _myStatus = 'Active';
   final Map<String, List<LatLng>> _breadcrumbs = {};
   int _breadcrumbTick = 0;
-  bool _showTrails = true;
+  bool _showTrails = false; // opt-in — user taps the route icon to enable
   final List<TacZone> _zones = [];
   final List<TacSosEvent> _activeSos = [];
   bool _placingZone = false;
