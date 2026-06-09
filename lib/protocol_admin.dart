@@ -2289,6 +2289,46 @@ begin
 
   -- team_certs: expiration date column
   alter table if exists team_certs add column if not exists expiration_date date;
+
+  -- team_positions: ATAK / CoT feed written by the Oracle Cloud CoT listener
+  -- callsign is UNIQUE so the server can upsert by callsign on each position update
+  create table if not exists team_positions (
+    id uuid default gen_random_uuid() primary key,
+    callsign text not null unique,
+    lat double precision not null,
+    lon double precision not null,
+    role text not null default '',
+    status text not null default 'Active',
+    last_updated timestamptz default now()
+  );
+  begin
+    alter table team_positions enable row level security;
+    create policy "public_access" on team_positions
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  begin
+    -- Enable realtime so the app receives live position updates
+    alter publication supabase_realtime add table team_positions;
+  exception when others then null;
+  end;
+
+  -- tac_pois: optional points of interest layer
+  create table if not exists tac_pois (
+    id uuid default gen_random_uuid() primary key,
+    name text not null,
+    type text not null default 'generic',
+    lat double precision not null,
+    lng double precision not null,
+    notes text default '',
+    created_at timestamptz default now()
+  );
+  begin
+    alter table tac_pois enable row level security;
+    create policy "public_access" on tac_pois
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
 end;
 \$func\$;
 
