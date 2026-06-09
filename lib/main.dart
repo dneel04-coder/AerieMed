@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:in_app_update/in_app_update.dart';
 import 'package:printing/printing.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
@@ -122,6 +123,87 @@ class _MainShellState extends State<MainShell> {
     ProtocolSyncService.instance.isAdminMode.then((v) {
       if (mounted) setState(() => _isAdmin = v);
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
+  }
+
+  Future<void> _checkForUpdate() async {
+    try {
+      final info = await InAppUpdate.checkForUpdate();
+      if (!mounted) return;
+      if (info.updateAvailability == UpdateAvailability.updateAvailable) {
+        _showUpdateDialog();
+      }
+    } catch (_) {
+      // Not on Play Store / no connectivity — ignore
+    }
+  }
+
+  void _showUpdateDialog() {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Update Available'),
+        content: const Text(
+          'A new version of ResQruck is available. Update now to get the latest protocols and features.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Later'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _startUpdate();
+            },
+            child: const Text('Update Now'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _startUpdate() async {
+    try {
+      await InAppUpdate.startFlexibleUpdate();
+      _listenForDownloadCompletion();
+    } catch (_) {
+      // Play Store not available — ignore
+    }
+  }
+
+  void _listenForDownloadCompletion() {
+    InAppUpdate.checkForUpdate().then((info) async {
+      if (!mounted) return;
+      if (info.installStatus == InstallStatus.downloaded) {
+        _showRestartBanner();
+      }
+    });
+  }
+
+  void _showRestartBanner() {
+    ScaffoldMessenger.of(context).showMaterialBanner(
+      MaterialBanner(
+        content: const Text('Update downloaded — restart to apply.'),
+        leading: const Icon(Icons.system_update),
+        actions: [
+          TextButton(
+            onPressed: () {
+              ScaffoldMessenger.of(context).hideCurrentMaterialBanner();
+            },
+            child: const Text('Later'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              ScaffoldMessenger.of(context).hideCurrentMaterialBanner();
+              await InAppUpdate.completeFlexibleUpdate();
+            },
+            child: const Text('Restart'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _onTabTap(int index) async {
