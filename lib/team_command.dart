@@ -3431,6 +3431,11 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
   String _myUserId = '';
   String _myCallsign = '';
 
+  // Range selection
+  bool _rangeMode = false;
+  DateTime? _rangeStart;
+  DateTime? _rangeEnd;
+
   static const _statuses = ['Available', 'Unavailable', 'Partial', 'Deployed'];
   static const Map<String, Color> _statusColors = {
     'Available': Color(0xFF2E7D32),
@@ -3675,6 +3680,131 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
     );
   }
 
+  void _onDayTap(DateTime date, String dateStr, bool isPast) {
+    if (!_rangeMode) {
+      _showDaySheet(dateStr, isPast);
+      return;
+    }
+    if (_rangeStart == null || _rangeEnd != null) {
+      setState(() { _rangeStart = date; _rangeEnd = null; });
+    } else {
+      final start = date.isBefore(_rangeStart!) ? date : _rangeStart!;
+      final end   = date.isBefore(_rangeStart!) ? _rangeStart! : date;
+      setState(() { _rangeStart = start; _rangeEnd = end; });
+      _showRangeSheet(start, end);
+    }
+  }
+
+  Future<void> _showRangeSheet(DateTime start, DateTime end) async {
+    const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final label =
+        '${monthNames[start.month]} ${start.day} – ${monthNames[end.month]} ${end.day}, ${end.year}';
+    final days = end.difference(start).inDays + 1;
+
+    if (!mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+            left: 16, right: 16, top: 12),
+        child: Column(mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+          Center(child: Container(width: 36, height: 4,
+              decoration: BoxDecoration(color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(2)))),
+          const SizedBox(height: 12),
+          Text(label,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 2),
+          Text('$days day${days == 1 ? '' : 's'}',
+              style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+          const SizedBox(height: 14),
+          Text('Set your status for the entire range:',
+              style: TextStyle(fontWeight: FontWeight.w600,
+                  color: Colors.grey[700], fontSize: 13)),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: _statuses.map((s) {
+              final color = _statusColors[s]!;
+              return GestureDetector(
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await _saveRangeStatus(start, end, s);
+                  if (mounted) {
+                    setState(() { _rangeMode = false; _rangeStart = null; _rangeEnd = null; });
+                  }
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.10),
+                    border: Border.all(color: color, width: 1.5),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(s, style: TextStyle(
+                      color: color, fontWeight: FontWeight.w600, fontSize: 13)),
+                ),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 16),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  if (mounted) setState(() { _rangeStart = null; _rangeEnd = null; });
+                },
+                child: const Text('Cancel'),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 4),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _saveRangeStatus(DateTime start, DateTime end, String status) async {
+    final client = SupabaseService.client;
+    if (client == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Supabase not connected — open Tac Map to configure.'),
+            backgroundColor: Colors.orange));
+      }
+      return;
+    }
+    try {
+      final rows = <Map<String, dynamic>>[];
+      for (var d = start;
+          !d.isAfter(end);
+          d = d.add(const Duration(days: 1))) {
+        rows.add({
+          'user_id': _myUserId,
+          'callsign': _myCallsign,
+          'date': '${d.year}-${_pad(d.month)}-${_pad(d.day)}',
+          'status': status,
+          'updated_at': DateTime.now().toIso8601String(),
+        });
+      }
+      await client.from('team_availability').upsert(rows, onConflict: 'user_id,date');
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Error saving range: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
   Future<void> _saveStatus(String dateStr, String status) async {
     final client = SupabaseService.client;
     if (client == null) {
@@ -3750,6 +3880,18 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
             _load();
           },
         ),
+        IconButton(
+          icon: Icon(
+            Icons.date_range,
+            color: _rangeMode ? Theme.of(context).colorScheme.primary : null,
+          ),
+          tooltip: _rangeMode ? 'Cancel range selection' : 'Select date range',
+          onPressed: () => setState(() {
+            _rangeMode = !_rangeMode;
+            _rangeStart = null;
+            _rangeEnd = null;
+          }),
+        ),
       ]),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -3790,24 +3932,38 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
                         date.day == now.day;
                     final isPast = date.isBefore(
                         DateTime(now.year, now.month, now.day));
+                    final inRange = _rangeMode &&
+                        _rangeStart != null &&
+                        _rangeEnd != null &&
+                        !date.isBefore(_rangeStart!) &&
+                        !date.isAfter(_rangeEnd!);
+                    final isRangeEdge = _rangeMode &&
+                        _rangeStart != null &&
+                        (date == _rangeStart ||
+                            (_rangeEnd != null && date == _rangeEnd));
 
                     return Expanded(
                       child: GestureDetector(
-                        onTap: () => _showDaySheet(dateStr, isPast),
+                        onTap: () => _onDayTap(date, dateStr, isPast),
                         child: Container(
                           margin: const EdgeInsets.all(1),
                           constraints: const BoxConstraints(minHeight: 64),
                           decoration: BoxDecoration(
-                            color: myEntry != null
-                                ? (_statusColors[myEntry['status']] ??
-                                        Colors.grey)
-                                    .withValues(alpha: 0.10)
-                                : null,
+                            color: inRange
+                                ? Theme.of(context)
+                                    .colorScheme
+                                    .primary
+                                    .withValues(alpha: 0.15)
+                                : myEntry != null
+                                    ? (_statusColors[myEntry['status']] ??
+                                            Colors.grey)
+                                        .withValues(alpha: 0.10)
+                                    : null,
                             border: Border.all(
-                              color: isToday
+                              color: isRangeEdge || isToday
                                   ? Theme.of(context).colorScheme.primary
                                   : Colors.grey.withValues(alpha: 0.2),
-                              width: isToday ? 2 : 0.5,
+                              width: isRangeEdge || isToday ? 2 : 0.5,
                             ),
                             borderRadius: BorderRadius.circular(4),
                           ),
@@ -3890,8 +4046,16 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
                 Text(e.key, style: const TextStyle(fontSize: 11)),
               ],
             )),
-            Text('Tap any day to view or set your status',
-                style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+            Text(
+              _rangeMode
+                  ? (_rangeStart == null
+                      ? 'Tap a start date'
+                      : 'Tap an end date')
+                  : 'Tap a day to view or set status  •  Use \u{1F4C5} for a date range',
+              style: TextStyle(fontSize: 10, color: _rangeMode
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.grey[500]),
+            ),
           ],
         ),
       ),
