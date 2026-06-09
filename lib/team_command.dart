@@ -7,7 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService, TeamProtocolsScreen, showReadAcknowledgment;
+import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService, TeamProtocolsScreen, showReadAcknowledgment, AdminAlertService;
 import 'user_profile.dart' show LoginScreen;
 
 enum _CertExpiry { green, yellow, red }
@@ -2957,6 +2957,14 @@ class _HandoffFormScreenState extends State<_HandoffFormScreen> {
     h.resourceStatus = _resources.text.trim();
     h.notes = _notes.text.trim();
     await HandoffStorage.save(h);
+    final prefs = await SharedPreferences.getInstance();
+    final callsign = prefs.getString('tac_callsign') ?? 'Unknown';
+    await AdminAlertService.post(
+      type: 'handoff',
+      title: 'Handoff Submitted',
+      callsign: callsign,
+      body: h.outgoingLead.isNotEmpty ? 'Outgoing: ${h.outgoingLead}' : '',
+    );
     if (mounted) Navigator.pop(context);
   }
 
@@ -3796,6 +3804,12 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
         });
       }
       await client.from('team_availability').upsert(rows, onConflict: 'user_id,date');
+      await AdminAlertService.post(
+        type: 'availability',
+        title: 'Availability Updated',
+        callsign: _myCallsign,
+        body: '$status — ${rows.length}-day range',
+      );
       await _load();
     } catch (e) {
       if (mounted) {
@@ -3827,6 +3841,12 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
           'status': status,
           'updated_at': DateTime.now().toIso8601String(),
         }, onConflict: 'user_id,date');
+        await AdminAlertService.post(
+          type: 'availability',
+          title: 'Availability Updated',
+          callsign: _myCallsign,
+          body: '$status on $dateStr',
+        );
       }
       await _load();
     } catch (e) {

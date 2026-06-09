@@ -432,6 +432,15 @@ class ReportSyncer {
       });
       report.isSynced = true;
       await ReportStorage.save(report);
+      try {
+        await client.from('admin_alerts').insert({
+          'type': 'patient_report',
+          'title': 'Patient Report Submitted',
+          'callsign': callsign,
+          'body': report.formType,
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      } catch (_) {}
     } catch (_) {}
   }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:in_app_update/in_app_update.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:printing/printing.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
@@ -116,14 +117,55 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _tab = 2; // start on Med
   bool _isAdmin = false;
+  RealtimeChannel? _alertChannel;
 
   @override
   void initState() {
     super.initState();
     ProtocolSyncService.instance.isAdminMode.then((v) {
-      if (mounted) setState(() => _isAdmin = v);
+      if (!mounted) return;
+      setState(() => _isAdmin = v);
+      if (v) _subscribeToAlerts();
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
+  }
+
+  @override
+  void dispose() {
+    _alertChannel?.unsubscribe();
+    super.dispose();
+  }
+
+  Future<void> _subscribeToAlerts() async {
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok || !mounted) return;
+    _alertChannel?.unsubscribe();
+    _alertChannel = SupabaseService.client!
+        .channel('admin_alerts_feed')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'admin_alerts',
+          callback: (payload) {
+            if (!mounted || !_isAdmin) return;
+            final r = payload.newRecord;
+            final title = r['title'] as String? ?? 'Alert';
+            final callsign = r['callsign'] as String? ?? '';
+            final msg = callsign.isNotEmpty ? '$title — $callsign' : title;
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(msg),
+              backgroundColor: Theme.of(context).colorScheme.primary,
+              duration: const Duration(seconds: 6),
+              action: SnackBarAction(
+                label: 'Dismiss',
+                textColor: Colors.white,
+                onPressed: () =>
+                    ScaffoldMessenger.of(context).hideCurrentSnackBar(),
+              ),
+            ));
+          },
+        )
+        .subscribe();
   }
 
   Future<void> _checkForUpdate() async {
@@ -213,6 +255,7 @@ class _MainShellState extends State<MainShell> {
       if (!ok || !mounted) return;
       await ProtocolSyncService.instance.setAdminMode(true);
       if (mounted) setState(() { _isAdmin = true; _tab = 4; });
+      _subscribeToAlerts();
       return;
     }
     setState(() => _tab = index);

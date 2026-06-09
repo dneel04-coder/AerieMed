@@ -2313,6 +2313,27 @@ begin
   exception when others then null;
   end;
 
+  -- admin_alerts: real-time notifications delivered to admins
+  create table if not exists admin_alerts (
+    id uuid default gen_random_uuid() primary key,
+    type text not null,
+    title text not null,
+    callsign text not null default '',
+    body text not null default '',
+    created_at timestamptz default now(),
+    read boolean not null default false
+  );
+  begin
+    alter table admin_alerts enable row level security;
+    create policy "public_access" on admin_alerts
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  begin
+    alter publication supabase_realtime add table admin_alerts;
+  exception when others then null;
+  end;
+
   -- tac_pois: optional points of interest layer
   create table if not exists tac_pois (
     id uuid default gen_random_uuid() primary key,
@@ -2340,6 +2361,29 @@ grant execute on function resqruck_auto_migrate() to authenticated;
 
 String _fmt(DateTime dt) =>
     '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+
+// ── Admin alert service ───────────────────────────────────────────────────────
+
+class AdminAlertService {
+  static Future<void> post({
+    required String type,
+    required String title,
+    required String callsign,
+    String body = '',
+  }) async {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    try {
+      await client.from('admin_alerts').insert({
+        'type': type,
+        'title': title,
+        'callsign': callsign,
+        'body': body,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+    } catch (_) {}
+  }
+}
 
 // ── Read-acknowledgment prompt ────────────────────────────────────────────────
 
