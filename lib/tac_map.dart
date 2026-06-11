@@ -350,10 +350,10 @@ class _CachedTileProvider extends TileProvider {
   }
 }
 
-// ── Dark CartoDB tile URL — {s} subdomain rotated for load balancing
-const _kDarkTileUrl =
-    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
-const _kDarkTileSubdomains = <String>['a', 'b', 'c', 'd'];
+// ── OSM standard tile URL — color, reliable, no API key required
+const _kBaseTileUrl =
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+const _kBaseTileSubdomains = <String>['a', 'b', 'c'];
 
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -686,8 +686,8 @@ class _TakLiveScreenState extends State<_TakLiveScreen> {
             ),
             children: [
               TileLayer(
-                urlTemplate: _kDarkTileUrl,
-                subdomains: _kDarkTileSubdomains,
+                urlTemplate: _kBaseTileUrl,
+                subdomains: _kBaseTileSubdomains,
                 userAgentPackageName: 'com.resqruck.app',
                 tileProvider: _CachedTileProvider(),
               ),
@@ -2356,10 +2356,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             ),
             children: [
               TileLayer(
-                urlTemplate: _baseLayer == _BaseLayer.osm
-                    ? _kDarkTileUrl : _baseLayer.urlTemplate,
+                urlTemplate: _baseLayer.urlTemplate,
                 subdomains: _baseLayer == _BaseLayer.osm
-                    ? _kDarkTileSubdomains : const <String>[],
+                    ? _kBaseTileSubdomains : const <String>[],
                 userAgentPackageName: 'com.resqruck.app',
                 tileProvider: _CachedTileProvider(),
               ),
