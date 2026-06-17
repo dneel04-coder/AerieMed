@@ -21,6 +21,7 @@ import 'mci_triage.dart';
 import 'cert_vault.dart';
 import 'tac_map.dart';
 import 'protocol_admin.dart';
+import 'backcountry_guide.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -367,6 +368,7 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
       _MedCardData(Icons.checklist_outlined, 'Procedures',   const Color(0xFF2E7D32), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProcedureListScreen()))),
       _MedCardData(Icons.emergency,          'MCI Triage',   const Color(0xFFE65100), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MciTriageScreen()))),
       _MedCardData(Icons.assignment_outlined,'Patient Report',const Color(0xFF00695C), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PatientReportListScreen()))),
+      _MedCardData(Icons.terrain,            'Field Guide',  const Color(0xFF4E6B3A), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BackcountryGuideScreen()))),
     ];
 
     return Scaffold(
@@ -1213,6 +1215,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
           _FeatureTile(Icons.biotech, 'Differential\nDiagnosis', Colors.purple, DifferentialDxScreen()),
           _FeatureTile(Icons.assignment_outlined, 'Patient\nReports', Colors.red, PatientReportListScreen()),
           _FeatureTile(Icons.workspace_premium, 'Cert\nVault', Colors.deepPurple, CertVaultScreen()),
+          _FeatureTile(Icons.terrain, 'Field\nGuide', Color(0xFF4E6B3A), BackcountryGuideScreen()),
         ]),
         _launcherSection('Team Coordination'),
         _launcherGrid(context, const [
