@@ -55,10 +55,15 @@ enum _BaseLayer {
 
 class _IncidentOverlay {
   final String name;
-  final Uint8List imageBytes;
+  final Uint8List? imageBytes;       // null for polygon-only KMZ
   final LatLngBounds bounds;
-  const _IncidentOverlay(
-      {required this.name, required this.imageBytes, required this.bounds});
+  final List<List<LatLng>> polygons; // fire perimeter polygons (may be empty)
+  const _IncidentOverlay({
+    required this.name,
+    this.imageBytes,
+    required this.bounds,
+    this.polygons = const [],
+  });
 }
 
 const _kSupabaseUrl = 'tac_supabase_url';
@@ -2362,14 +2367,24 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 userAgentPackageName: 'com.resqruck.app',
                 tileProvider: _CachedTileProvider(),
               ),
-              if (_incidentOverlay != null)
+              if (_incidentOverlay?.imageBytes != null)
                 OverlayImageLayer(overlayImages: [
                   OverlayImage(
                     bounds: _incidentOverlay!.bounds,
-                    imageProvider: MemoryImage(_incidentOverlay!.imageBytes),
+                    imageProvider: MemoryImage(_incidentOverlay!.imageBytes!),
                     opacity: 0.7,
                   ),
                 ]),
+              if (_incidentOverlay != null &&
+                  _incidentOverlay!.polygons.isNotEmpty)
+                PolygonLayer(polygons: _incidentOverlay!.polygons
+                    .map((pts) => Polygon(
+                          points: pts,
+                          color: Colors.red.withValues(alpha: 0.20),
+                          borderColor: Colors.red,
+                          borderStrokeWidth: 2,
+                        ))
+                    .toList()),
               PolylineLayer(polylines: polylines),
               if (zoneCircles.isNotEmpty) CircleLayer(circles: zoneCircles),
               if (_showTakLayer && _takPositions.isNotEmpty)
@@ -2936,17 +2951,48 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       final east  = double.tryParse(eastM?.group(1)  ?? '');
       final west  = double.tryParse(westM?.group(1)  ?? '');
 
-      if (north == null || south == null || east == null || west == null) {
-        throw Exception('Could not parse map bounds from KML');
-      }
-      if (imgBytes == null) throw Exception('No overlay image found in KMZ');
+      LatLngBounds bounds;
+      List<List<LatLng>> polygons = [];
 
-      final bounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
+      if (north != null && south != null && east != null && west != null) {
+        // Image overlay with explicit bounds
+        if (imgBytes == null) throw Exception('No overlay image found in KMZ');
+        bounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
+      } else {
+        // No LatLonBox — try to extract polygon perimeter from coordinates
+        final coordRe = RegExp(r'<coordinates>\s*([\s\S]*?)\s*</coordinates>');
+        final allPoints = <LatLng>[];
+        for (final m in coordRe.allMatches(kmlContent)) {
+          final ring = <LatLng>[];
+          for (final token in (m.group(1) ?? '').trim().split(RegExp(r'\s+'))) {
+            final parts = token.split(',');
+            if (parts.length >= 2) {
+              final lng = double.tryParse(parts[0]);
+              final lat = double.tryParse(parts[1]);
+              if (lat != null && lng != null) {
+                ring.add(LatLng(lat, lng));
+                allPoints.add(LatLng(lat, lng));
+              }
+            }
+          }
+          if (ring.length >= 3) polygons.add(ring);
+        }
+        if (allPoints.isEmpty) throw Exception('Could not parse map bounds from KML');
+        final lats = allPoints.map((p) => p.latitude);
+        final lngs = allPoints.map((p) => p.longitude);
+        bounds = LatLngBounds(
+          LatLng(lats.reduce(min), lngs.reduce(min)),
+          LatLng(lats.reduce(max), lngs.reduce(max)),
+        );
+      }
 
       if (mounted) {
         snack.hideCurrentSnackBar();
-        setState(() => _incidentOverlay =
-            _IncidentOverlay(name: name, imageBytes: imgBytes!, bounds: bounds));
+        setState(() => _incidentOverlay = _IncidentOverlay(
+            name: name,
+            imageBytes: imgBytes,
+            bounds: bounds,
+            polygons: polygons));
         _mapCtrl.fitCamera(
             CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(16)));
         snack.showSnackBar(SnackBar(
