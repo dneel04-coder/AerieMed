@@ -10,12 +10,11 @@ workflows:
       app_store_connect: Codemagic
 
     environment:
+      groups:
+        - AerieMed
       flutter: stable
       xcode: latest
       cocoapods: default
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.aerie.aerimed1
 
     scripts:
       - name: Flutter packages
@@ -24,8 +23,21 @@ workflows:
       - name: CocoaPods install
         script: cd ios && pod install
 
+      - name: Install certificate and profile
+        script: |
+          set -e
+          echo "$CM_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+          keychain initialize
+          keychain add-certificates --certificate /tmp/cert.p12 \
+            --certificate-password "$CM_CERTIFICATE_PASSWORD"
+          PROFILES_HOME="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILES_HOME"
+          echo "$CM_PROVISIONING_PROFILE" | base64 --decode > /tmp/profile.mobileprovision
+          cp /tmp/profile.mobileprovision "$PROFILES_HOME/aerimed_appstore.mobileprovision"
+          printf '\nCODE_SIGN_STYLE = Manual\nDEVELOPMENT_TEAM = F593S84V48\nCODE_SIGN_IDENTITY = Apple Distribution\nPROVISIONING_PROFILE_SPECIFIER = AeriMed AppStore\n' >> ios/Flutter/Release.xcconfig
+
       - name: Build IPA
-        script: flutter build ipa --release --export-options-plist=$CM_EXPORT_OPTIONS_PATH
+        script: flutter build ipa --release --export-options-plist=ios/ExportOptions.plist
 
     artifacts:
       - build/ios/ipa/*.ipa
