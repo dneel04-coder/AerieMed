@@ -23,21 +23,19 @@ workflows:
       - name: CocoaPods install
         script: cd ios && pod install
 
-      - name: Install certificate and profile
+      - name: Set up code signing (automatic via App Store Connect API)
         script: |
           set -e
-          echo "$CM_CERTIFICATE" | base64 --decode > /tmp/cert.p12
           keychain initialize
-          keychain add-certificates --certificate /tmp/cert.p12 \
-            --certificate-password "$CM_CERTIFICATE_PASSWORD"
-          PROFILES_HOME="$HOME/Library/MobileDevice/Provisioning Profiles"
-          mkdir -p "$PROFILES_HOME"
-          echo "$CM_PROVISIONING_PROFILE" | base64 --decode > /tmp/profile.mobileprovision
-          cp /tmp/profile.mobileprovision "$PROFILES_HOME/6727e394-14e7-4417-a096-52a50685b782.mobileprovision"
-          printf '\nCODE_SIGN_STYLE = Manual\nDEVELOPMENT_TEAM = F593S84V48\nCODE_SIGN_IDENTITY = Apple Distribution\nPROVISIONING_PROFILE_SPECIFIER = AeriMed AppStore\n' >> ios/Flutter/Release.xcconfig
+          app-store-connect fetch-signing-files \
+            $(xcode-project detect-bundle-id) \
+            --type IOS_APP_STORE \
+            --create
+          keychain add-certificates
+          xcode-project use-profiles
 
       - name: Build IPA
-        script: flutter build ipa --release --export-options-plist=ios/ExportOptions.plist
+        script: flutter build ipa --release
 
     artifacts:
       - build/ios/ipa/*.ipa
