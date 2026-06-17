@@ -10,11 +10,12 @@ workflows:
       app_store_connect: Codemagic
 
     environment:
-      groups:
-        - AerieMed
       flutter: stable
       xcode: latest
       cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.aerie.aerimed1
 
     scripts:
       - name: Flutter packages
@@ -23,37 +24,8 @@ workflows:
       - name: CocoaPods install
         script: cd ios && pod install
 
-      - name: Set up code signing (automatic via App Store Connect API)
-        script: |
-          set -e
-          keychain initialize
-          app-store-connect fetch-signing-files \
-            $(xcode-project detect-bundle-id) \
-            --type IOS_APP_STORE \
-            --create
-          keychain add-certificates
-          xcode-project use-profiles
-
       - name: Build IPA
-        script: |
-          set -e
-          cat > /tmp/ExportOptions.plist << 'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>app-store</string>
-            <key>teamID</key>
-            <string>F593S84V48</string>
-            <key>uploadSymbols</key>
-            <true/>
-            <key>uploadBitcode</key>
-            <false/>
-          </dict>
-          </plist>
-          PLIST
-          flutter build ipa --release --export-options-plist=/tmp/ExportOptions.plist
+        script: flutter build ipa --release --export-options-plist=$CM_EXPORT_OPTIONS_PATH
 
     artifacts:
       - build/ios/ipa/*.ipa
