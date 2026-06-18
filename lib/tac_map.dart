@@ -1071,6 +1071,8 @@ create table if not exists tac_users (
   lng double precision not null,
   is_admin boolean default false,
   updated_at timestamptz default now(),
+  battery_level int,
+  status text default 'Active',
   primary key (id, mission_code)
 );
 create table if not exists tac_markers (
@@ -1098,6 +1100,12 @@ do \$\$ begin
 exception when others then null; end \$\$;
 do \$\$ begin
   alter publication supabase_realtime add table tac_markers;
+exception when others then null; end \$\$;
+do \$\$ begin
+  alter table tac_users add column if not exists battery_level int;
+exception when others then null; end \$\$;
+do \$\$ begin
+  alter table tac_users add column if not exists status text default 'Active';
 exception when others then null; end \$\$;''';
 
   @override
@@ -1251,7 +1259,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   _IncidentOverlay? _incidentOverlay;
   bool _markerTableWarned = false;
   bool _sharingLocation = true;
-  bool _showAllMissions = true;
+  String? _filterMission; // null = all missions visible
   bool _hasMission = false; // true once callsign + missionCode are set
 
   // Life360-style features
@@ -2140,7 +2148,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     // ── User location pins ────────────────────────────────────────────────
     for (final user in _users.values) {
       if (user.updatedAt.isBefore(staleThreshold)) continue;
-      if (!_showAllMissions && user.missionCode != _missionCode && user.id != _userId) continue;
+      if (_filterMission != null && user.missionCode != _filterMission && user.id != _userId) continue;
       final isMe = user.id == _userId;
       final sameMission = user.missionCode == _missionCode;
       final statusCol = _statusColor(user.status);
@@ -2563,11 +2571,10 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   _showTrails ? Colors.amber : Colors.white24,
                   () => setState(() => _showTrails = !_showTrails)),
               const SizedBox(height: 6),
-              // Mine / All users
-              _atakBtn(
-                  _showAllMissions ? Icons.people : Icons.person,
-                  bg, _showAllMissions ? cyan : Colors.white38,
-                  () => setState(() => _showAllMissions = !_showAllMissions)),
+              // Mission filter
+              _atakBtn(Icons.filter_list, bg,
+                  _filterMission != null ? Colors.amber : Colors.white38,
+                  _showMissionPicker),
               const SizedBox(height: 6),
               // Location share
               _atakBtn(
@@ -2687,7 +2694,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   myId: _userId,
                   missionCode: _missionCode,
                   isAdmin: _isAdmin,
-                  showAll: _showAllMissions,
+                  filterMission: _filterMission,
                   placingType: _placingType,
                   onPlaceType: (t) =>
                       setState(() => _placingType = _placingType == t ? null : t),
@@ -2845,6 +2852,66 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   MaterialPageRoute(builder: (_) => const LzAssessmentScreen()));
             },
           ),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
+
+  void _showMissionPicker() {
+    final now = DateTime.now();
+    final stale = now.subtract(const Duration(minutes: 15));
+    final missions = _users.values
+        .where((u) => u.updatedAt.isAfter(stale) && u.missionCode.isNotEmpty)
+        .map((u) => u.missionCode)
+        .toSet()
+        .toList()
+      ..sort();
+
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 14, 16, 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Filter by Mission',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.people, color: Colors.teal),
+            title: const Text('All Missions'),
+            trailing: _filterMission == null
+                ? const Icon(Icons.check, color: Colors.teal)
+                : null,
+            selected: _filterMission == null,
+            onTap: () {
+              Navigator.pop(context);
+              setState(() => _filterMission = null);
+            },
+          ),
+          ...missions.map((m) {
+            final count = _users.values
+                .where((u) => u.missionCode == m && u.updatedAt.isAfter(stale))
+                .length;
+            final selected = _filterMission == m;
+            return ListTile(
+              leading: const Icon(Icons.task_alt, color: Colors.blue),
+              title: Text(m),
+              subtitle: Text('$count active'),
+              trailing: selected
+                  ? const Icon(Icons.check, color: Colors.blue)
+                  : null,
+              selected: selected,
+              onTap: () {
+                Navigator.pop(context);
+                setState(() => _filterMission = m);
+              },
+            );
+          }),
           const SizedBox(height: 8),
         ]),
       ),
@@ -3016,7 +3083,7 @@ class _TeamPanel extends StatefulWidget {
   final String myId;
   final String missionCode;
   final bool isAdmin;
-  final bool showAll;
+  final String? filterMission; // null = show all missions
   final TacMarkerType? placingType;
   final ValueChanged<TacMarkerType> onPlaceType;
   final ValueChanged<String> onKickUser;
@@ -3026,7 +3093,7 @@ class _TeamPanel extends StatefulWidget {
     required this.myId,
     required this.missionCode,
     required this.isAdmin,
-    required this.showAll,
+    required this.filterMission,
     required this.placingType,
     required this.onPlaceType,
     required this.onKickUser,
@@ -3039,9 +3106,10 @@ class _TeamPanel extends StatefulWidget {
 class _TeamPanelState extends State<_TeamPanel> {
   @override
   Widget build(BuildContext context) {
-    final visibleUsers = widget.showAll
+    final visibleUsers = widget.filterMission == null
         ? widget.users
-        : widget.users.where((u) => u.missionCode == widget.missionCode).toList();
+        : widget.users.where((u) =>
+            u.missionCode == widget.filterMission || u.id == widget.myId).toList();
 
     return Container(
       color: Theme.of(context).colorScheme.surface,
@@ -3051,7 +3119,7 @@ class _TeamPanelState extends State<_TeamPanel> {
         children: [
           Row(children: [
             Text(
-              widget.showAll ? 'ALL MISSIONS' : 'TEAM — ${widget.missionCode}',
+              widget.filterMission == null ? 'ALL MISSIONS' : 'MISSION — ${widget.filterMission}',
               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
             ),
             const SizedBox(width: 4),
@@ -3131,7 +3199,7 @@ class _TeamPanelState extends State<_TeamPanel> {
   }
 
   Widget _userChip(TacUser u, bool isMe) {
-    final label = widget.showAll && u.missionCode != widget.missionCode
+    final label = widget.filterMission == null && u.missionCode != widget.missionCode
         ? '${u.callsign} (${u.missionCode})'
         : u.callsign;
     return Chip(
