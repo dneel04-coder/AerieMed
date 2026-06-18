@@ -1809,7 +1809,11 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       });
       _markerTableWarned = false;
     } catch (e) {
-      if (!mounted || _markerTableWarned) return;
+      if (!mounted) return;
+      // Network errors are transient — silently retry on the next 30-second
+      // cycle rather than showing a confusing socket error to the user.
+      if (_isNetworkError(e)) return;
+      if (_markerTableWarned) return;
       _markerTableWarned = true;
       final msg = _isMarkerTableMissing(e)
           ? 'tac_markers table not found — open Tac Map Settings and re-run the setup SQL'
@@ -1862,6 +1866,15 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         }
       });
     } catch (_) {}
+  }
+
+  static bool _isNetworkError(Object e) {
+    final s = e.toString().toLowerCase();
+    return s.contains('socketexception') ||
+        s.contains('failed host lookup') ||
+        s.contains('clientexception') ||
+        s.contains('connection refused') ||
+        s.contains('network is unreachable');
   }
 
   static bool _isMarkerTableMissing(Object e) {
