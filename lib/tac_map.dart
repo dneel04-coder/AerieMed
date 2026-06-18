@@ -1106,6 +1106,25 @@ do \$\$ begin
 exception when others then null; end \$\$;
 do \$\$ begin
   alter table tac_users add column if not exists status text default 'Active';
+exception when others then null; end \$\$;
+create table if not exists tac_sos (
+  id uuid default gen_random_uuid() primary key,
+  mission_code text not null,
+  user_id text not null,
+  callsign text not null,
+  lat double precision not null,
+  lng double precision not null,
+  triggered_at timestamptz default now(),
+  resolved_at timestamptz,
+  resolved_by text
+);
+alter table tac_sos enable row level security;
+do \$\$ begin
+  create policy "public_access" on tac_sos
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+do \$\$ begin
+  alter publication supabase_realtime add table tac_sos;
 exception when others then null; end \$\$;''';
 
   @override
@@ -2419,10 +2438,26 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                         '🚨 SOS — ${_activeSos.map((s) => s.callsign).join(', ')}',
                         style: const TextStyle(color: Colors.white,
                             fontWeight: FontWeight.bold, fontSize: 12))),
-                      if (_isAdmin)
-                        TextButton(onPressed: () => _resolveSos(_activeSos.first.id),
+                      // Originator can cancel their own SOS; admin resolves any
+                      Builder(builder: (_) {
+                        final myOwnSos = _activeSos
+                            .where((s) => s.userId == _userId)
+                            .toList();
+                        if (myOwnSos.isNotEmpty) {
+                          return TextButton(
+                            onPressed: () => _resolveSos(myOwnSos.first.id),
+                            child: const Text('Cancel SOS',
+                                style: TextStyle(color: Colors.white,
+                                    fontSize: 11, fontWeight: FontWeight.bold)));
+                        }
+                        if (_isAdmin) {
+                          return TextButton(
+                            onPressed: () => _resolveSos(_activeSos.first.id),
                             child: const Text('Resolve',
-                                style: TextStyle(color: Colors.white, fontSize: 11))),
+                                style: TextStyle(color: Colors.white, fontSize: 11)));
+                        }
+                        return const SizedBox.shrink();
+                      }),
                     ]),
                   ),
                 )),
