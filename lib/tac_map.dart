@@ -1351,7 +1351,19 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         _hasMission = _callsign.isNotEmpty && _missionCode.isNotEmpty;
       });
     }
-    if (_hasMission) _startLocationPublish();
+    if (_hasMission) {
+      _startLocationPublish();
+      // Notify all admins that a user has joined / created a mission.
+      try {
+        await _supabase.from('admin_alerts').insert({
+          'type': 'mission_join',
+          'title': 'Mission Joined: $_missionCode',
+          'callsign': _callsign,
+          'body': '$_callsign joined mission $_missionCode',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      } catch (_) {}
+    }
   }
 
   // ── TAK / ATAK integration ────────────────────────────────────────────────
@@ -1543,12 +1555,46 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       perm = await Geolocator.requestPermission();
     }
     if (perm == LocationPermission.deniedForever) return;
+
+    // Show last-known position immediately (usually instant) so the icon
+    // appears right away without waiting for a fresh GPS fix.
+    try {
+      final last = await Geolocator.getLastKnownPosition();
+      if (last != null && mounted) {
+        setState(() {
+          _myLocation = LatLng(last.latitude, last.longitude);
+          _applyOwnPosition(last.latitude, last.longitude);
+        });
+        if (_mapReady) _mapCtrl.move(_myLocation!, 14);
+      }
+    } catch (_) {}
+
+    // Refine with a fresh high-accuracy fix.
     try {
       final pos = await Geolocator.getCurrentPosition(
           locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
-      setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
+      if (!mounted) return;
+      setState(() {
+        _myLocation = LatLng(pos.latitude, pos.longitude);
+        _applyOwnPosition(pos.latitude, pos.longitude);
+      });
       if (_mapReady) _mapCtrl.move(_myLocation!, 14);
     } catch (_) {}
+  }
+
+  // Immediately populate _users with our own entry so the callsign marker
+  // appears on the map without waiting for the 10-second publish timer.
+  void _applyOwnPosition(double lat, double lng) {
+    if (!_hasMission || _userId.isEmpty || _callsign.isEmpty) return;
+    final existing = _users[_userId];
+    final now = DateTime.now();
+    if (existing == null || now.isAfter(existing.updatedAt)) {
+      _users[_userId] = TacUser(
+        id: _userId, callsign: _callsign, missionCode: _missionCode,
+        lat: lat, lng: lng, isAdmin: _isAdmin, updatedAt: now,
+        batteryLevel: _myBattery, status: _myStatus,
+      );
+    }
   }
 
   void _startLocationPublish() {
