@@ -22,6 +22,7 @@ import 'cert_vault.dart';
 import 'tac_map.dart';
 import 'protocol_admin.dart';
 import 'backcountry_guide.dart';
+import 'rems_checklist.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -310,9 +311,9 @@ class _MainShellState extends State<MainShell> {
               selectedIcon: Icon(Icons.radar),
               label: 'Map'),
           NavigationDestination(
-              icon: Icon(Icons.medical_services_outlined),
-              selectedIcon: Icon(Icons.medical_services),
-              label: 'Med'),
+              icon: Icon(Icons.home_outlined),
+              selectedIcon: Icon(Icons.home),
+              label: 'Home'),
           NavigationDestination(
               icon: Icon(Icons.workspace_premium_outlined),
               selectedIcon: Icon(Icons.workspace_premium),
@@ -369,6 +370,7 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
       _MedCardData(Icons.emergency,          'MCI Triage',   const Color(0xFFE65100), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MciTriageScreen()))),
       _MedCardData(Icons.assignment_outlined,'Patient Report',const Color(0xFF00695C), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PatientReportListScreen()))),
       _MedCardData(Icons.terrain,            'Field Guide',  const Color(0xFF4E6B3A), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BackcountryGuideScreen()))),
+      _MedCardData(Icons.checklist_rtl,      'Pre-Deploy\nChecklist', const Color(0xFF0277BD), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RemsChecklistScreen()))),
     ];
 
     return Scaffold(
@@ -1064,7 +1066,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
 
     return Scaffold(
       // ── Drawer now holds the protocol list ───────────────────────────────
-      drawer: Drawer(
+      drawer: widget.protocolsOnly ? null : Drawer(
         child: Column(
           children: [
             DrawerHeader(
@@ -1140,7 +1142,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
 
       // ── AppBar ───────────────────────────────────────────────────────────
       appBar: AppBar(
-        title: const Text('ResQruck'),
+        title: Text(widget.protocolsOnly ? 'Protocols' : 'ResQruck'),
         actions: [
           IconButton(icon: const Icon(Icons.brightness_medium), onPressed: widget.onThemeToggle),
         ],
@@ -1216,6 +1218,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
           _FeatureTile(Icons.assignment_outlined, 'Patient\nReports', Colors.red, PatientReportListScreen()),
           _FeatureTile(Icons.workspace_premium, 'Cert\nVault', Colors.deepPurple, CertVaultScreen()),
           _FeatureTile(Icons.terrain, 'Field\nGuide', Color(0xFF4E6B3A), BackcountryGuideScreen()),
+          _FeatureTile(Icons.checklist_rtl, 'Pre-Deploy\nChecklist', Color(0xFF0277BD), RemsChecklistScreen()),
         ]),
         _launcherSection('Team Coordination'),
         _launcherGrid(context, const [
