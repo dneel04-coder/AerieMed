@@ -1319,6 +1319,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   bool _fireMapAsBase = false; // true = fire map replaces tile layer
   bool _markerTableWarned = false;
   bool _sharingLocation = true;
+  final Set<String> _shownInviteIds = {};
   String? _filterMission; // null = all missions visible
   bool _hasMission = false; // true once callsign + missionCode are set
 
@@ -1415,7 +1416,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           'title': 'Mission Joined: $_missionCode',
           'callsign': _callsign,
           'body': '$_callsign joined mission $_missionCode',
-          'created_at': DateTime.now().toIso8601String(),
+          'created_at': DateTime.now().toUtc().toIso8601String(),
         });
       } catch (_) {}
     }
@@ -1720,7 +1721,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         'callsign': _callsign,
         'lat': _myLocation!.latitude, 'lng': _myLocation!.longitude,
         'is_admin': _isAdmin,
-        'updated_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
         'battery_level': _myBattery,
         'status': _myStatus,
       });
@@ -1857,7 +1858,27 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         const Duration(seconds: 30), (_) => _loadInitialData());
   }
 
+  Future<void> _checkPendingInvites() async {
+    if (_callsign.isEmpty || !mounted) return;
+    try {
+      final rows = await _supabase
+          .from('tac_invites')
+          .select()
+          .eq('to_callsign', _callsign)
+          .filter('accepted_at', 'is', null) as List;
+      for (final r in rows) {
+        final invite = _TacInvite.fromMap(r as Map<String, dynamic>);
+        // Ignore invites older than 10 minutes or already shown
+        if (DateTime.now().toUtc().difference(invite.createdAt).inMinutes > 10) continue;
+        if (_shownInviteIds.contains(invite.id)) continue;
+        _shownInviteIds.add(invite.id);
+        if (mounted) _showInviteDialog(invite);
+      }
+    } catch (_) {}
+  }
+
   Future<void> _loadInitialData() async {
+    _checkPendingInvites();
     // Load users first — silent fail is acceptable
     try {
       final users = await _supabase.from('tac_users').select();
@@ -2049,7 +2070,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   Future<void> _resolveSos(String sosId) async {
     try {
       await _supabase.from('tac_sos').update({
-        'resolved_at': DateTime.now().toIso8601String(),
+        'resolved_at': DateTime.now().toUtc().toIso8601String(),
         'resolved_by': _callsign,
       }).eq('id', sosId);
       setState(() => _activeSos.removeWhere((s) => s.id == sosId));
@@ -3105,7 +3126,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   Future<void> _acceptInvite(_TacInvite invite) async {
     try {
       await _supabase.from('tac_invites')
-          .update({'accepted_at': DateTime.now().toIso8601String()})
+          .update({'accepted_at': DateTime.now().toUtc().toIso8601String()})
           .eq('id', invite.id);
     } catch (_) {}
     final prefs = await SharedPreferences.getInstance();
