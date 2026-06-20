@@ -3973,9 +3973,9 @@ class _MissionRosterSheet extends StatelessWidget {
                           final isOnline =
                               now.difference(u.updatedAt).inMinutes < 3;
                           final isMe = u.id == currentUserId;
-                          final canInvite = hasMission &&
-                              !isMe &&
-                              u.missionCode != currentMission;
+                          final alreadyInMission =
+                              hasMission && u.missionCode == currentMission;
+                          final canInvite = hasMission && !isMe;
                           return ListTile(
                             dense: true,
                             contentPadding:
@@ -4027,16 +4027,23 @@ class _MissionRosterSheet extends StatelessWidget {
                                       ? Colors.green[700]
                                       : Colors.grey),
                             ),
-                            trailing: canInvite
-                                ? TextButton.icon(
-                                    icon: const Icon(Icons.person_add, size: 16),
-                                    label: const Text('Invite'),
-                                    onPressed: () {
-                                      Navigator.pop(context);
-                                      onInvite(u.callsign);
-                                    },
-                                  )
-                                : null,
+                            trailing: isMe
+                                ? null
+                                : alreadyInMission
+                                    ? const Text('In mission',
+                                        style: TextStyle(
+                                            fontSize: 11, color: Colors.grey))
+                                    : canInvite
+                                        ? TextButton.icon(
+                                            icon: const Icon(
+                                                Icons.person_add, size: 16),
+                                            label: const Text('Invite'),
+                                            onPressed: () {
+                                              Navigator.pop(context);
+                                              onInvite(u.callsign);
+                                            },
+                                          )
+                                        : null,
                           );
                         }),
                         const Divider(height: 1),
