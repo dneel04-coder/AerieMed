@@ -1128,7 +1128,8 @@ do \$\$ begin
 exception when duplicate_object then null; end \$\$;
 do \$\$ begin
   alter publication supabase_realtime add table tac_sos;
-exception when others then null; end \$\$;''';
+exception when others then null; end \$\$;
+alter table tac_sos replica identity full;''';
 
   @override
   Widget build(BuildContext context) {
@@ -1356,6 +1357,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       });
     }
     if (_hasMission) {
+      // Immediately show own marker before the Realtime round-trip completes
+      final loc = _myLocation;
+      if (loc != null) _applyOwnPosition(loc.latitude, loc.longitude);
       _startLocationPublish();
       // Notify all admins that a user has joined / created a mission.
       try {
@@ -1619,6 +1623,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   void _startSharing() {
     if (_sharingLocation) return;
     setState(() => _sharingLocation = true);
+    // Immediately re-add own marker without waiting for the publish/Realtime cycle
+    final loc = _myLocation;
+    if (loc != null) _applyOwnPosition(loc.latitude, loc.longitude);
     _startLocationPublish();
   }
 
@@ -1759,20 +1766,32 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 value: _missionCode),
             callback: (payload) {
               if (!mounted) return;
-              final updated = TacSosEvent.fromMap(payload.newRecord.isNotEmpty
-                  ? payload.newRecord
-                  : payload.oldRecord);
-              setState(() {
-                _activeSos.removeWhere((s) => s.id == updated.id);
-                if (!updated.resolved) _activeSos.add(updated);
-              });
-              if (!updated.resolved && updated.userId != _userId) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text('🚨 SOS from ${updated.callsign}!'),
-                  backgroundColor: Colors.red,
-                  duration: const Duration(seconds: 10),
-                ));
-              }
+              try {
+                // DELETE: only oldRecord['id'] is reliable without REPLICA IDENTITY FULL
+                if (payload.eventType == PostgresChangeEvent.delete) {
+                  final id = payload.oldRecord['id'] as String?;
+                  if (id != null) setState(() => _activeSos.removeWhere((s) => s.id == id));
+                  return;
+                }
+                // INSERT / UPDATE: newRecord always has the full row
+                final map = payload.newRecord;
+                if (map.isEmpty) return;
+                final sos = TacSosEvent.fromMap(map);
+                setState(() {
+                  _activeSos.removeWhere((s) => s.id == sos.id);
+                  if (!sos.resolved) _activeSos.add(sos);
+                });
+                // Only notify peers on a brand-new SOS, not on resolution
+                if (payload.eventType == PostgresChangeEvent.insert &&
+                    !sos.resolved &&
+                    sos.userId != _userId) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text('🚨 SOS from ${sos.callsign}!'),
+                    backgroundColor: Colors.red,
+                    duration: const Duration(seconds: 10),
+                  ));
+                }
+              } catch (_) {}
             })
         .subscribe();
     _refreshTimer = Timer.periodic(
@@ -1975,6 +1994,25 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         'resolved_by': _callsign,
       }).eq('id', sosId);
       setState(() => _activeSos.removeWhere((s) => s.id == sosId));
+      // Authoritative re-query after a brief pause to confirm the DB committed
+      Future.delayed(const Duration(seconds: 3), _refreshSos);
+    } catch (_) {}
+  }
+
+  Future<void> _refreshSos() async {
+    if (!_hasMission || _missionCode.isEmpty || !mounted) return;
+    try {
+      final rows = await _supabase
+          .from('tac_sos')
+          .select()
+          .eq('mission_code', _missionCode)
+          .filter('resolved_at', 'is', null) as List;
+      if (!mounted) return;
+      setState(() {
+        _activeSos
+          ..clear()
+          ..addAll(rows.map((r) => TacSosEvent.fromMap(r as Map<String, dynamic>)));
+      });
     } catch (_) {}
   }
 
