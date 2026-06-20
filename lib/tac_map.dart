@@ -1325,8 +1325,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
     _readBattery();
     await _requestLocation();
-    // Only broadcast location when in an active mission
-    if (_hasMission) _startLocationPublish();
+    // Broadcast location whenever a callsign is configured (mission_code may be empty)
+    if (_callsign.isNotEmpty) _startLocationPublish();
     _subscribeRealtime();
     _loadInitialData();
     _subscribeTakPositions();
@@ -1356,11 +1356,13 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         _hasMission = _callsign.isNotEmpty && _missionCode.isNotEmpty;
       });
     }
-    if (_hasMission) {
+    if (_callsign.isNotEmpty) {
       // Immediately show own marker before the Realtime round-trip completes
       final loc = _myLocation;
       if (loc != null) _applyOwnPosition(loc.latitude, loc.longitude);
       _startLocationPublish();
+    }
+    if (_hasMission) {
       // Notify all admins that a user has joined / created a mission.
       try {
         await _supabase.from('admin_alerts').insert({
@@ -1593,7 +1595,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   // Immediately populate _users with our own entry so the callsign marker
   // appears on the map without waiting for the 10-second publish timer.
   void _applyOwnPosition(double lat, double lng) {
-    if (!_hasMission || _userId.isEmpty || _callsign.isEmpty) return;
+    if (_userId.isEmpty || _callsign.isEmpty) return;
     final existing = _users[_userId];
     final now = DateTime.now();
     if (existing == null || now.isAfter(existing.updatedAt)) {
@@ -3156,37 +3158,40 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         bodyBytes = resp.bodyBytes;
       }
 
-      final archive = ZipDecoder().decodeBytes(bodyBytes);
-
+      // KML files are plain XML — skip the zip decoder
       String? kmlContent;
       Uint8List? imgBytes;
 
-      for (final file in archive.files) {
-        if (!file.isFile) continue;
-        final n = file.name.toLowerCase();
-        if (n.endsWith('.kml') && kmlContent == null) {
-          kmlContent = String.fromCharCodes(file.content as List<int>);
-        } else if ((n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg')) &&
-            imgBytes == null) {
-          imgBytes = Uint8List.fromList(file.content as List<int>);
+      if (url.toLowerCase().endsWith('.kml')) {
+        kmlContent = String.fromCharCodes(bodyBytes);
+      } else {
+        final archive = ZipDecoder().decodeBytes(bodyBytes);
+        for (final file in archive.files) {
+          if (!file.isFile) continue;
+          final n = file.name.toLowerCase();
+          if (n.endsWith('.kml') && kmlContent == null) {
+            kmlContent = String.fromCharCodes(file.content as List<int>);
+          } else if ((n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg')) &&
+              imgBytes == null) {
+            imgBytes = Uint8List.fromList(file.content as List<int>);
+          }
         }
-      }
-
-      if (kmlContent == null) throw Exception('No KML found in KMZ');
-
-      // Look up the overlay image via href if we didn't find one by extension
-      if (imgBytes == null) {
-        final hrefMatch = RegExp(r'<href>(.*?)</href>').firstMatch(kmlContent);
-        if (hrefMatch != null) {
-          final hrefName = hrefMatch.group(1)?.trim();
-          for (final file in archive.files) {
-            if (file.isFile && file.name == hrefName) {
-              imgBytes = Uint8List.fromList(file.content as List<int>);
-              break;
+        // Look up the overlay image via href if we didn't find one by extension
+        if (imgBytes == null && kmlContent != null) {
+          final hrefMatch = RegExp(r'<href>(.*?)</href>').firstMatch(kmlContent);
+          if (hrefMatch != null) {
+            final hrefName = hrefMatch.group(1)?.trim();
+            for (final file in archive.files) {
+              if (file.isFile && file.name == hrefName) {
+                imgBytes = Uint8List.fromList(file.content as List<int>);
+                break;
+              }
             }
           }
         }
       }
+
+      if (kmlContent == null) throw Exception('No KML found in KMZ');
 
       final northM = RegExp(r'<north>\s*([\d.\-]+)\s*</north>').firstMatch(kmlContent);
       final southM = RegExp(r'<south>\s*([\d.\-]+)\s*</south>').firstMatch(kmlContent);
@@ -3418,8 +3423,16 @@ class _IncidentEntry {
   final String name;
   final String url;
   final bool isDirectory;
-  const _IncidentEntry(
-      {required this.name, required this.url, required this.isDirectory});
+  final bool isPdf;
+  final bool isKml;
+  const _IncidentEntry({
+    required this.name,
+    required this.url,
+    required this.isDirectory,
+    this.isPdf = false,
+    this.isKml = false,
+  });
+  bool get isLoadable => !isDirectory && !isPdf; // KMZ or KML can be overlaid
 }
 
 class _IncidentBrowser extends StatefulWidget {
@@ -3525,14 +3538,21 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
     final pattern = RegExp(r'href="([^"?#][^"]*?)"', caseSensitive: false);
     for (final m in pattern.allMatches(html)) {
       final href = m.group(1)!;
-      if (href.startsWith('..') || href.startsWith('/')) continue;
+      // Skip parent dirs, absolute paths, absolute URLs, and empty
+      if (href.isEmpty) continue;
+      if (href.startsWith('..') || href.startsWith('/') || href.startsWith('http')) continue;
       final isDir = href.endsWith('/');
-      final isKmz = href.toLowerCase().endsWith('.kmz');
-      if (!isDir && !isKmz) continue;
+      final lower = href.toLowerCase();
+      final isKmz = lower.endsWith('.kmz');
+      final isKml = lower.endsWith('.kml');
+      final isPdf = lower.endsWith('.pdf');
+      if (!isDir && !isKmz && !isKml && !isPdf) continue;
       entries.add(_IncidentEntry(
         name: Uri.decodeComponent(href.replaceAll('/', '')),
         url: '$base$href',
         isDirectory: isDir,
+        isKml: isKml,
+        isPdf: isPdf,
       ));
     }
     return entries;
@@ -3613,64 +3633,70 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
                             final e = _entries![i];
                             final isDownloaded = _dlPaths.containsKey(e.url);
                             final isDownloading = _downloading.contains(e.url);
+
+                            // Leading icon
+                            final leadIcon = e.isDirectory
+                                ? const Icon(Icons.folder, color: Colors.amber)
+                                : e.isPdf
+                                    ? Icon(Icons.picture_as_pdf,
+                                        color: isDownloaded ? Colors.red : Colors.red.shade300)
+                                    : Icon(Icons.map,
+                                        color: isDownloaded ? Colors.green : Colors.grey);
+
+                            // Download widget (shared for all non-directory entries)
+                            Widget dlWidget;
+                            if (isDownloaded) {
+                              dlWidget = const Tooltip(
+                                  message: 'Downloaded',
+                                  child: Icon(Icons.check_circle, color: Colors.green, size: 20));
+                            } else if (isDownloading) {
+                              dlWidget = const SizedBox(
+                                  width: 18, height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2));
+                            } else {
+                              dlWidget = IconButton(
+                                icon: const Icon(Icons.download, size: 20),
+                                tooltip: 'Download for offline use',
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () => _downloadKmz(e),
+                              );
+                            }
+
                             return ListTile(
                               dense: true,
-                              leading: Icon(
-                                e.isDirectory ? Icons.folder : Icons.map,
-                                color: e.isDirectory
-                                    ? Colors.amber
-                                    : (isDownloaded ? Colors.green : Colors.grey),
-                              ),
+                              leading: leadIcon,
                               title: Text(e.name,
                                   style: const TextStyle(fontSize: 13)),
+                              subtitle: e.isPdf
+                                  ? const Text('PDF — download to view',
+                                      style: TextStyle(fontSize: 10, color: Colors.grey))
+                                  : null,
                               trailing: e.isDirectory
                                   ? const Icon(Icons.chevron_right)
                                   : Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        // Download indicator / button
-                                        if (isDownloaded)
-                                          const Tooltip(
-                                            message: 'Downloaded',
-                                            child: Icon(Icons.check_circle,
-                                                color: Colors.green, size: 20),
-                                          )
-                                        else if (isDownloading)
-                                          const SizedBox(
-                                              width: 18,
-                                              height: 18,
-                                              child: CircularProgressIndicator(
-                                                  strokeWidth: 2))
-                                        else
-                                          IconButton(
-                                            icon: const Icon(Icons.download,
-                                                size: 20),
-                                            tooltip: 'Download for offline use',
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(),
-                                            onPressed: () => _downloadKmz(e),
+                                        dlWidget,
+                                        if (e.isLoadable) ...[
+                                          const SizedBox(width: 6),
+                                          FilledButton.tonal(
+                                            onPressed: () {
+                                              final local = _dlPaths[e.url];
+                                              widget.onLoad(local ?? e.url, e.name);
+                                            },
+                                            style: FilledButton.styleFrom(
+                                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                                              minimumSize: const Size(44, 28),
+                                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                            ),
+                                            child: const Text('Load',
+                                                style: TextStyle(fontSize: 12)),
                                           ),
-                                        const SizedBox(width: 6),
-                                        FilledButton.tonal(
-                                          onPressed: () {
-                                            // Use local file if available
-                                            final local = _dlPaths[e.url];
-                                            widget.onLoad(local ?? e.url, e.name);
-                                          },
-                                          style: FilledButton.styleFrom(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 10),
-                                            minimumSize: const Size(44, 28),
-                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                          ),
-                                          child: const Text('Load',
-                                              style: TextStyle(fontSize: 12)),
-                                        ),
+                                        ],
                                       ],
                                     ),
-                              onTap: e.isDirectory
-                                  ? () => _navigate(e.url)
-                                  : null,
+                              onTap: e.isDirectory ? () => _navigate(e.url) : null,
                             );
                           },
                         ),
