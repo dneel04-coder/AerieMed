@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:path_provider/path_provider.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:archive/archive.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -19,12 +21,13 @@ import 'lz_assessment.dart';
 import 'offline_maps.dart';
 import 'sun_weather.dart';
 
-// ftp.wildfire.gov uses a government CA not in Dart's default trust store.
-// Returns an http.Client that skips cert verification for that host only.
+// wildfire.gov uses a government CA absent from Dart's trust store.
+// SecurityContext(withTrustedRoots:false) + badCertificateCallback bypass
+// both cert-chain failures and the HandshakeException that occurs when the
+// server drops a TLS connection before the certificate is even presented.
 http.Client _wildfireClient() => IOClient(
-      HttpClient()
-        ..badCertificateCallback =
-            (cert, host, port) => host.endsWith('wildfire.gov'),
+      HttpClient(context: SecurityContext(withTrustedRoots: false))
+        ..badCertificateCallback = (_, __, ___) => true,
     );
 
 
@@ -1276,6 +1279,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   TacMarkerType? _placingType;
   _BaseLayer _baseLayer = _BaseLayer.osm;
   _IncidentOverlay? _incidentOverlay;
+  bool _fireMapAsBase = false; // true = fire map replaces tile layer
   bool _markerTableWarned = false;
   bool _sharingLocation = true;
   String? _filterMission; // null = all missions visible
@@ -2446,19 +2450,23 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               },
             ),
             children: [
-              TileLayer(
-                urlTemplate: _baseLayer.urlTemplate,
-                subdomains: _baseLayer == _BaseLayer.osm
-                    ? _kBaseTileSubdomains : const <String>[],
-                userAgentPackageName: 'com.resqruck.app',
-                tileProvider: _CachedTileProvider(),
+              Opacity(
+                // Dim base tiles when fire map is acting as the basemap
+                opacity: (_fireMapAsBase && _incidentOverlay?.imageBytes != null) ? 0.25 : 1.0,
+                child: TileLayer(
+                  urlTemplate: _baseLayer.urlTemplate,
+                  subdomains: _baseLayer == _BaseLayer.osm
+                      ? _kBaseTileSubdomains : const <String>[],
+                  userAgentPackageName: 'com.resqruck.app',
+                  tileProvider: _CachedTileProvider(),
+                ),
               ),
               if (_incidentOverlay?.imageBytes != null)
                 OverlayImageLayer(overlayImages: [
                   OverlayImage(
                     bounds: _incidentOverlay!.bounds,
                     imageProvider: MemoryImage(_incidentOverlay!.imageBytes!),
-                    opacity: 0.7,
+                    opacity: _fireMapAsBase ? 1.0 : 0.7,
                   ),
                 ]),
               if (_incidentOverlay != null &&
@@ -2562,6 +2570,30 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   Text('${_takPositions.length} ATAK',
                       style: const TextStyle(color: cyan, fontSize: 9,
                           fontWeight: FontWeight.bold)),
+                if (_incidentOverlay != null && _fireMapAsBase) ...[
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () => setState(() => _fireMapAsBase = false),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                      decoration: BoxDecoration(
+                          color: Colors.deepOrange.withValues(alpha: 0.35),
+                          borderRadius: BorderRadius.circular(3),
+                          border: Border.all(color: Colors.deepOrange.withValues(alpha: 0.6))),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.local_fire_department, color: Colors.deepOrange, size: 10),
+                        const SizedBox(width: 3),
+                        Text(
+                          _incidentOverlay!.name.length > 12
+                              ? '${_incidentOverlay!.name.substring(0, 12)}…'
+                              : _incidentOverlay!.name,
+                          style: const TextStyle(color: Colors.deepOrange, fontSize: 9,
+                              fontWeight: FontWeight.bold),
+                        ),
+                      ]),
+                    ),
+                  ),
+                ],
                 const Spacer(),
                 if (_isAdmin)
                   Container(
@@ -2866,6 +2898,11 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         if (_isAdmin)
           const PopupMenuItem(value: 'add_zone',  child: Text('Add Zone')),
         const PopupMenuItem(value: 'settings',    child: Text('Supabase Settings')),
+        if (_incidentOverlay?.imageBytes != null)
+          PopupMenuItem(
+            value: 'toggle_basemap',
+            child: Text(_fireMapAsBase ? 'Show Fire Map as Overlay' : 'Use Fire Map as Basemap'),
+          ),
         if (_incidentOverlay != null)
           const PopupMenuItem(value: 'clear_overlay', child: Text('Clear Fire Overlay')),
         const PopupMenuItem(value: 'clear_patient',    child: Text('Clear Patient Marker')),
@@ -2880,7 +2917,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         if (v == 'status')            _pickStatus();
         if (v == 'clear_routes')      _clearRoutes();
         if (v == 'add_zone')          _startZonePlacement();
-        if (v == 'clear_overlay')     setState(() => _incidentOverlay = null);
+        if (v == 'toggle_basemap')    setState(() => _fireMapAsBase = !_fireMapAsBase);
+        if (v == 'clear_overlay')     setState(() { _incidentOverlay = null; _fireMapAsBase = false; });
         if (v == 'clear_patient')     _clearMarkersByType(TacMarkerType.patient);
         if (v == 'clear_exfil_start') _clearMarkersByType(TacMarkerType.extractionStart);
         if (v == 'clear_exfil_end')   _clearMarkersByType(TacMarkerType.extractionEnd);
@@ -3061,16 +3099,26 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
   Future<void> _loadKmz(String url, String name) async {
     final snack = ScaffoldMessenger.of(context);
-    snack.showSnackBar(SnackBar(
-        content: Text('Downloading $name…'),
-        duration: const Duration(seconds: 30)));
+    final isLocal = url.startsWith('/') || url.startsWith('file://');
+    if (!isLocal) {
+      snack.showSnackBar(SnackBar(
+          content: Text('Downloading $name…'),
+          duration: const Duration(seconds: 30)));
+    }
     try {
-      final client = _wildfireClient();
-      final resp = await client.get(Uri.parse(url));
-      client.close();
-      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
+      final Uint8List bodyBytes;
+      if (isLocal) {
+        final path = url.startsWith('file://') ? Uri.parse(url).toFilePath() : url;
+        bodyBytes = await File(path).readAsBytes();
+      } else {
+        final client = _wildfireClient();
+        final resp = await client.get(Uri.parse(url));
+        client.close();
+        if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
+        bodyBytes = resp.bodyBytes;
+      }
 
-      final archive = ZipDecoder().decodeBytes(resp.bodyBytes);
+      final archive = ZipDecoder().decodeBytes(bodyBytes);
 
       String? kmlContent;
       Uint8List? imgBytes;
@@ -3350,16 +3398,73 @@ class _IncidentBrowser extends StatefulWidget {
 class _IncidentBrowserState extends State<_IncidentBrowser> {
   static const _rootUrl =
       'https://ftp.wildfire.gov/public/incident_specific_maps/';
+  static const _prefsKey = 'fire_dl_paths';
 
   List<_IncidentEntry>? _entries;
   String? _error;
   String _currentUrl = _rootUrl;
   final List<String> _breadcrumbs = [_rootUrl];
 
+  /// url -> local file path for downloaded KMZes
+  Map<String, String> _dlPaths = {};
+  final Set<String> _downloading = {};
+
   @override
   void initState() {
     super.initState();
+    _loadDownloads();
     _fetchDirectory(_rootUrl);
+  }
+
+  Future<void> _loadDownloads() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_prefsKey);
+    if (raw != null) {
+      final map = Map<String, String>.from(jsonDecode(raw) as Map);
+      // Prune entries whose files were deleted
+      final valid = <String, String>{};
+      for (final e in map.entries) {
+        if (await File(e.value).exists()) valid[e.key] = e.value;
+      }
+      if (mounted) setState(() => _dlPaths = valid);
+    }
+  }
+
+  Future<void> _downloadKmz(_IncidentEntry e) async {
+    if (_downloading.contains(e.url)) return;
+    setState(() => _downloading.add(e.url));
+    try {
+      final client = _wildfireClient();
+      final resp = await client.get(Uri.parse(e.url));
+      client.close();
+      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
+
+      final dir = await getApplicationDocumentsDirectory();
+      final mapsDir = Directory('${dir.path}/fire_maps');
+      await mapsDir.create(recursive: true);
+
+      final safe = e.name.replaceAll(RegExp(r'[^a-zA-Z0-9._\-]'), '_');
+      final file = File('${mapsDir.path}/$safe.kmz');
+      await file.writeAsBytes(resp.bodyBytes);
+
+      final prefs = await SharedPreferences.getInstance();
+      final existing = prefs.getString(_prefsKey);
+      final map = existing != null
+          ? Map<String, String>.from(jsonDecode(existing) as Map)
+          : <String, String>{};
+      map[e.url] = file.path;
+      await prefs.setString(_prefsKey, jsonEncode(map));
+
+      if (mounted) setState(() => _dlPaths[e.url] = file.path);
+    } catch (ex) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Download failed: $ex'),
+            backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _downloading.remove(e.url));
+    }
   }
 
   Future<void> _fetchDirectory(String url) async {
@@ -3468,22 +3573,62 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
                           itemCount: _entries!.length,
                           itemBuilder: (_, i) {
                             final e = _entries![i];
+                            final isDownloaded = _dlPaths.containsKey(e.url);
+                            final isDownloading = _downloading.contains(e.url);
                             return ListTile(
                               dense: true,
                               leading: Icon(
                                 e.isDirectory ? Icons.folder : Icons.map,
                                 color: e.isDirectory
                                     ? Colors.amber
-                                    : Colors.green,
+                                    : (isDownloaded ? Colors.green : Colors.grey),
                               ),
                               title: Text(e.name,
                                   style: const TextStyle(fontSize: 13)),
                               trailing: e.isDirectory
                                   ? const Icon(Icons.chevron_right)
-                                  : FilledButton.tonal(
-                                      onPressed: () =>
-                                          widget.onLoad(e.url, e.name),
-                                      child: const Text('Load'),
+                                  : Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        // Download indicator / button
+                                        if (isDownloaded)
+                                          const Tooltip(
+                                            message: 'Downloaded',
+                                            child: Icon(Icons.check_circle,
+                                                color: Colors.green, size: 20),
+                                          )
+                                        else if (isDownloading)
+                                          const SizedBox(
+                                              width: 18,
+                                              height: 18,
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2))
+                                        else
+                                          IconButton(
+                                            icon: const Icon(Icons.download,
+                                                size: 20),
+                                            tooltip: 'Download for offline use',
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(),
+                                            onPressed: () => _downloadKmz(e),
+                                          ),
+                                        const SizedBox(width: 6),
+                                        FilledButton.tonal(
+                                          onPressed: () {
+                                            // Use local file if available
+                                            final local = _dlPaths[e.url];
+                                            widget.onLoad(local ?? e.url, e.name);
+                                          },
+                                          style: FilledButton.styleFrom(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 10),
+                                            minimumSize: const Size(44, 28),
+                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                          ),
+                                          child: const Text('Load',
+                                              style: TextStyle(fontSize: 12)),
+                                        ),
+                                      ],
                                     ),
                               onTap: e.isDirectory
                                   ? () => _navigate(e.url)
