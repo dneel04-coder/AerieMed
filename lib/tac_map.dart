@@ -3334,28 +3334,45 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       // KML files are plain XML — skip the zip decoder
       String? kmlContent;
       Uint8List? imgBytes;
+      List<String> _archiveFiles = []; // for debug messaging
 
-      if (url.toLowerCase().endsWith('.kml')) {
+      final lowerUrl = url.toLowerCase();
+      // Strip double-extension saved by downloader (e.g. file.kmz.kmz → treat as kmz)
+      final effectiveExt = lowerUrl.endsWith('.kml') && !lowerUrl.endsWith('.kmz.kml')
+          ? '.kml'
+          : '.kmz';
+
+      if (effectiveExt == '.kml') {
         kmlContent = String.fromCharCodes(bodyBytes);
       } else {
         final archive = ZipDecoder().decodeBytes(bodyBytes);
+        _archiveFiles = archive.files.where((f) => f.isFile).map((f) => f.name).toList();
         for (final file in archive.files) {
           if (!file.isFile) continue;
           final n = file.name.toLowerCase();
           if (n.endsWith('.kml') && kmlContent == null) {
             kmlContent = String.fromCharCodes(file.content as List<int>);
-          } else if ((n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg')) &&
+          } else if ((n.endsWith('.png') || n.endsWith('.jpg') ||
+              n.endsWith('.jpeg') || n.endsWith('.gif') || n.endsWith('.webp')) &&
               imgBytes == null) {
             imgBytes = Uint8List.fromList(file.content as List<int>);
           }
         }
-        // Look up the overlay image via href if we didn't find one by extension
+        // Fallback: look for the image named by <GroundOverlay><Icon><href>
         if (imgBytes == null && kmlContent != null) {
-          final hrefMatch = RegExp(r'<href>(.*?)</href>').firstMatch(kmlContent);
-          if (hrefMatch != null) {
-            final hrefName = hrefMatch.group(1)?.trim();
+          final groundMatch = RegExp(
+              r'<GroundOverlay[\s\S]*?<href>\s*(.*?)\s*</href>',
+              caseSensitive: false).firstMatch(kmlContent);
+          final hrefName = groundMatch?.group(1)?.trim();
+          if (hrefName != null && hrefName.isNotEmpty) {
             for (final file in archive.files) {
-              if (file.isFile && file.name == hrefName) {
+              if (!file.isFile) continue;
+              // Match full path, filename-only, or case-insensitive
+              final fn = file.name;
+              if (fn == hrefName ||
+                  fn.toLowerCase() == hrefName.toLowerCase() ||
+                  fn.split('/').last.toLowerCase() ==
+                      hrefName.split('/').last.toLowerCase()) {
                 imgBytes = Uint8List.fromList(file.content as List<int>);
                 break;
               }
@@ -3364,7 +3381,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         }
       }
 
-      if (kmlContent == null) throw Exception('No KML found in KMZ');
+      if (kmlContent == null) {
+        throw Exception('No KML found in archive. Files: ${_archiveFiles.join(', ')}');
+      }
 
       final northM = RegExp(r'<north>\s*([\d.\-]+)\s*</north>').firstMatch(kmlContent);
       final southM = RegExp(r'<south>\s*([\d.\-]+)\s*</south>').firstMatch(kmlContent);
@@ -3381,7 +3400,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
       if (north != null && south != null && east != null && west != null) {
         // Image overlay with explicit bounds
-        if (imgBytes == null) throw Exception('No overlay image found in KMZ');
+        if (imgBytes == null) throw Exception(
+          'No overlay image found. Archive contents: ${_archiveFiles.join(', ')}');
         bounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
       } else {
         // No LatLonBox — try to extract polygon perimeter from coordinates
@@ -3667,8 +3687,9 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
       final mapsDir = Directory('${dir.path}/fire_maps');
       await mapsDir.create(recursive: true);
 
+      // e.name already includes extension (e.g. "Fire_Map.kmz") — don't append another
       final safe = e.name.replaceAll(RegExp(r'[^a-zA-Z0-9._\-]'), '_');
-      final file = File('${mapsDir.path}/$safe.kmz');
+      final file = File('${mapsDir.path}/$safe');
       await file.writeAsBytes(resp.bodyBytes);
 
       final prefs = await SharedPreferences.getInstance();
