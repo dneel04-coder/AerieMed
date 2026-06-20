@@ -3752,6 +3752,15 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
     return entries;
   }
 
+  Future<void> _clearDownloads() async {
+    for (final path in _dlPaths.values) {
+      try { await File(path).delete(); } catch (_) {}
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_prefsKey);
+    if (mounted) setState(() => _dlPaths.clear());
+  }
+
   void _navigate(String url) {
     _breadcrumbs.add(url);
     _fetchDirectory(url);
@@ -3788,6 +3797,12 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
                     style:
                         TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ),
+              if (_dlPaths.isNotEmpty)
+                IconButton(
+                  icon: const Icon(Icons.delete_sweep),
+                  tooltip: 'Clear all downloads',
+                  onPressed: _clearDownloads,
+                ),
               IconButton(
                 icon: const Icon(Icons.refresh),
                 onPressed: () => _fetchDirectory(_currentUrl),
