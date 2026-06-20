@@ -1157,6 +1157,11 @@ create table if not exists tac_invites (
   created_at timestamptz default now(),
   accepted_at timestamptz
 );
+alter table tac_invites enable row level security;
+do \$\$ begin
+  create policy "public_access" on tac_invites
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
 do \$\$ begin
   alter publication supabase_realtime add table tac_invites;
 exception when others then null; end \$\$;
@@ -3046,11 +3051,12 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           duration: const Duration(seconds: 2),
         ));
       }
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Failed to send invite'),
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed to send invite: $e'),
           backgroundColor: Colors.red,
+          duration: const Duration(seconds: 6),
         ));
       }
     }
