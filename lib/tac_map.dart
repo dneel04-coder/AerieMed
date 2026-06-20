@@ -223,6 +223,25 @@ class TacUser {
   }
 }
 
+class _TacInvite {
+  final String id;
+  final String fromCallsign;
+  final String toCallsign;
+  final String missionCode;
+  final DateTime createdAt;
+  const _TacInvite({
+    required this.id, required this.fromCallsign, required this.toCallsign,
+    required this.missionCode, required this.createdAt,
+  });
+  factory _TacInvite.fromMap(Map<String, dynamic> m) => _TacInvite(
+    id: m['id'] as String,
+    fromCallsign: m['from_callsign'] as String,
+    toCallsign: m['to_callsign'] as String,
+    missionCode: m['mission_code'] as String,
+    createdAt: DateTime.tryParse(m['created_at'] as String? ?? '') ?? DateTime.now(),
+  );
+}
+
 class TacMarker {
   final String id;
   final TacMarkerType type;
@@ -1129,7 +1148,19 @@ exception when duplicate_object then null; end \$\$;
 do \$\$ begin
   alter publication supabase_realtime add table tac_sos;
 exception when others then null; end \$\$;
-alter table tac_sos replica identity full;''';
+alter table tac_sos replica identity full;
+create table if not exists tac_invites (
+  id uuid default gen_random_uuid() primary key,
+  from_callsign text not null,
+  to_callsign text not null,
+  mission_code text not null,
+  created_at timestamptz default now(),
+  accepted_at timestamptz
+);
+do \$\$ begin
+  alter publication supabase_realtime add table tac_invites;
+exception when others then null; end \$\$;
+alter table tac_invites replica identity full;''';
 
   @override
   Widget build(BuildContext context) {
@@ -1794,6 +1825,18 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   ));
                 }
               } catch (_) {}
+            })
+        .onPostgresChanges(
+            event: PostgresChangeEvent.insert,
+            schema: 'public',
+            table: 'tac_invites',
+            filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: 'to_callsign',
+                value: _callsign),
+            callback: (payload) {
+              if (!mounted || payload.newRecord.isEmpty) return;
+              _showInviteDialog(_TacInvite.fromMap(payload.newRecord));
             })
         .subscribe();
     _refreshTimer = Timer.periodic(
@@ -2932,6 +2975,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         if (_hasMission)
           const PopupMenuItem(value: 'leave',    child: Text('Leave Mission')),
         const PopupMenuItem(value: 'join',        child: Text('Join / Change Mission')),
+        const PopupMenuItem(value: 'roster',      child: Text('Mission Roster')),
         const PopupMenuItem(value: 'recenter',    child: Text('Re-centre')),
         const PopupMenuItem(value: 'status',      child: Text('My Check-in Status')),
         const PopupMenuItem(value: 'clear_routes',child: Text('Clear Routes')),
@@ -2950,6 +2994,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         const PopupMenuItem(value: 'clear_exfil_end',  child: Text('Clear Exfil End')),
       ],
       onSelected: (v) async {
+        if (v == 'roster')            _showMissionRoster();
         if (v == 'leave')             _leaveMission();
         if (v == 'join')              _joinMission();
         if (v == 'recenter' && _myLocation != null)
@@ -2969,6 +3014,93 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       },
     );
   }
+
+  // ── Mission Roster ────────────────────────────────────────────────────────
+
+  void _showMissionRoster() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => _MissionRosterSheet(
+        users: _users,
+        currentUserId: _userId,
+        currentMission: _missionCode,
+        hasMission: _hasMission,
+        onInvite: (callsign) => _sendInvite(callsign),
+      ),
+    );
+  }
+
+  Future<void> _sendInvite(String toCallsign) async {
+    if (_missionCode.isEmpty || _callsign.isEmpty) return;
+    try {
+      await _supabase.from('tac_invites').insert({
+        'from_callsign': _callsign,
+        'to_callsign': toCallsign,
+        'mission_code': _missionCode,
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Invite sent to $toCallsign'),
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Failed to send invite'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    }
+  }
+
+  void _showInviteDialog(_TacInvite invite) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Text('Mission Invite'),
+        content: Text(
+            '${invite.fromCallsign} invited you to join mission ${invite.missionCode}.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Decline'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _acceptInvite(invite);
+            },
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _acceptInvite(_TacInvite invite) async {
+    try {
+      await _supabase.from('tac_invites')
+          .update({'accepted_at': DateTime.now().toIso8601String()})
+          .eq('id', invite.id);
+    } catch (_) {}
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kMissionCode, invite.missionCode);
+    await prefs.setBool(_kIsAdmin, false);
+    await _reloadMissionState();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Joined mission ${invite.missionCode}'),
+        backgroundColor: Colors.green,
+      ));
+    }
+  }
+
+  // ── Field Tools ───────────────────────────────────────────────────────────
 
   void _showFieldTools() {
     showModalBottomSheet(
@@ -3703,5 +3835,224 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
         ),
       ],
     );
+  }
+}
+
+// ── Mission Roster Sheet ──────────────────────────────────────────────────────
+
+class _MissionRosterSheet extends StatelessWidget {
+  final Map<String, TacUser> users;
+  final String currentUserId;
+  final String currentMission;
+  final bool hasMission;
+  final void Function(String callsign) onInvite;
+
+  const _MissionRosterSheet({
+    required this.users,
+    required this.currentUserId,
+    required this.currentMission,
+    required this.hasMission,
+    required this.onInvite,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+
+    // Group users by mission_code
+    final Map<String, List<TacUser>> byMission = {};
+    for (final u in users.values) {
+      byMission.putIfAbsent(u.missionCode, () => []).add(u);
+    }
+
+    // Sort: current mission first, then named missions, then no-mission last
+    final missions = byMission.keys.toList()
+      ..sort((a, b) {
+        if (a == currentMission) return -1;
+        if (b == currentMission) return 1;
+        if (a.isEmpty) return 1;
+        if (b.isEmpty) return -1;
+        return a.compareTo(b);
+      });
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.55,
+      maxChildSize: 0.9,
+      builder: (_, ctrl) => Column(children: [
+        // Handle
+        Container(
+          margin: const EdgeInsets.symmetric(vertical: 8),
+          width: 40, height: 4,
+          decoration: BoxDecoration(
+              color: Colors.grey[400],
+              borderRadius: BorderRadius.circular(2)),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+          child: Row(children: [
+            const Icon(Icons.groups, size: 20),
+            const SizedBox(width: 8),
+            const Text('Mission Roster',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            const Spacer(),
+            Text('${users.length} online',
+                style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+            IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.pop(context)),
+          ]),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: missions.isEmpty
+              ? const Center(child: Text('No users online'))
+              : ListView.builder(
+                  controller: ctrl,
+                  itemCount: missions.length,
+                  itemBuilder: (_, i) {
+                    final code = missions[i];
+                    final members = List<TacUser>.from(byMission[code]!)
+                      ..sort((a, b) {
+                        final aOn = now.difference(a.updatedAt).inMinutes < 3;
+                        final bOn = now.difference(b.updatedAt).inMinutes < 3;
+                        if (aOn != bOn) return aOn ? -1 : 1;
+                        return a.callsign.compareTo(b.callsign);
+                      });
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Mission header
+                        Container(
+                          color: (code == currentMission)
+                              ? Colors.blue.withValues(alpha: 0.08)
+                              : null,
+                          padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                          child: Row(children: [
+                            Icon(
+                              code.isEmpty ? Icons.person_outline : Icons.flag,
+                              size: 15,
+                              color: code == currentMission
+                                  ? Colors.blue
+                                  : Colors.grey,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              code.isEmpty ? 'No Mission' : code,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                                color: code == currentMission
+                                    ? Colors.blue
+                                    : Colors.grey[700],
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text('(${members.length})',
+                                style: TextStyle(
+                                    color: Colors.grey[500], fontSize: 12)),
+                            if (code == currentMission) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Text('YOUR MISSION',
+                                    style: TextStyle(
+                                        color: Colors.white, fontSize: 10)),
+                              ),
+                            ],
+                          ]),
+                        ),
+                        // Members
+                        ...members.map((u) {
+                          final isOnline =
+                              now.difference(u.updatedAt).inMinutes < 3;
+                          final isMe = u.id == currentUserId;
+                          final canInvite = hasMission &&
+                              !isMe &&
+                              u.missionCode != currentMission;
+                          return ListTile(
+                            dense: true,
+                            contentPadding:
+                                const EdgeInsets.symmetric(horizontal: 16),
+                            leading: Stack(clipBehavior: Clip.none, children: [
+                              CircleAvatar(
+                                radius: 18,
+                                backgroundColor: isOnline
+                                    ? const Color(0xFF1565C0)
+                                    : Colors.grey,
+                                child: Text(
+                                  u.callsign.isNotEmpty
+                                      ? u.callsign[0].toUpperCase()
+                                      : '?',
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                              Positioned(
+                                bottom: 0, right: -2,
+                                child: Container(
+                                  width: 10, height: 10,
+                                  decoration: BoxDecoration(
+                                    color: isOnline
+                                        ? Colors.greenAccent[400]
+                                        : Colors.grey[400],
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                        color: Colors.white, width: 1.5),
+                                  ),
+                                ),
+                              ),
+                            ]),
+                            title: Text(
+                              u.callsign + (isMe ? '  (you)' : ''),
+                              style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: isOnline ? null : Colors.grey),
+                            ),
+                            subtitle: Text(
+                              isOnline
+                                  ? u.status
+                                  : _rosterAgo(u.updatedAt),
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: isOnline
+                                      ? Colors.green[700]
+                                      : Colors.grey),
+                            ),
+                            trailing: canInvite
+                                ? TextButton.icon(
+                                    icon: const Icon(Icons.person_add, size: 16),
+                                    label: const Text('Invite'),
+                                    onPressed: () {
+                                      Navigator.pop(context);
+                                      onInvite(u.callsign);
+                                    },
+                                  )
+                                : null,
+                          );
+                        }),
+                        const Divider(height: 1),
+                      ],
+                    );
+                  },
+                ),
+        ),
+      ]),
+    );
+  }
+
+  static String _rosterAgo(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
   }
 }
