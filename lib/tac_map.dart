@@ -1392,12 +1392,21 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         _hasMission = _callsign.isNotEmpty && _missionCode.isNotEmpty;
       });
     }
+    // Tear down any stale subscriptions/timers from a prior leave, then rebuild.
+    _realtimeChannel?.unsubscribe();
+    _refreshTimer?.cancel();
+    _locationTimer?.cancel();
+
     if (_callsign.isNotEmpty) {
       // Immediately show own marker before the Realtime round-trip completes
       final loc = _myLocation;
       if (loc != null) _applyOwnPosition(loc.latitude, loc.longitude);
       _startLocationPublish();
     }
+    // Always re-subscribe and reload so other users are visible regardless of mission state
+    _subscribeRealtime();
+    _loadInitialData();
+
     if (_hasMission) {
       // Notify all admins that a user has joined / created a mission.
       try {
@@ -2216,9 +2225,14 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         _missionCode = '';
         _isAdmin = false;
         _hasMission = false;
-        _users.clear();
+        // Keep _users intact so other users remain visible after leaving.
+        // Remove only own entry since we deleted our row above.
+        _users.remove(_userId);
         _markers.clear();
       });
+      // Re-subscribe so Realtime updates from other users continue arriving.
+      _subscribeRealtime();
+      _loadInitialData();
     }
   }
 
