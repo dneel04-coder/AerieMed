@@ -2080,7 +2080,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   }
 
   Future<void> _refreshSos() async {
-    if (!_hasMission || _missionCode.isEmpty || !mounted) return;
+    if (_missionCode.isEmpty || !mounted) return;
     try {
       final rows = await _supabase
           .from('tac_sos')
@@ -2404,6 +2404,42 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             Icon(isMe ? Icons.person_pin : Icons.person_pin_circle,
                 color: hasSos ? Colors.red : baseColor, size: 32,
                 shadows: const [Shadow(color: Colors.black45, blurRadius: 4)]),
+          ],
+        ),
+      ));
+    }
+
+    // ── Standalone SOS markers (users not in _users — e.g. iOS devices on old builds) ──
+    for (final sos in _activeSos) {
+      if (_users.containsKey(sos.userId)) continue;
+      markers.add(Marker(
+        point: LatLng(sos.lat, sos.lng),
+        width: 100,
+        height: 82,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(4)),
+              child: const Text('🚨 SOS', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+            ),
+            Container(
+              constraints: const BoxConstraints(maxWidth: 96),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.red,
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: Colors.red.shade900, width: 1.5),
+                boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 3, offset: Offset(1,1))],
+              ),
+              child: Text(sos.callsign,
+                  textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+            ),
+            const Icon(Icons.person_pin_circle, color: Colors.red, size: 32,
+                shadows: [Shadow(color: Colors.black45, blurRadius: 4)]),
           ],
         ),
       ));
