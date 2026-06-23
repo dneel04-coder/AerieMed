@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:archive/archive.dart';
+import 'package:image/image.dart' as img;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -2630,7 +2631,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             children: [
               Opacity(
                 // Dim base tiles when fire map is acting as the basemap
-                opacity: (_fireMapAsBase && _incidentOverlay?.imageBytes != null) ? 0.25 : 1.0,
+                opacity: (_fireMapAsBase && _incidentOverlay?.imageBytes != null) ? 0.0 : 1.0,
                 child: TileLayer(
                   urlTemplate: _baseLayer.urlTemplate,
                   subdomains: _baseLayer == _BaseLayer.osm
@@ -3356,16 +3357,16 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         maxChildSize: 0.9,
         builder: (_, ctrl) => _IncidentBrowser(
           scrollController: ctrl,
-          onLoad: (url, name) {
+          onLoad: (url, name, {bool asBase = false}) {
             Navigator.pop(context);
-            _loadKmz(url, name);
+            _loadKmz(url, name, asBase: asBase);
           },
         ),
       ),
     );
   }
 
-  Future<void> _loadKmz(String url, String name) async {
+  Future<void> _loadKmz(String url, String name, {bool asBase = false}) async {
     final snack = ScaffoldMessenger.of(context);
     final isLocal = url.startsWith('/') || url.startsWith('file://');
     if (!isLocal) {
@@ -3449,10 +3450,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           imgBytes ??= firstImg;
         }
 
-        // Validate that imgBytes is a Flutter-decodable format using magic bytes.
-        // Silently discard unsupported types (e.g. TIFF) so we don't get a blank
-        // overlay with no error — the caller will throw "No overlay image found"
-        // with a clear message instead.
+        // Validate image format via magic bytes. If unsupported by Flutter's
+        // native decoder (e.g. TIFF from NIFC fire maps), transcode to PNG
+        // via the image package so the overlay always renders.
         if (imgBytes != null && imgBytes.isNotEmpty) {
           final isPng  = imgBytes.length > 3 &&
               imgBytes[0] == 0x89 && imgBytes[1] == 0x50 &&
@@ -3465,7 +3465,15 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               imgBytes[0] == 0x52 && imgBytes[1] == 0x49 &&
               imgBytes[8] == 0x57 && imgBytes[9] == 0x45;
           if (!isPng && !isJpeg && !isGif && !isWebp) {
-            imgBytes = null; // unsupported format — let polygon path handle it
+            // Transcode unsupported formats (TIFF, BMP, etc.) to PNG.
+            try {
+              final decoded = img.decodeImage(imgBytes);
+              imgBytes = decoded != null
+                  ? Uint8List.fromList(img.encodePng(decoded))
+                  : null;
+            } catch (_) {
+              imgBytes = null;
+            }
           }
         }
       }
@@ -3522,11 +3530,14 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
       if (mounted) {
         snack.hideCurrentSnackBar();
-        setState(() => _incidentOverlay = _IncidentOverlay(
-            name: name,
-            imageBytes: imgBytes,
-            bounds: bounds,
-            polygons: polygons));
+        setState(() {
+          _incidentOverlay = _IncidentOverlay(
+              name: name,
+              imageBytes: imgBytes,
+              bounds: bounds,
+              polygons: polygons);
+          if (asBase) _fireMapAsBase = true;
+        });
         _mapCtrl.fitCamera(
             CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(16)));
         snack.showSnackBar(SnackBar(
@@ -3719,7 +3730,7 @@ class _IncidentEntry {
 
 class _IncidentBrowser extends StatefulWidget {
   final ScrollController scrollController;
-  final void Function(String url, String name) onLoad;
+  final void Function(String url, String name, {bool asBase}) onLoad;
 
   const _IncidentBrowser(
       {required this.scrollController, required this.onLoad});
@@ -3989,6 +4000,23 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
                                               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                             ),
                                             child: const Text('Load',
+                                                style: TextStyle(fontSize: 12)),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          OutlinedButton(
+                                            onPressed: () {
+                                              final local = _dlPaths[e.url];
+                                              widget.onLoad(local ?? e.url, e.name,
+                                                  asBase: true);
+                                            },
+                                            style: OutlinedButton.styleFrom(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                                              minimumSize: const Size(44, 28),
+                                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                              foregroundColor: Colors.deepOrange,
+                                              side: const BorderSide(color: Colors.deepOrange),
+                                            ),
+                                            child: const Text('Base',
                                                 style: TextStyle(fontSize: 12)),
                                           ),
                                         ],
