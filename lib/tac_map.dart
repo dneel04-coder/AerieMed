@@ -1310,6 +1310,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   RealtimeChannel? _realtimeChannel;
   Timer? _locationTimer;
   Timer? _refreshTimer;
+  Timer? _sosTimer;
+  StreamSubscription<Position>? _positionStream;
 
   bool _mapReady = false;
   LatLng? _myLocation;
@@ -1396,6 +1398,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     // Tear down any stale subscriptions/timers from a prior leave, then rebuild.
     _realtimeChannel?.unsubscribe();
     _refreshTimer?.cancel();
+    _sosTimer?.cancel();
     _locationTimer?.cancel();
 
     if (_callsign.isNotEmpty) {
@@ -1636,6 +1639,19 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       });
       if (_mapReady) _mapCtrl.move(_myLocation!, 14);
     } catch (_) {}
+
+    // Continuous stream — fires on movement ≥5 m so _myLocation stays current
+    // without calling getCurrentPosition on every publish tick (eliminates iOS delay).
+    _positionStream?.cancel();
+    _positionStream = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 5,
+        )).listen((pos) {
+      if (!mounted) return;
+      setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
+      if (_callsign.isNotEmpty) _applyOwnPosition(pos.latitude, pos.longitude);
+    });
   }
 
   // Immediately populate _users with our own entry so the callsign marker
@@ -1687,23 +1703,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
   Future<void> _publishLocation() async {
     if (!_sharingLocation) return;
-    if (_myLocation == null) {
-      try {
-        final pos = await Geolocator.getCurrentPosition(
-            locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
-        _myLocation = LatLng(pos.latitude, pos.longitude);
-        if (mounted) setState(() {});
-      } catch (_) {
-        return;
-      }
-    } else {
-      try {
-        final pos = await Geolocator.getCurrentPosition(
-            locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
-        if (mounted) setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
-      } catch (_) {}
-    }
-    if (_myLocation == null) return;
+    if (_myLocation == null) return; // position stream hasn't fired yet
     // Optimistically show ourselves immediately without waiting for the channel
     if (mounted) {
       setState(() {
@@ -1853,9 +1853,15 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               if (!mounted || payload.newRecord.isEmpty) return;
               _showInviteDialog(_TacInvite.fromMap(payload.newRecord));
             })
-        .subscribe();
+        .subscribe((RealtimeSubscribeStatus status, Object? error) {
+      // Re-query on every (re)connect so gaps caused by VPN switching or
+      // backgrounding don't leave stale state until the 30-second poll fires.
+      if (status == RealtimeSubscribeStatus.subscribed) _loadInitialData();
+    });
     _refreshTimer = Timer.periodic(
         const Duration(seconds: 30), (_) => _loadInitialData());
+    _sosTimer = Timer.periodic(
+        const Duration(seconds: 10), (_) => _refreshSos());
   }
 
   Future<void> _checkPendingInvites() async {
@@ -2232,6 +2238,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   Future<void> _leaveMission() async {
     _locationTimer?.cancel();
     _refreshTimer?.cancel();
+    _sosTimer?.cancel();
     _realtimeChannel?.unsubscribe();
     try {
       await _supabase.from('tac_users').delete().eq('id', _userId);
@@ -2270,6 +2277,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   void dispose() {
     _locationTimer?.cancel();
     _refreshTimer?.cancel();
+    _sosTimer?.cancel();
+    _positionStream?.cancel();
     _realtimeChannel?.unsubscribe();
     _takChannel?.unsubscribe();
     super.dispose();
@@ -2351,8 +2360,18 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     final staleThreshold = now.subtract(const Duration(minutes: 15));
 
     // ── User location pins ────────────────────────────────────────────────
+    // Deduplicate by callsign: two devices sharing the same callsign should
+    // show only one marker (the most recently updated one).
+    final Map<String, TacUser> byCallsign = {};
     for (final user in _users.values) {
       if (user.updatedAt.isBefore(staleThreshold)) continue;
+      final key = user.callsign.toLowerCase();
+      final existing = byCallsign[key];
+      if (existing == null || user.updatedAt.isAfter(existing.updatedAt)) {
+        byCallsign[key] = user;
+      }
+    }
+    for (final user in byCallsign.values) {
       if (_filterMission != null && user.missionCode != _filterMission && user.id != _userId) continue;
       final isMe = user.id == _userId;
       final sameMission = user.missionCode == _missionCode;
@@ -3383,36 +3402,70 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       } else {
         final archive = ZipDecoder().decodeBytes(bodyBytes);
         _archiveFiles = archive.files.where((f) => f.isFile).map((f) => f.name).toList();
+
+        // Pass 1: find KML only.
         for (final file in archive.files) {
           if (!file.isFile) continue;
-          final n = file.name.toLowerCase();
-          if (n.endsWith('.kml') && kmlContent == null) {
-            kmlContent = String.fromCharCodes(file.content as List<int>);
-          } else if ((n.endsWith('.png') || n.endsWith('.jpg') ||
-              n.endsWith('.jpeg') || n.endsWith('.gif') || n.endsWith('.webp')) &&
-              imgBytes == null) {
-            imgBytes = Uint8List.fromList(file.content as List<int>);
+          if (file.name.toLowerCase().endsWith('.kml') && kmlContent == null) {
+            kmlContent = String.fromCharCodes(file.content);
           }
         }
-        // Fallback: look for the image named by <GroundOverlay><Icon><href>
-        if (imgBytes == null && kmlContent != null) {
+
+        if (kmlContent != null) {
+          // Read the image name the KML actually references in its GroundOverlay.
+          // This is the ONLY reliable source — picking the first image in the ZIP
+          // can yield a thumbnail/legend instead of the overlay.
           final groundMatch = RegExp(
-              r'<GroundOverlay[\s\S]*?<href>\s*(.*?)\s*</href>',
+              r'<GroundOverlay[\s\S]*?<Icon[\s\S]*?<href>\s*(.*?)\s*</href>',
               caseSensitive: false).firstMatch(kmlContent);
-          final hrefName = groundMatch?.group(1)?.trim();
-          if (hrefName != null && hrefName.isNotEmpty) {
-            for (final file in archive.files) {
-              if (!file.isFile) continue;
-              // Match full path, filename-only, or case-insensitive
-              final fn = file.name;
-              if (fn == hrefName ||
-                  fn.toLowerCase() == hrefName.toLowerCase() ||
-                  fn.split('/').last.toLowerCase() ==
-                      hrefName.split('/').last.toLowerCase()) {
-                imgBytes = Uint8List.fromList(file.content as List<int>);
+          final overlayHref = groundMatch?.group(1)?.trim();
+
+          // Pass 2: find the overlay image by href, then fall back to first
+          // supported-format image if href lookup fails.
+          Uint8List? firstImg;
+          for (final file in archive.files) {
+            if (!file.isFile) continue;
+            final fn = file.name;
+            final lc = fn.toLowerCase();
+            final isSupportedImg = lc.endsWith('.png') || lc.endsWith('.jpg') ||
+                lc.endsWith('.jpeg') || lc.endsWith('.gif') || lc.endsWith('.webp');
+
+            if (overlayHref != null) {
+              // Targeted lookup: exact path, case-insensitive path, or basename match.
+              final hrefLc = overlayHref.toLowerCase();
+              if (fn == overlayHref ||
+                  lc == hrefLc ||
+                  fn.split('/').last.toLowerCase() == hrefLc.split('/').last.toLowerCase()) {
+                imgBytes = Uint8List.fromList(file.content);
                 break;
               }
             }
+            // Keep a reference to the first supported image as a fallback.
+            if (isSupportedImg && firstImg == null) {
+              firstImg = Uint8List.fromList(file.content);
+            }
+          }
+          // If the href-named file wasn't found (or no href), use first image.
+          imgBytes ??= firstImg;
+        }
+
+        // Validate that imgBytes is a Flutter-decodable format using magic bytes.
+        // Silently discard unsupported types (e.g. TIFF) so we don't get a blank
+        // overlay with no error — the caller will throw "No overlay image found"
+        // with a clear message instead.
+        if (imgBytes != null && imgBytes.isNotEmpty) {
+          final isPng  = imgBytes.length > 3 &&
+              imgBytes[0] == 0x89 && imgBytes[1] == 0x50 &&
+              imgBytes[2] == 0x4E && imgBytes[3] == 0x47;
+          final isJpeg = imgBytes.length > 2 &&
+              imgBytes[0] == 0xFF && imgBytes[1] == 0xD8 && imgBytes[2] == 0xFF;
+          final isGif  = imgBytes.length > 2 &&
+              imgBytes[0] == 0x47 && imgBytes[1] == 0x49 && imgBytes[2] == 0x46;
+          final isWebp = imgBytes.length > 11 &&
+              imgBytes[0] == 0x52 && imgBytes[1] == 0x49 &&
+              imgBytes[8] == 0x57 && imgBytes[9] == 0x45;
+          if (!isPng && !isJpeg && !isGif && !isWebp) {
+            imgBytes = null; // unsupported format — let polygon path handle it
           }
         }
       }

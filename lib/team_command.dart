@@ -3900,12 +3900,21 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
             _load();
           },
         ),
-        IconButton(
+        TextButton.icon(
           icon: Icon(
-            Icons.date_range,
-            color: _rangeMode ? Theme.of(context).colorScheme.primary : null,
+            _rangeMode ? Icons.close : Icons.date_range,
+            size: 16,
           ),
-          tooltip: _rangeMode ? 'Cancel range selection' : 'Select date range',
+          label: Text(_rangeMode ? 'Cancel' : 'Range',
+              style: const TextStyle(fontSize: 12)),
+          style: TextButton.styleFrom(
+            foregroundColor: _rangeMode
+                ? Theme.of(context).colorScheme.error
+                : Theme.of(context).colorScheme.primary,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: const Size(0, 36),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
           onPressed: () => setState(() {
             _rangeMode = !_rangeMode;
             _rangeStart = null;
@@ -4071,7 +4080,7 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
                   ? (_rangeStart == null
                       ? 'Tap a start date'
                       : 'Tap an end date')
-                  : 'Tap a day to view or set status  •  Use \u{1F4C5} for a date range',
+                  : 'Tap a day to set status  •  Tap "Range" to set multiple days at once',
               style: TextStyle(fontSize: 10, color: _rangeMode
                   ? Theme.of(context).colorScheme.primary
                   : Colors.grey[500]),
