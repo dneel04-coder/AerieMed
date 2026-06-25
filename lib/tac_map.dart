@@ -5,8 +5,10 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 import 'package:battery_plus/battery_plus.dart';
+import 'dart:ui' as ui;
 import 'package:archive/archive.dart';
 import 'package:image/image.dart' as img;
+import 'package:pdfrx/pdfrx.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -3367,6 +3369,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   }
 
   Future<void> _loadKmz(String url, String name, {bool asBase = false}) async {
+    if (url.toLowerCase().endsWith('.pdf')) {
+      return _loadPdf(url, name, asBase: asBase);
+    }
     final snack = ScaffoldMessenger.of(context);
     final isLocal = url.startsWith('/') || url.startsWith('file://');
     if (!isLocal) {
@@ -3554,6 +3559,127 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       }
     }
   }
+
+  /// Extract geographic bounds from a GeoPDF's /GPTS array.
+  /// Returns null if no georeferencing data is found.
+  LatLngBounds? _parsePdfBounds(Uint8List pdfBytes) {
+    // Scan printable-ASCII portion of the PDF bytes for the /GPTS key.
+    // Binary sections are replaced with spaces so the regex can't cross them.
+    final sb = StringBuffer();
+    for (final b in pdfBytes) {
+      sb.writeCharCode((b >= 32 && b < 127) ? b : 32);
+    }
+    final str = sb.toString();
+
+    final gptsMatch =
+        RegExp(r'/GPTS\s*\[\s*([\d\s.\-]+)\s*\]').firstMatch(str);
+    if (gptsMatch == null) return null;
+
+    final nums = gptsMatch
+        .group(1)!
+        .trim()
+        .split(RegExp(r'\s+'))
+        .map(double.tryParse)
+        .whereType<double>()
+        .toList();
+
+    if (nums.length < 8) return null;
+
+    // GPTS pairs are (lat, lng) for each LPTS corner — grab all lats/lngs.
+    final lats = <double>[];
+    final lngs = <double>[];
+    for (var i = 0; i + 1 < nums.length; i += 2) {
+      lats.add(nums[i]);
+      lngs.add(nums[i + 1]);
+    }
+
+    final south = lats.reduce(min);
+    final north = lats.reduce(max);
+    final west  = lngs.reduce(min);
+    final east  = lngs.reduce(max);
+
+    if (south >= north || west >= east) return null;
+    if (south < -90 || north > 90 || west < -180 || east > 180) return null;
+
+    return LatLngBounds(LatLng(south, west), LatLng(north, east));
+  }
+
+  Future<void> _loadPdf(String url, String name, {bool asBase = false}) async {
+    final snack = ScaffoldMessenger.of(context);
+    final isLocal = url.startsWith('/') || url.startsWith('file://');
+    snack.showSnackBar(SnackBar(
+        content: Text('${isLocal ? 'Loading' : 'Downloading'} $name…'),
+        duration: const Duration(seconds: 60)));
+    try {
+      final Uint8List pdfBytes;
+      if (isLocal) {
+        final path =
+            url.startsWith('file://') ? Uri.parse(url).toFilePath() : url;
+        pdfBytes = await File(path).readAsBytes();
+      } else {
+        final client = _wildfireClient();
+        final resp = await client.get(Uri.parse(url));
+        client.close();
+        if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
+        pdfBytes = resp.bodyBytes;
+      }
+
+      // Extract geographic bounds from the GeoPDF /GPTS viewport metadata.
+      final bounds = _parsePdfBounds(pdfBytes);
+      if (bounds == null) {
+        throw Exception(
+            'No geographic coordinates found.\n'
+            'Only georeferenced (GeoPDF) files are supported.');
+      }
+
+      // Render first page to a raster image capped at 2048px on longest side.
+      final doc = await PdfDocument.openData(pdfBytes);
+      final page = doc.pages[0];
+      const maxPx = 2048.0;
+      final scale = maxPx / max(page.width, page.height);
+      final pdfImage = await page.render(
+          fullWidth: page.width * scale, fullHeight: page.height * scale);
+      if (pdfImage == null) {
+        doc.dispose();
+        throw Exception('Failed to render PDF page.');
+      }
+
+      // BGRA pixels → dart:ui Image → PNG bytes
+      final uiImage = await pdfImage.createImage();
+      pdfImage.dispose();
+      doc.dispose();
+      final byteData =
+          await uiImage.toByteData(format: ui.ImageByteFormat.png);
+      uiImage.dispose();
+      if (byteData == null) throw Exception('Failed to encode PDF as PNG.');
+      final pngBytes = byteData.buffer.asUint8List();
+
+      if (mounted) {
+        snack.hideCurrentSnackBar();
+        setState(() {
+          _incidentOverlay = _IncidentOverlay(
+              name: name,
+              imageBytes: pngBytes,
+              bounds: bounds,
+              polygons: const []);
+          if (asBase) _fireMapAsBase = true;
+        });
+        _mapCtrl.fitCamera(
+            CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(16)));
+        snack.showSnackBar(SnackBar(
+            content: Text('Loaded: $name'),
+            duration: const Duration(seconds: 3)));
+      }
+    } catch (e) {
+      if (mounted) {
+        snack.hideCurrentSnackBar();
+        snack.showSnackBar(SnackBar(
+            content: Text('Failed to load PDF: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5)));
+      }
+    }
+  }
 }
 
 class _TeamPanel extends StatefulWidget {
@@ -3725,7 +3851,7 @@ class _IncidentEntry {
     this.isPdf = false,
     this.isKml = false,
   });
-  bool get isLoadable => !isDirectory && !isPdf; // KMZ or KML can be overlaid
+  bool get isLoadable => !isDirectory; // KMZ, KML, and PDF (GeoPDF) can be overlaid
 }
 
 class _IncidentBrowser extends StatefulWidget {
@@ -3978,7 +4104,7 @@ class _IncidentBrowserState extends State<_IncidentBrowser> {
                               title: Text(e.name,
                                   style: const TextStyle(fontSize: 13)),
                               subtitle: e.isPdf
-                                  ? const Text('PDF — download to view',
+                                  ? const Text('GeoPDF — Load/Base to overlay on map',
                                       style: TextStyle(fontSize: 10, color: Colors.grey))
                                   : null,
                               trailing: e.isDirectory
