@@ -969,6 +969,17 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
           const Divider(indent: 72, endIndent: 16),
           ListTile(
             leading: const CircleAvatar(
+                backgroundColor: Colors.teal,
+                child: Icon(Icons.vpn_key, color: Colors.white)),
+            title: const Text('Access Codes'),
+            subtitle: const Text('Manage app access codes for new users'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const AdminAccessCodesScreen())),
+          ),
+          const Divider(indent: 72, endIndent: 16),
+          ListTile(
+            leading: const CircleAvatar(
                 backgroundColor: Colors.grey, child: Icon(Icons.lock_outline, color: Colors.white)),
             title: const Text('Change Admin Credentials'),
             onTap: () => _changeCredentialsDialog(context),
@@ -2040,6 +2051,229 @@ class _DeploymentUploadButtonState extends State<_DeploymentUploadButton> {
 }
 
 
+// ── Access Codes admin screen ─────────────────────────────────────────────────
+
+class AdminAccessCodesScreen extends StatefulWidget {
+  const AdminAccessCodesScreen({super.key});
+  @override
+  State<AdminAccessCodesScreen> createState() => _AdminAccessCodesScreenState();
+}
+
+class _AdminAccessCodesScreenState extends State<AdminAccessCodesScreen> {
+  List<Map<String, dynamic>> _codes = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok || !mounted) return;
+    try {
+      final rows = await SupabaseService.client!
+          .from('app_access_codes')
+          .select()
+          .order('created_at', ascending: false);
+      if (mounted) setState(() { _codes = List<Map<String, dynamic>>.from(rows); _loading = false; });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  Future<void> _createCode() async {
+    final codeCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Create Access Code'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+            controller: codeCtrl,
+            textCapitalization: TextCapitalization.characters,
+            decoration: const InputDecoration(
+              labelText: 'Code *',
+              hintText: 'e.g. AERI2025',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.vpn_key_outlined),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: descCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Description (optional)',
+              hintText: 'e.g. Alpha Team — Summer 2025',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    codeCtrl.dispose();
+    descCtrl.dispose();
+    if (ok != true) return;
+    final code = codeCtrl.text.trim().toUpperCase();
+    if (code.isEmpty) return;
+    try {
+      await SupabaseService.client!.from('app_access_codes').insert({
+        'code': code,
+        'description': descCtrl.text.trim(),
+        'is_active': true,
+        'uses': 0,
+      });
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  Future<void> _toggleActive(Map<String, dynamic> row) async {
+    final nowActive = !(row['is_active'] as bool? ?? true);
+    try {
+      await SupabaseService.client!
+          .from('app_access_codes')
+          .update({'is_active': nowActive})
+          .eq('id', row['id'] as String);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  Future<void> _delete(Map<String, dynamic> row) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Code?'),
+        content: Text('Delete "${row['code']}"? This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await SupabaseService.client!
+          .from('app_access_codes')
+          .delete()
+          .eq('id', row['id'] as String);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Access Codes'),
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _createCode,
+        icon: const Icon(Icons.add),
+        label: const Text('New Code'),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _codes.isEmpty
+              ? Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.vpn_key_off_outlined, size: 56, color: Colors.grey),
+                    const SizedBox(height: 12),
+                    const Text('No access codes yet.'),
+                    const SizedBox(height: 8),
+                    FilledButton.icon(
+                      onPressed: _createCode,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Create First Code'),
+                    ),
+                  ]),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(0, 8, 0, 88),
+                  itemCount: _codes.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final row = _codes[i];
+                    final isActive = row['is_active'] as bool? ?? true;
+                    final uses = row['uses'] as int? ?? 0;
+                    final desc = row['description'] as String? ?? '';
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor:
+                            isActive ? Colors.teal : Colors.grey.shade300,
+                        child: Icon(Icons.vpn_key,
+                            color: isActive ? Colors.white : Colors.grey,
+                            size: 20),
+                      ),
+                      title: Text(row['code'] as String,
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontFamily: 'monospace',
+                            color: isActive ? null : Colors.grey,
+                            decoration: isActive
+                                ? null
+                                : TextDecoration.lineThrough,
+                          )),
+                      subtitle: Text(
+                        '${desc.isNotEmpty ? '$desc  •  ' : ''}$uses use${uses == 1 ? '' : 's'}  •  ${isActive ? 'Active' : 'Inactive'}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Switch(
+                          value: isActive,
+                          onChanged: (_) => _toggleActive(row),
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline,
+                              color: Colors.red, size: 20),
+                          onPressed: () => _delete(row),
+                          tooltip: 'Delete',
+                        ),
+                      ]),
+                    );
+                  },
+                ),
+    );
+  }
+}
+
+
 const _kAdditionalSql = '''
 -- ResQruck — Supabase SQL schema
 -- Safe to run multiple times (idempotent).
@@ -2356,6 +2590,22 @@ end;
 -- Allow the anon key (used by the app) to call this function.
 grant execute on function resqruck_auto_migrate() to anon;
 grant execute on function resqruck_auto_migrate() to authenticated;
+
+-- ── Access codes (run once, outside the migration function) ──────────────────
+create table if not exists app_access_codes (
+  id uuid default gen_random_uuid() primary key,
+  code text unique not null,
+  description text not null default '',
+  is_active boolean not null default true,
+  uses integer not null default 0,
+  created_at timestamptz default now()
+);
+do \$\$ begin
+  alter table app_access_codes enable row level security;
+  create policy "public_access" on app_access_codes
+    for all using (true) with check (true);
+exception when others then null;
+end \$\$;
 ''';
 
 

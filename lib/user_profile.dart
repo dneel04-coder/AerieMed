@@ -6,13 +6,14 @@ import 'protocol_admin.dart' show SupabaseService;
 const List<String> kCertLevels = ['Paramedic', 'AEMT', 'EMT', 'None'];
 
 class UserProfile {
-  static const _kName       = 'profile_name';
-  static const _kCallsign   = 'profile_callsign';
-  static const _kCertLevel  = 'profile_cert_level';
-  static const _kRt130      = 'profile_rt130';
-  static const _kRopeRescue = 'profile_rope_rescue';
-  static const _kLoggedIn   = 'profile_logged_in';
-  static const _kUserId     = 'tac_user_id';
+  static const _kName            = 'profile_name';
+  static const _kCallsign        = 'profile_callsign';
+  static const _kCertLevel       = 'profile_cert_level';
+  static const _kRt130           = 'profile_rt130';
+  static const _kRopeRescue      = 'profile_rope_rescue';
+  static const _kLoggedIn        = 'profile_logged_in';
+  static const _kUserId          = 'tac_user_id';
+  static const _kAccessValidated = 'profile_access_validated';
 
   final String userId;
   String name;
@@ -72,6 +73,16 @@ class UserProfile {
     await prefs.setBool(_kLoggedIn, false);
   }
 
+  static Future<bool> isAccessValidated() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kAccessValidated) ?? false;
+  }
+
+  static Future<void> markAccessValidated() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kAccessValidated, true);
+  }
+
   Future<void> syncToSupabase() async {
     final client = SupabaseService.client;
     if (client == null) return;
@@ -111,11 +122,13 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   late final TextEditingController _nameCtrl;
   late final TextEditingController _callsignCtrl;
+  late final TextEditingController _codeCtrl;
   String _certLevel = 'None';
   bool _rt130 = false;
   bool _ropeRescue = false;
   bool _stayLoggedIn = true;
   bool _saving = false;
+  bool _accessValidated = false;
   UserProfile? _existing;
 
   @override
@@ -123,11 +136,17 @@ class _LoginScreenState extends State<LoginScreen> {
     super.initState();
     _nameCtrl = TextEditingController();
     _callsignCtrl = TextEditingController();
+    _codeCtrl = TextEditingController();
     _loadExisting();
   }
 
   Future<void> _loadExisting() async {
-    final p = await UserProfile.load();
+    final results = await Future.wait([
+      UserProfile.load(),
+      UserProfile.isAccessValidated(),
+    ]);
+    final p = results[0] as UserProfile;
+    final validated = results[1] as bool;
     if (!mounted) return;
     setState(() {
       _existing = p;
@@ -136,6 +155,7 @@ class _LoginScreenState extends State<LoginScreen> {
       _certLevel = p.certLevel;
       _rt130 = p.rt130;
       _ropeRescue = p.ropeRescue;
+      _accessValidated = validated;
     });
   }
 
@@ -147,6 +167,55 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
     setState(() => _saving = true);
+
+    // Validate access code on first login.
+    if (!_accessValidated) {
+      final code = _codeCtrl.text.trim().toUpperCase();
+      if (code.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Access code is required.')));
+        setState(() => _saving = false);
+        return;
+      }
+      final ok = await SupabaseService.ensureInitialized();
+      if (!mounted) return;
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Cannot reach server to validate access code. Check your connection.'),
+            backgroundColor: Colors.red));
+        setState(() => _saving = false);
+        return;
+      }
+      final client = SupabaseService.client!;
+      final rows = await client
+          .from('app_access_codes')
+          .select('id')
+          .eq('code', code)
+          .eq('is_active', true)
+          .limit(1);
+      if (!mounted) return;
+      if ((rows as List).isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Invalid or inactive access code.'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 4)));
+        setState(() => _saving = false);
+        return;
+      }
+      // Notify admin of the new user.
+      final callsign = _callsignCtrl.text.trim();
+      try {
+        await client.from('admin_alerts').insert({
+          'type': 'access',
+          'title': 'New User: $name',
+          'callsign': callsign.isNotEmpty ? callsign : name,
+          'body': 'User $name${callsign.isNotEmpty ? ' ($callsign)' : ''} '
+              'joined using access code $code',
+        });
+      } catch (_) {}
+      await UserProfile.markAccessValidated();
+      setState(() => _accessValidated = true);
+    }
 
     final profile = UserProfile(
       userId: _existing?.userId ?? '',
@@ -169,6 +238,7 @@ class _LoginScreenState extends State<LoginScreen> {
   void dispose() {
     _nameCtrl.dispose();
     _callsignCtrl.dispose();
+    _codeCtrl.dispose();
     super.dispose();
   }
 
@@ -215,6 +285,28 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
             const SizedBox(height: 14),
+
+            // Access code — required on first login only
+            if (!_accessValidated) ...[
+              TextField(
+                controller: _codeCtrl,
+                textCapitalization: TextCapitalization.characters,
+                decoration: InputDecoration(
+                  labelText: 'Access Code *',
+                  hintText: 'Contact your administrator for a code',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.vpn_key_outlined),
+                  filled: true,
+                  fillColor: cs.primaryContainer.withValues(alpha: 0.3),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'A one-time access code is required to activate your account.',
+                style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+              ),
+              const SizedBox(height: 14),
+            ],
 
             // Cert level
             DropdownButtonFormField<String>(
