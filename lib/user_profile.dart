@@ -13,7 +13,8 @@ class UserProfile {
   static const _kRopeRescue      = 'profile_rope_rescue';
   static const _kLoggedIn        = 'profile_logged_in';
   static const _kUserId          = 'tac_user_id';
-  static const _kAccessValidated = 'profile_access_validated';
+  static const _kAccessValidated   = 'profile_access_validated';
+  static const _kPurchaseUnlocked  = 'profile_purchase_unlocked';
 
   final String userId;
   String name;
@@ -81,6 +82,16 @@ class UserProfile {
   static Future<void> markAccessValidated() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kAccessValidated, true);
+  }
+
+  static Future<bool> isUnlocked() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kPurchaseUnlocked) ?? false;
+  }
+
+  static Future<void> markUnlocked() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kPurchaseUnlocked, true);
   }
 
   Future<void> syncToSupabase() async {
@@ -189,7 +200,7 @@ class _LoginScreenState extends State<LoginScreen> {
       final client = SupabaseService.client!;
       final rows = await client
           .from('app_access_codes')
-          .select('id')
+          .select('id, bypass_paywall')
           .eq('code', code)
           .eq('is_active', true)
           .limit(1);
@@ -202,6 +213,7 @@ class _LoginScreenState extends State<LoginScreen> {
         setState(() => _saving = false);
         return;
       }
+      final bypass = (rows.first['bypass_paywall'] as bool?) ?? false;
       // Notify admin of the new user.
       final callsign = _callsignCtrl.text.trim();
       try {
@@ -214,6 +226,7 @@ class _LoginScreenState extends State<LoginScreen> {
         });
       } catch (_) {}
       await UserProfile.markAccessValidated();
+      if (bypass) await UserProfile.markUnlocked();
       setState(() => _accessValidated = true);
     }
 

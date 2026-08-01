@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
+import 'paywall_screen.dart';
 import 'resqruck_assistant.dart';
 import 'user_profile.dart';
 import 'patient_report.dart';
@@ -119,17 +120,29 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _tab = 2; // start on Med
   bool _isAdmin = false;
+  bool _unlocked = false;
   RealtimeChannel? _alertChannel;
 
   @override
   void initState() {
     super.initState();
+    UserProfile.isUnlocked().then((v) {
+      if (mounted) setState(() => _unlocked = v);
+    });
     ProtocolSyncService.instance.isAdminMode.then((v) {
       if (!mounted) return;
       setState(() => _isAdmin = v);
       if (v) _subscribeToAlerts();
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
+  }
+
+  Future<void> _showPaywall() async {
+    final unlocked = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const PaywallScreen()),
+    );
+    if ((unlocked ?? false) && mounted) setState(() => _unlocked = true);
   }
 
   @override
@@ -251,8 +264,12 @@ class _MainShellState extends State<MainShell> {
   }
 
   Future<void> _onTabTap(int index) async {
+    // Tab 2 (Home) is always visible; tab 4 (Admin) has its own PIN gate.
+    if (!_unlocked && index != 2 && index != 4) {
+      await _showPaywall();
+      return;
+    }
     if (index == 4 && !_isAdmin) {
-      // Show credential prompt without switching tab.
       final ok = await showAdminPinDialog(context);
       if (!ok || !mounted) return;
       await ProtocolSyncService.instance.setAdminMode(true);
@@ -271,7 +288,12 @@ class _MainShellState extends State<MainShell> {
         children: [
           const TeamCommandScreen(),
           const TacMapScreen(),
-          MedHomeScreen(onThemeToggle: widget.onThemeToggle, onLogout: widget.onLogout),
+          MedHomeScreen(
+            onThemeToggle: widget.onThemeToggle,
+            onLogout: widget.onLogout,
+            isUnlocked: _unlocked,
+            onPaywallTap: _showPaywall,
+          ),
           const CertVaultScreen(),
           _AdminShell(
             isAdmin: _isAdmin,
@@ -291,7 +313,10 @@ class _MainShellState extends State<MainShell> {
                 const SizedBox(height: 12),
                 FloatingActionButton(
                   heroTag: 'compass_fab',
-                  onPressed: () => setState(() => _tab = 1),
+                  onPressed: () async {
+                    if (!_unlocked) { await _showPaywall(); return; }
+                    setState(() => _tab = 1);
+                  },
                   tooltip: 'Open Tac Map',
                   child: const Icon(Icons.explore),
                 ),
@@ -338,7 +363,15 @@ const Color kMedRed = Color(0xFFCC2222);
 class MedHomeScreen extends StatefulWidget {
   final VoidCallback onThemeToggle;
   final VoidCallback onLogout;
-  const MedHomeScreen({super.key, required this.onThemeToggle, required this.onLogout});
+  final bool isUnlocked;
+  final VoidCallback onPaywallTap;
+  const MedHomeScreen({
+    super.key,
+    required this.onThemeToggle,
+    required this.onLogout,
+    required this.isUnlocked,
+    required this.onPaywallTap,
+  });
 
   @override
   State<MedHomeScreen> createState() => _MedHomeScreenState();
@@ -362,15 +395,18 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    VoidCallback gated(VoidCallback action) =>
+        widget.isUnlocked ? action : widget.onPaywallTap;
+
     final cards = [
-      _MedCardData(Icons.menu_book,         'Protocols',     const Color(0xFFCC2222), () => Navigator.push(context, MaterialPageRoute(builder: (_) => TableOfContentsScreen(onThemeToggle: widget.onThemeToggle, onLogout: widget.onLogout, protocolsOnly: true)))),
-      _MedCardData(Icons.medication,         'Drug & Dosing', const Color(0xFF1565C0), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DrugDosingScreen()))),
-      _MedCardData(Icons.account_tree,       'Decision Tree', const Color(0xFF6A1B9A), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DecisionTreeScreen()))),
-      _MedCardData(Icons.checklist_outlined, 'Procedures',   const Color(0xFF2E7D32), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProcedureListScreen()))),
-      _MedCardData(Icons.emergency,          'MCI Triage',   const Color(0xFFE65100), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MciTriageScreen()))),
-      _MedCardData(Icons.assignment_outlined,'Patient Report',const Color(0xFF00695C), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PatientReportListScreen()))),
-      _MedCardData(Icons.terrain,            'Field Guide',  const Color(0xFF4E6B3A), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BackcountryGuideScreen()))),
-      _MedCardData(Icons.checklist_rtl,      'Pre-Deploy\nChecklist', const Color(0xFF0277BD), () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RemsChecklistScreen()))),
+      _MedCardData(Icons.menu_book,         'Protocols',     const Color(0xFFCC2222), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => TableOfContentsScreen(onThemeToggle: widget.onThemeToggle, onLogout: widget.onLogout, protocolsOnly: true))))),
+      _MedCardData(Icons.medication,         'Drug & Dosing', const Color(0xFF1565C0), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const DrugDosingScreen())))),
+      _MedCardData(Icons.account_tree,       'Decision Tree', const Color(0xFF6A1B9A), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const DecisionTreeScreen())))),
+      _MedCardData(Icons.checklist_outlined, 'Procedures',   const Color(0xFF2E7D32), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProcedureListScreen())))),
+      _MedCardData(Icons.emergency,          'MCI Triage',   const Color(0xFFE65100), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const MciTriageScreen())))),
+      _MedCardData(Icons.assignment_outlined,'Patient Report',const Color(0xFF00695C), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const PatientReportListScreen())))),
+      _MedCardData(Icons.terrain,            'Field Guide',  const Color(0xFF4E6B3A), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const BackcountryGuideScreen())))),
+      _MedCardData(Icons.checklist_rtl,      'Pre-Deploy\nChecklist', const Color(0xFF0277BD), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const RemsChecklistScreen())))),
     ];
 
     return Scaffold(
@@ -409,7 +445,7 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
                   childAspectRatio: 1.05,
                 ),
                 itemCount: cards.length,
-                itemBuilder: (_, i) => _MedCard(data: cards[i]),
+                itemBuilder: (_, i) => _MedCard(data: cards[i], locked: !widget.isUnlocked),
               ),
             ),
           ),
@@ -458,43 +494,60 @@ class _MedCardData {
 
 class _MedCard extends StatelessWidget {
   final _MedCardData data;
-  const _MedCard({required this.data});
+  final bool locked;
+  const _MedCard({required this.data, this.locked = false});
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg = isDark ? const Color(0xFF1A1A1A) : Colors.white;
-    return Card(
-      color: bg,
-      clipBehavior: Clip.hardEdge,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: data.color, width: 2),
-      ),
-      elevation: 3,
-      child: InkWell(
-        onTap: data.onTap,
-        splashColor: data.color.withValues(alpha: 0.15),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(data.icon, size: 48, color: data.color),
-              const SizedBox(height: 12),
-              Text(
-                data.label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
+    return Stack(
+      children: [
+        Card(
+          color: bg,
+          clipBehavior: Clip.hardEdge,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(color: data.color, width: 2),
+          ),
+          elevation: 3,
+          child: InkWell(
+            onTap: data.onTap,
+            splashColor: data.color.withValues(alpha: 0.15),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(data.icon, size: 48, color: data.color),
+                  const SizedBox(height: 12),
+                  Text(
+                    data.label,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
-      ),
+        if (locked)
+          Positioned.fill(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                color: Colors.black.withValues(alpha: 0.38),
+                child: const Center(
+                  child: Icon(Icons.lock_rounded, color: Colors.white, size: 30),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

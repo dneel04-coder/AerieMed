@@ -1,7 +1,7 @@
 name: resqruck
 description: ResQruck - Field Medical Protocols
 publish_to: 'none'
-version: 1.0.0+92
+version: 1.0.0+94
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -33,6 +33,7 @@ dependencies:
   battery_plus: ^6.0.1
   cached_network_image: ^3.3.1
   in_app_update: ^4.2.1
+  in_app_purchase: ^3.2.0
 
 dev_dependencies:
   flutter_test:

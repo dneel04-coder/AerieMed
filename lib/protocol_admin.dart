@@ -2088,53 +2088,82 @@ class _AdminAccessCodesScreenState extends State<AdminAccessCodesScreen> {
     }
   }
 
+  Future<void> _toggleBypass(Map<String, dynamic> row) async {
+    final nowBypass = !(row['bypass_paywall'] as bool? ?? false);
+    try {
+      await SupabaseService.client!
+          .from('app_access_codes')
+          .update({'bypass_paywall': nowBypass})
+          .eq('id', row['id'] as String);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
   Future<void> _createCode() async {
     final codeCtrl = TextEditingController();
     final descCtrl = TextEditingController();
+    bool bypass = false;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Create Access Code'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(
-            controller: codeCtrl,
-            textCapitalization: TextCapitalization.characters,
-            decoration: const InputDecoration(
-              labelText: 'Code *',
-              hintText: 'e.g. AERI2025',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.vpn_key_outlined),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Create Access Code'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+              controller: codeCtrl,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                labelText: 'Code *',
+                hintText: 'e.g. AERI2025',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.vpn_key_outlined),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: descCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Description (optional)',
-              hintText: 'e.g. Alpha Team — Summer 2025',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 12),
+            TextField(
+              controller: descCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Description (optional)',
+                hintText: 'e.g. Alpha Team — Summer 2025',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Create'),
-          ),
-        ],
+            const SizedBox(height: 4),
+            SwitchListTile(
+              value: bypass,
+              onChanged: (v) => setLocal(() => bypass = v),
+              title: const Text('Bypass Paywall'),
+              subtitle: const Text('User skips purchase requirement'),
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Create'),
+            ),
+          ],
+        ),
       ),
     );
+    final code = codeCtrl.text.trim().toUpperCase();
+    final desc = descCtrl.text.trim();
     codeCtrl.dispose();
     descCtrl.dispose();
-    if (ok != true) return;
-    final code = codeCtrl.text.trim().toUpperCase();
-    if (code.isEmpty) return;
+    if (ok != true || code.isEmpty) return;
     try {
       await SupabaseService.client!.from('app_access_codes').insert({
         'code': code,
-        'description': descCtrl.text.trim(),
+        'description': desc,
         'is_active': true,
+        'bypass_paywall': bypass,
         'uses': 0,
       });
       _load();
@@ -2230,6 +2259,7 @@ class _AdminAccessCodesScreenState extends State<AdminAccessCodesScreen> {
                   itemBuilder: (_, i) {
                     final row = _codes[i];
                     final isActive = row['is_active'] as bool? ?? true;
+                    final bypass = row['bypass_paywall'] as bool? ?? false;
                     final uses = row['uses'] as int? ?? 0;
                     final desc = row['description'] as String? ?? '';
                     return ListTile(
@@ -2250,10 +2280,21 @@ class _AdminAccessCodesScreenState extends State<AdminAccessCodesScreen> {
                                 : TextDecoration.lineThrough,
                           )),
                       subtitle: Text(
-                        '${desc.isNotEmpty ? '$desc  •  ' : ''}$uses use${uses == 1 ? '' : 's'}  •  ${isActive ? 'Active' : 'Inactive'}',
+                        '${desc.isNotEmpty ? '$desc  •  ' : ''}$uses use${uses == 1 ? '' : 's'}  •  ${isActive ? 'Active' : 'Inactive'}${bypass ? '  •  Bypass' : ''}',
                         style: const TextStyle(fontSize: 12),
                       ),
                       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Tooltip(
+                          message: bypass ? 'Paywall bypass ON' : 'Paywall bypass OFF',
+                          child: IconButton(
+                            icon: Icon(
+                              bypass ? Icons.shield_outlined : Icons.shield,
+                              color: bypass ? Colors.green : Colors.grey,
+                              size: 20,
+                            ),
+                            onPressed: () => _toggleBypass(row),
+                          ),
+                        ),
                         Switch(
                           value: isActive,
                           onChanged: (_) => _toggleActive(row),
@@ -2597,9 +2638,14 @@ create table if not exists app_access_codes (
   code text unique not null,
   description text not null default '',
   is_active boolean not null default true,
+  bypass_paywall boolean not null default false,
   uses integer not null default 0,
   created_at timestamptz default now()
 );
+do \$\$ begin
+  alter table app_access_codes add column if not exists bypass_paywall boolean not null default false;
+exception when others then null;
+end \$\$;
 do \$\$ begin
   alter table app_access_codes enable row level security;
   create policy "public_access" on app_access_codes
