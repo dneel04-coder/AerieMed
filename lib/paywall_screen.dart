@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'protocol_admin.dart' show SupabaseService;
 import 'user_profile.dart';
 
 const String kIapProductId = 'resqruck_full_access';
@@ -83,6 +84,64 @@ class _PaywallScreenState extends State<PaywallScreen> {
     if (_purchasing) return;
     setState(() { _purchasing = true; _error = null; });
     await _iap.restorePurchases();
+  }
+
+  Future<void> _redeemCode() async {
+    final ctrl = TextEditingController();
+    final submitted = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enter Access Code'),
+        content: TextField(
+          controller: ctrl,
+          textCapitalization: TextCapitalization.characters,
+          decoration: const InputDecoration(
+            labelText: 'Access Code',
+            hintText: 'Contact your administrator for a code',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.vpn_key_outlined),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Redeem')),
+        ],
+      ),
+    );
+    final code = ctrl.text.trim().toUpperCase();
+    ctrl.dispose();
+    if (submitted != true || code.isEmpty || !mounted) return;
+
+    setState(() { _purchasing = true; _error = null; });
+    final ok = await SupabaseService.ensureInitialized();
+    if (!mounted) return;
+    if (!ok) {
+      setState(() { _purchasing = false; _error = 'Cannot reach server. Check your connection.'; });
+      return;
+    }
+    try {
+      final rows = await SupabaseService.client!
+          .from('app_access_codes')
+          .select('bypass_paywall')
+          .eq('code', code)
+          .eq('is_active', true)
+          .limit(1);
+      if (!mounted) return;
+      if ((rows as List).isEmpty) {
+        setState(() { _purchasing = false; _error = 'Invalid or inactive access code.'; });
+        return;
+      }
+      final bypass = (rows.first['bypass_paywall'] as bool?) ?? false;
+      if (!bypass) {
+        setState(() { _purchasing = false; _error = 'This code does not grant full access.'; });
+        return;
+      }
+      await UserProfile.markUnlocked();
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) setState(() { _purchasing = false; _error = 'Error: $e'; });
+    }
   }
 
   @override
@@ -183,7 +242,11 @@ class _PaywallScreenState extends State<PaywallScreen> {
                   ),
                 ),
               ],
-              const SizedBox(height: 14),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: _purchasing ? null : _redeemCode,
+                child: const Text('Have an access code?'),
+              ),
               Text(
                 'One-time purchase • No subscription • Works offline after purchase',
                 style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
