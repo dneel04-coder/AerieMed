@@ -25,6 +25,7 @@ workflows:
           app-store-connect fetch-signing-files \
             com.peninsulathreat.resqruck \
             --type IOS_APP_STORE \
+            --certificate-key @env:CERTIFICATE_PRIVATE_KEY \
             --create
           keychain add-certificates
 
