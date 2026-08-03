@@ -15,11 +15,19 @@ workflows:
       flutter: stable
       xcode: latest
       cocoapods: default
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.peninsulathreat.resqruck
 
     scripts:
+      - name: Set up keychain
+        script: keychain initialize
+
+      - name: Fetch signing files from Apple
+        script: |
+          app-store-connect fetch-signing-files \
+            com.peninsulathreat.resqruck \
+            --type IOS_APP_STORE \
+            --create
+          keychain add-certificates
+
       - name: Flutter packages
         script: flutter pub get
 
