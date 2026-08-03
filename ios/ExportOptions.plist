@@ -7,11 +7,6 @@
   <key>teamID</key>
   <string>F593S84V48</string>
   <key>signingStyle</key>
-  <string>manual</string>
-  <key>provisioningProfiles</key>
-  <dict>
-    <key>com.peninsulathreat.resqruck</key>
-    <string>resqrucknew</string>
-  </dict>
+  <string>automatic</string>
 </dict>
 </plist>
