@@ -10,8 +10,8 @@
   <string>manual</string>
   <key>provisioningProfiles</key>
   <dict>
-    <key>com.aerie.aerimed1</key>
-    <string>AeriMed AppStore1</string>
+    <key>com.peninsulathreat.resqruck</key>
+    <string>ResQruck AppStore</string>
   </dict>
 </dict>
 </plist>
