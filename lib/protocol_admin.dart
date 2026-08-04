@@ -391,6 +391,9 @@ class DeploymentOrder {
   final String fileName;
   final DateTime uploadedAt;
   final String uploadedBy;
+  // Null = broadcast to everyone (existing/default behavior, unchanged).
+  // Non-null = only these user_ids should see this order.
+  final List<String>? targetUserIds;
 
   const DeploymentOrder({
     required this.id,
@@ -400,6 +403,7 @@ class DeploymentOrder {
     required this.fileName,
     required this.uploadedAt,
     required this.uploadedBy,
+    this.targetUserIds,
   });
 
   factory DeploymentOrder.fromMap(Map<String, dynamic> m) => DeploymentOrder(
@@ -410,6 +414,7 @@ class DeploymentOrder {
         fileName: m['file_name'] as String? ?? '',
         uploadedAt: DateTime.tryParse(m['uploaded_at'] as String? ?? '') ?? DateTime.now(),
         uploadedBy: m['uploaded_by'] as String? ?? '',
+        targetUserIds: (m['target_user_ids'] as List?)?.cast<String>(),
       );
 }
 
@@ -436,11 +441,17 @@ extension DeploymentOrderService on ProtocolSyncService {
     try {
       final prefs = await SharedPreferences.getInstance();
       var userId = prefs.getString('tac_user_id') ?? '';
-      final orders = (await client
+      final allOrders = (await client
               .from('deployment_orders')
               .select()
               .order('uploaded_at', ascending: false) as List)
           .map((r) => DeploymentOrder.fromMap(r as Map<String, dynamic>))
+          .toList();
+      // Untargeted orders (targetUserIds == null) are broadcast to everyone,
+      // exactly as before this field existed. Targeted orders are only
+      // visible to the user_ids listed.
+      final orders = allOrders
+          .where((o) => o.targetUserIds == null || o.targetUserIds!.contains(userId))
           .toList();
       if (userId.isEmpty) return orders;
       final viewedIds = (await client
@@ -529,6 +540,7 @@ extension DeploymentOrderService on ProtocolSyncService {
     required Uint8List bytes,
     required String fileName,
     required String uploadedBy,
+    List<String>? targetUserIds,
   }) async {
     final client = await _client();
     if (client == null) throw Exception('Supabase not configured');
@@ -558,6 +570,7 @@ extension DeploymentOrderService on ProtocolSyncService {
       'file_name': fileName,
       'uploaded_at': DateTime.now().toIso8601String(),
       'uploaded_by': uploadedBy,
+      'target_user_ids': targetUserIds,
     });
   }
 
@@ -2654,6 +2667,56 @@ begin
     alter table tac_pois enable row level security;
     create policy "public_access" on tac_pois
       for all using (true) with check (true);
+  exception when others then null;
+  end;
+
+  -- deployment_orders: optional per-user targeting (NULL = broadcast to everyone, unchanged default)
+  alter table if exists deployment_orders add column if not exists target_user_ids text[];
+
+  -- incidents: formal admin-managed incident sessions, each wrapping a tac_map mission_code
+  create table if not exists incidents (
+    id uuid default gen_random_uuid() primary key,
+    name text not null default '',
+    mission_code text not null,
+    status text not null default 'open',
+    opened_at timestamptz default now(),
+    closed_at timestamptz,
+    opened_by text default '',
+    notes text default ''
+  );
+  begin
+    alter table incidents enable row level security;
+    create policy "public_access" on incidents
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  create unique index if not exists incidents_open_mission_code_uq
+    on incidents (mission_code) where status = 'open';
+  begin
+    alter publication supabase_realtime add table incidents;
+  exception when others then null;
+  end;
+
+  -- incident_members: durable roster attached to an incident by the admin console
+  -- (kept separate from tac_users, which is deleted on mission leave and would
+  -- otherwise silently lose incident history for anyone who goes offline)
+  create table if not exists incident_members (
+    id uuid default gen_random_uuid() primary key,
+    incident_id uuid references incidents(id) on delete cascade,
+    user_id text not null,
+    callsign text not null default '',
+    joined_at timestamptz default now(),
+    left_at timestamptz,
+    unique(incident_id, user_id)
+  );
+  begin
+    alter table incident_members enable row level security;
+    create policy "public_access" on incident_members
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  begin
+    alter publication supabase_realtime add table incident_members;
   exception when others then null;
   end;
 end;

@@ -494,9 +494,14 @@ class _CertVaultScreenState extends State<CertVaultScreen> {
   }
 
   Future<void> _pickFile() async {
+    // Image uploads rely on on-device OCR (Android/iOS only), so desktop
+    // is restricted to PDF to avoid an image with no auto-detect and no
+    // camera/gallery source to have taken it from in the first place.
+    final mobile = Platform.isAndroid || Platform.isIOS;
     final r = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png', 'heic', 'heif'],
+      allowedExtensions:
+          mobile ? ['pdf', 'jpg', 'jpeg', 'png', 'heic', 'heif'] : ['pdf'],
     );
     if (r != null && r.files.single.path != null) {
       final f = r.files.single;

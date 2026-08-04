@@ -118,6 +118,43 @@ workflows:
           success: true
           failure: true
 
+  # ── macOS APP ────────────────────────────────────────────────────────────────
+  macos-release:
+    name: macOS — APP (Unsigned)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: Flutter packages
+        script: flutter pub get
+
+      - name: CocoaPods install
+        script: cd macos && pod install
+
+      - name: Build macOS
+        script: flutter build macos --release --no-codesign
+
+      - name: Package ZIP
+        script: |
+          cd build/macos/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent ResQruck.app "$CM_BUILD_DIR/ResQruck-macos.zip"
+
+    artifacts:
+      - $CM_BUILD_DIR/ResQruck-macos.zip
+
+    publishing:
+      email:
+        recipients:
+          - allamerican82consulting@gmail.com
+        notify:
+          success: true
+          failure: true
+
   # ── Windows EXE ──────────────────────────────────────────────────────────────
   windows-release:
     name: Windows — EXE
@@ -141,6 +178,75 @@ workflows:
 
     artifacts:
       - $env:CM_BUILD_DIR/AeriMed-windows.zip
+
+    publishing:
+      email:
+        recipients:
+          - allamerican82consulting@gmail.com
+        notify:
+          success: true
+          failure: true
+
+  # ── macOS Command Console (desktop admin app, separate entry point) ─────────
+  macos-command-release:
+    name: macOS — Command Console (Unsigned)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: Flutter packages
+        script: flutter pub get
+
+      - name: CocoaPods install
+        script: cd macos && pod install
+
+      - name: Build macOS Command Console
+        script: flutter build macos --release --no-codesign -t lib/main_admin.dart
+
+      - name: Package ZIP
+        script: |
+          cd build/macos/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent ResQruck.app "$CM_BUILD_DIR/ResQruck-Command-macos.zip"
+
+    artifacts:
+      - $CM_BUILD_DIR/ResQruck-Command-macos.zip
+
+    publishing:
+      email:
+        recipients:
+          - allamerican82consulting@gmail.com
+        notify:
+          success: true
+          failure: true
+
+  # ── Windows Command Console (desktop admin app, separate entry point) ───────
+  windows-command-release:
+    name: Windows — Command Console (EXE)
+    instance_type: windows_x2
+    max_build_duration: 60
+
+    environment:
+      flutter: stable
+
+    scripts:
+      - name: Flutter packages
+        script: flutter pub get
+
+      - name: Build Windows Command Console
+        script: flutter build windows --release -t lib/main_admin.dart
+
+      - name: Package ZIP
+        script: |
+          cd build/windows/x64/runner/Release
+          Compress-Archive -Path * -DestinationPath $env:CM_BUILD_DIR/ResQruck-Command-windows.zip
+
+    artifacts:
+      - $env:CM_BUILD_DIR/ResQruck-Command-windows.zip
 
     publishing:
       email:

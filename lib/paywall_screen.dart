@@ -1,10 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'protocol_admin.dart' show SupabaseService;
 import 'user_profile.dart';
 
 const String kIapProductId = 'resqruck_full_access';
+
+// in_app_purchase only works through the iOS/Android app stores — Windows
+// and macOS builds are unlocked via access code only.
+bool get _kStoreAvailablePlatform => Platform.isAndroid || Platform.isIOS;
 
 class PaywallScreen extends StatefulWidget {
   const PaywallScreen({super.key});
@@ -15,7 +20,7 @@ class PaywallScreen extends StatefulWidget {
 
 class _PaywallScreenState extends State<PaywallScreen> {
   final _iap = InAppPurchase.instance;
-  late StreamSubscription<List<PurchaseDetails>> _sub;
+  StreamSubscription<List<PurchaseDetails>>? _sub;
 
   ProductDetails? _product;
   bool _loading = true;
@@ -25,13 +30,17 @@ class _PaywallScreenState extends State<PaywallScreen> {
   @override
   void initState() {
     super.initState();
-    _sub = _iap.purchaseStream.listen(_onPurchaseUpdate);
-    _loadProduct();
+    if (_kStoreAvailablePlatform) {
+      _sub = _iap.purchaseStream.listen(_onPurchaseUpdate);
+      _loadProduct();
+    } else {
+      _loading = false;
+    }
   }
 
   @override
   void dispose() {
-    _sub.cancel();
+    _sub?.cancel();
     super.dispose();
   }
 
@@ -206,7 +215,22 @@ class _PaywallScreenState extends State<PaywallScreen> {
                 ),
                 const SizedBox(height: 12),
               ],
-              if (_loading)
+              if (!_kStoreAvailablePlatform)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: cs.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    'Purchase on iOS or Android, or enter an access code below to unlock this device.',
+                    style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
+                    textAlign: TextAlign.center,
+                  ),
+                )
+              else if (_loading)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 16),
                   child: CircularProgressIndicator(),

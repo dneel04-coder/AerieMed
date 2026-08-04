@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -717,8 +718,10 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
   }
 
   Future<void> _initSpeech() async {
-    final available = await _speech.initialize(onError: (_) {});
-    if (mounted) setState(() => _speechAvailable = available);
+    try {
+      final available = await _speech.initialize(onError: (_) {});
+      if (mounted) setState(() => _speechAvailable = available);
+    } catch (_) {}
   }
 
   @override
@@ -807,14 +810,26 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
 
   // ── Photos ────────────────────────────────────────────────────────────────
 
+  static bool get _isDesktop =>
+      Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+
   Future<void> _addPhoto(ImageSource source) async {
-    final file = await _picker.pickImage(source: source, imageQuality: 80);
-    if (file == null) return;
+    String? srcPath;
+    if (_isDesktop) {
+      // image_picker has no Windows support and no reliable desktop camera
+      // capture, so desktop always browses for an existing image file.
+      final r = await FilePicker.platform.pickFiles(type: FileType.image);
+      srcPath = r?.files.single.path;
+    } else {
+      final file = await _picker.pickImage(source: source, imageQuality: 80);
+      srcPath = file?.path;
+    }
+    if (srcPath == null) return;
     final dir = await getApplicationDocumentsDirectory();
     final destDir = Directory('${dir.path}/report_photos');
     if (!await destDir.exists()) await destDir.create(recursive: true);
     final dest = '${destDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
-    await File(file.path).copy(dest);
+    await File(srcPath).copy(dest);
     setState(() => _photoPaths.add(dest));
     _save(silent: true);
   }
@@ -1184,14 +1199,15 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
         Row(children: [
           _sectionLabel('PHOTOS'),
           const Spacer(),
-          TextButton.icon(
-            icon: const Icon(Icons.camera_alt, size: 16),
-            label: const Text('Camera'),
-            onPressed: () => _addPhoto(ImageSource.camera),
-          ),
+          if (!_isDesktop)
+            TextButton.icon(
+              icon: const Icon(Icons.camera_alt, size: 16),
+              label: const Text('Camera'),
+              onPressed: () => _addPhoto(ImageSource.camera),
+            ),
           TextButton.icon(
             icon: const Icon(Icons.photo_library, size: 16),
-            label: const Text('Library'),
+            label: Text(_isDesktop ? 'Upload' : 'Library'),
             onPressed: () => _addPhoto(ImageSource.gallery),
           ),
         ]),

@@ -28,5 +28,11 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>ResQruck uses the microphone for voice-to-text documentation in the field.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>ResQruck uses speech recognition to allow hands-free field documentation.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>ResQruck uses your location to record the scene location in patient reports and on the map.</string>
 </dict>
 </plist>

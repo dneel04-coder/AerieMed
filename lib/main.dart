@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:in_app_update/in_app_update.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -38,6 +39,9 @@ class ResQruckApp extends StatefulWidget {
   @override
   State<ResQruckApp> createState() => _ResQruckAppState();
 }
+
+bool get _isDesktopWindow =>
+    !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
 class _ResQruckAppState extends State<ResQruckApp> {
   ThemeMode _themeMode = ThemeMode.system;
@@ -93,8 +97,42 @@ class _ResQruckAppState extends State<ResQruckApp> {
         useMaterial3: true,
       ),
       themeMode: _themeMode,
-      // Prevent content from going under the Android navigation bar on all screens
-      builder: (context, child) => SafeArea(top: false, child: child!),
+      builder: (context, child) {
+        // Prevent content from going under the Android navigation bar on all screens.
+        final content = SafeArea(top: false, child: child!);
+        if (!_isDesktopWindow) return content;
+        // The UI was designed for phone-width screens — grids and cards stretch
+        // into oversized, awkward shapes on a wide desktop window. Rather than
+        // touch every screen's layout, letterbox the untouched phone UI inside
+        // a fixed-width frame so Android/iOS stay pixel-identical.
+        final brightness = Theme.of(context).brightness;
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: brightness == Brightness.dark
+                  ? const [Color(0xFF0B0B12), Color(0xFF1B1330)]
+                  : const [Color(0xFFE8EAF6), Color(0xFFFBE9E7)],
+            ),
+          ),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: DecoratedBox(
+                decoration: BoxDecoration(boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.35),
+                    blurRadius: 28,
+                    spreadRadius: 1,
+                  ),
+                ]),
+                child: content,
+              ),
+            ),
+          ),
+        );
+      },
       home: !_authChecked
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : _loggedIn
@@ -184,6 +222,7 @@ class _MainShellState extends State<MainShell> {
   }
 
   Future<void> _checkForUpdate() async {
+    if (!Platform.isAndroid) return; // Play Store in-app updates are Android-only
     try {
       final info = await InAppUpdate.checkForUpdate();
       if (!mounted) return;
