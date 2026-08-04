@@ -2707,8 +2707,10 @@ begin
     callsign text not null default '',
     joined_at timestamptz default now(),
     left_at timestamptz,
+    accepted_at timestamptz,
     unique(incident_id, user_id)
   );
+  alter table if exists incident_members add column if not exists accepted_at timestamptz;
   begin
     alter table incident_members enable row level security;
     create policy "public_access" on incident_members

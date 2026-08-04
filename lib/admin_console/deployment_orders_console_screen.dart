@@ -3,7 +3,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../protocol_admin.dart' show ProtocolSyncService, DeploymentOrder, DeploymentOrderService;
-import 'incident_service.dart';
+import '../incident_service.dart';
 import 'no_incident_placeholder.dart';
 
 class DeploymentOrdersConsoleScreen extends StatefulWidget {

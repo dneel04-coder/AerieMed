@@ -1,6 +1,6 @@
 import 'dart:math';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../protocol_admin.dart' show SupabaseService;
+import 'protocol_admin.dart' show SupabaseService;
 
 /// A formal, admin-managed incident session. Wraps a tac_map `mission_code`
 /// (the pre-existing ad-hoc join code field users already type into the
@@ -50,6 +50,7 @@ class IncidentMember {
   final String callsign;
   final DateTime joinedAt;
   final DateTime? leftAt;
+  final DateTime? acceptedAt;
 
   const IncidentMember({
     required this.id,
@@ -58,9 +59,14 @@ class IncidentMember {
     required this.callsign,
     required this.joinedAt,
     this.leftAt,
+    this.acceptedAt,
   });
 
   bool get isActive => leftAt == null;
+
+  /// True when the console has assigned this member but they haven't yet
+  /// accepted the assignment on their device (see IncidentService.acceptMembership).
+  bool get isPending => leftAt == null && acceptedAt == null;
 
   factory IncidentMember.fromMap(Map<String, dynamic> m) => IncidentMember(
         id: m['id'] as String,
@@ -69,7 +75,17 @@ class IncidentMember {
         callsign: m['callsign'] as String? ?? '',
         joinedAt: DateTime.tryParse(m['joined_at'] as String? ?? '') ?? DateTime.now(),
         leftAt: m['left_at'] != null ? DateTime.tryParse(m['left_at'] as String) : null,
+        acceptedAt: m['accepted_at'] != null ? DateTime.tryParse(m['accepted_at'] as String) : null,
       );
+}
+
+/// A pending incident assignment, as seen by the assigned field device —
+/// pairs the membership row with the incident it points to so the app can
+/// show a name and know which mission_code to join on Accept.
+class PendingAssignment {
+  final IncidentMember member;
+  final TacIncident incident;
+  const PendingAssignment({required this.member, required this.incident});
 }
 
 class IncidentService {
@@ -170,5 +186,44 @@ class IncidentService {
     await client.from('incident_members').update({
       'left_at': DateTime.now().toIso8601String(),
     }).eq('id', memberId);
+  }
+
+  Future<void> acceptMembership(String memberId) async {
+    final client = await _client();
+    if (client == null) return;
+    await client.from('incident_members').update({
+      'accepted_at': DateTime.now().toIso8601String(),
+    }).eq('id', memberId);
+  }
+
+  /// Assignments made to this user that they haven't accepted yet, newest
+  /// first — surfaced on the mobile side as an "accept mission assignment" prompt.
+  Future<List<PendingAssignment>> fetchPendingForUser(String userId) async {
+    if (userId.isEmpty) return [];
+    final client = await _client();
+    if (client == null) return [];
+    try {
+      final rows = await client
+          .from('incident_members')
+          .select('*, incidents(*)')
+          .eq('user_id', userId)
+          .isFilter('accepted_at', null)
+          .isFilter('left_at', null)
+          .order('joined_at', ascending: false) as List;
+      return rows
+          .map((r) {
+            final m = r as Map<String, dynamic>;
+            final incidentMap = m['incidents'] as Map<String, dynamic>?;
+            if (incidentMap == null) return null;
+            return PendingAssignment(
+              member: IncidentMember.fromMap(m),
+              incident: TacIncident.fromMap(incidentMap),
+            );
+          })
+          .whereType<PendingAssignment>()
+          .toList();
+    } catch (_) {
+      return [];
+    }
   }
 }

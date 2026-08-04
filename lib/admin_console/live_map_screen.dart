@@ -1,17 +1,25 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../protocol_admin.dart' show SupabaseService;
 import '../tac_map.dart' show TacUser, TacZone, TacMarker, TacSosEvent;
-import 'incident_service.dart';
-import 'no_incident_placeholder.dart';
+import '../incident_service.dart';
 
 const _kOsmTileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
-/// Live personnel + static markers/zones for the active incident's
-/// mission_code, on a genuinely desktop-sized map canvas (full window
-/// height, not a letterboxed phone screen).
+// A device publishes every ~10s while sharing location — anything older than
+// this is treated as not currently transmitting rather than "their last
+// known spot" (tac_users has no TTL of its own; see joinMissionSilently for
+// the related fix to stop old-mission rows from lingering in the first place).
+const _kCurrentWindow = Duration(minutes: 5);
+
+enum _MapMode { allUsers, thisIncident }
+
+/// Live personnel + static markers/zones, either scoped to the active
+/// incident's mission_code or — with no incident required — everyone across
+/// every mission, on a genuinely desktop-sized map canvas.
 class LiveMapScreen extends StatefulWidget {
   final TacIncident? incident;
   const LiveMapScreen({super.key, required this.incident});
@@ -28,24 +36,52 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   final Map<String, TacSosEvent> _sos = {};
   RealtimeChannel? _channel;
   bool _loading = true;
+  late _MapMode _mode;
+  Timer? _agingTimer;
 
   @override
   void initState() {
     super.initState();
+    _mode = widget.incident == null ? _MapMode.allUsers : _MapMode.thisIncident;
     _bind();
+    // _users doesn't change on its own between publishes, but "is this still
+    // current" does as time passes — re-render periodically so a marker
+    // actually disappears once its owner stops transmitting, rather than
+    // only when the next unrelated update happens to trigger a rebuild.
+    _agingTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void didUpdateWidget(covariant LiveMapScreen old) {
     super.didUpdateWidget(old);
-    if (old.incident?.missionCode != widget.incident?.missionCode) _bind();
+    if (old.incident?.missionCode != widget.incident?.missionCode) {
+      if (widget.incident == null) _mode = _MapMode.allUsers;
+      _bind();
+    }
   }
 
   @override
   void dispose() {
     _channel?.unsubscribe();
+    _agingTimer?.cancel();
     super.dispose();
   }
+
+  bool _isCurrent(TacUser u) => DateTime.now().toUtc().difference(u.updatedAt.toUtc()) < _kCurrentWindow;
+
+  Iterable<TacUser> get _visibleUsers => _users.values.where(_isCurrent);
+
+  void _setMode(_MapMode mode) {
+    if (mode == _mode) return;
+    setState(() => _mode = mode);
+    _bind();
+  }
+
+  /// Null when in "all users" mode — every fetch/subscription below is
+  /// unfiltered (every mission) whenever this is null.
+  String? get _missionFilter => _mode == _MapMode.thisIncident ? widget.incident?.missionCode : null;
 
   Future<void> _bind() async {
     _channel?.unsubscribe();
@@ -53,8 +89,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     _zones.clear();
     _markers.clear();
     _sos.clear();
-    final incident = widget.incident;
-    if (incident == null) return;
+    if (_mode == _MapMode.thisIncident && widget.incident == null) return;
     setState(() => _loading = true);
 
     final client = SupabaseService.client;
@@ -62,26 +97,41 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       if (mounted) setState(() => _loading = false);
       return;
     }
-    final mission = incident.missionCode;
+    final mission = _missionFilter;
 
     try {
-      final users = await client.from('tac_users').select().eq('mission_code', mission) as List;
-      for (final r in users) {
+      final userRows = mission == null
+          ? await client.from('tac_users').select() as List
+          : await client.from('tac_users').select().eq('mission_code', mission) as List;
+      for (final r in userRows) {
         final u = TacUser.fromMap(r as Map<String, dynamic>);
-        _users[u.id] = u;
+        // Keyed by id, so this naturally collapses any leftover rows under a
+        // different mission_code (see joinMissionSilently) — but query order
+        // isn't guaranteed, so keep whichever is actually newest rather than
+        // whichever happened to be processed last.
+        final existing = _users[u.id];
+        if (existing == null || u.updatedAt.isAfter(existing.updatedAt)) {
+          _users[u.id] = u;
+        }
       }
-      final zones = await client.from('tac_zones').select().eq('mission_code', mission) as List;
-      for (final r in zones) {
+      final zoneRows = mission == null
+          ? await client.from('tac_zones').select() as List
+          : await client.from('tac_zones').select().eq('mission_code', mission) as List;
+      for (final r in zoneRows) {
         final z = TacZone.fromMap(r as Map<String, dynamic>);
         _zones[z.id] = z;
       }
-      final markers = await client.from('tac_markers').select().eq('mission_code', mission) as List;
-      for (final r in markers) {
+      final markerRows = mission == null
+          ? await client.from('tac_markers').select() as List
+          : await client.from('tac_markers').select().eq('mission_code', mission) as List;
+      for (final r in markerRows) {
         final m = TacMarker.fromMap(r as Map<String, dynamic>);
         _markers[m.id] = m;
       }
-      final sos = await client.from('tac_sos').select().eq('mission_code', mission) as List;
-      for (final r in sos) {
+      final sosRows = mission == null
+          ? await client.from('tac_sos').select() as List
+          : await client.from('tac_sos').select().eq('mission_code', mission) as List;
+      for (final r in sosRows) {
         final s = TacSosEvent.fromMap(r as Map<String, dynamic>);
         if (!s.resolved) _sos[s.id] = s;
       }
@@ -90,80 +140,90 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     if (mounted) setState(() => _loading = false);
     _fitToMarkers();
 
-    _channel = client
-        .channel('admin_console_$mission')
-        .onPostgresChanges(
-            event: PostgresChangeEvent.all,
-            schema: 'public',
-            table: 'tac_users',
-            filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'mission_code', value: mission),
-            callback: (payload) {
-              if (!mounted) return;
-              if (payload.eventType == PostgresChangeEvent.delete) {
-                final id = payload.oldRecord['id'] as String?;
-                if (id != null) setState(() => _users.remove(id));
+    var channelBuilder = client.channel('admin_console_map_${mission ?? 'all'}');
+    channelBuilder = channelBuilder.onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'tac_users',
+        filter: mission == null
+            ? null
+            : PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'mission_code', value: mission),
+        callback: (payload) {
+          if (!mounted) return;
+          if (payload.eventType == PostgresChangeEvent.delete) {
+            final id = payload.oldRecord['id'] as String?;
+            if (id != null) setState(() => _users.remove(id));
+          } else {
+            final u = TacUser.fromMap(payload.newRecord);
+            final existing = _users[u.id];
+            if (existing == null || u.updatedAt.isAfter(existing.updatedAt)) {
+              setState(() => _users[u.id] = u);
+            }
+          }
+        });
+    channelBuilder = channelBuilder.onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'tac_zones',
+        filter: mission == null
+            ? null
+            : PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'mission_code', value: mission),
+        callback: (payload) {
+          if (!mounted) return;
+          if (payload.eventType == PostgresChangeEvent.delete) {
+            final id = payload.oldRecord['id'] as String?;
+            if (id != null) setState(() => _zones.remove(id));
+          } else {
+            final z = TacZone.fromMap(payload.newRecord);
+            setState(() => _zones[z.id] = z);
+          }
+        });
+    channelBuilder = channelBuilder.onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'tac_markers',
+        filter: mission == null
+            ? null
+            : PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'mission_code', value: mission),
+        callback: (payload) {
+          if (!mounted) return;
+          if (payload.eventType == PostgresChangeEvent.delete) {
+            final id = payload.oldRecord['id'] as String?;
+            if (id != null) setState(() => _markers.remove(id));
+          } else {
+            final m = TacMarker.fromMap(payload.newRecord);
+            setState(() => _markers[m.id] = m);
+          }
+        });
+    channelBuilder = channelBuilder.onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'tac_sos',
+        filter: mission == null
+            ? null
+            : PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'mission_code', value: mission),
+        callback: (payload) {
+          if (!mounted) return;
+          if (payload.eventType == PostgresChangeEvent.delete) {
+            final id = payload.oldRecord['id'] as String?;
+            if (id != null) setState(() => _sos.remove(id));
+          } else {
+            final s = TacSosEvent.fromMap(payload.newRecord);
+            setState(() {
+              if (s.resolved) {
+                _sos.remove(s.id);
               } else {
-                final u = TacUser.fromMap(payload.newRecord);
-                setState(() => _users[u.id] = u);
+                _sos[s.id] = s;
               }
-            })
-        .onPostgresChanges(
-            event: PostgresChangeEvent.all,
-            schema: 'public',
-            table: 'tac_zones',
-            filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'mission_code', value: mission),
-            callback: (payload) {
-              if (!mounted) return;
-              if (payload.eventType == PostgresChangeEvent.delete) {
-                final id = payload.oldRecord['id'] as String?;
-                if (id != null) setState(() => _zones.remove(id));
-              } else {
-                final z = TacZone.fromMap(payload.newRecord);
-                setState(() => _zones[z.id] = z);
-              }
-            })
-        .onPostgresChanges(
-            event: PostgresChangeEvent.all,
-            schema: 'public',
-            table: 'tac_markers',
-            filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'mission_code', value: mission),
-            callback: (payload) {
-              if (!mounted) return;
-              if (payload.eventType == PostgresChangeEvent.delete) {
-                final id = payload.oldRecord['id'] as String?;
-                if (id != null) setState(() => _markers.remove(id));
-              } else {
-                final m = TacMarker.fromMap(payload.newRecord);
-                setState(() => _markers[m.id] = m);
-              }
-            })
-        .onPostgresChanges(
-            event: PostgresChangeEvent.all,
-            schema: 'public',
-            table: 'tac_sos',
-            filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'mission_code', value: mission),
-            callback: (payload) {
-              if (!mounted) return;
-              if (payload.eventType == PostgresChangeEvent.delete) {
-                final id = payload.oldRecord['id'] as String?;
-                if (id != null) setState(() => _sos.remove(id));
-              } else {
-                final s = TacSosEvent.fromMap(payload.newRecord);
-                setState(() {
-                  if (s.resolved) {
-                    _sos.remove(s.id);
-                  } else {
-                    _sos[s.id] = s;
-                  }
-                });
-              }
-            })
-        .subscribe();
+            });
+          }
+        });
+    _channel = channelBuilder.subscribe();
   }
 
   void _fitToMarkers() {
     final points = [
-      ..._users.values.map((u) => LatLng(u.lat, u.lng)),
+      ..._visibleUsers.map((u) => LatLng(u.lat, u.lng)),
       ..._markers.values.map((m) => LatLng(m.lat, m.lng)),
     ];
     if (points.isEmpty) return;
@@ -177,13 +237,31 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.incident == null) {
-      return const NoIncidentPlaceholder(feature: 'the Live Map');
-    }
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.all(12),
+        child: SegmentedButton<_MapMode>(
+          segments: const [
+            ButtonSegment(value: _MapMode.allUsers, label: Text('All Users'), icon: Icon(Icons.public)),
+            ButtonSegment(
+                value: _MapMode.thisIncident,
+                label: Text('This Incident'),
+                icon: Icon(Icons.local_fire_department)),
+          ],
+          selected: {_mode},
+          onSelectionChanged: widget.incident == null ? null : (s) => _setMode(s.first),
+        ),
+      ),
+      Expanded(child: _buildBody()),
+    ]);
+  }
+
+  Widget _buildBody() {
     if (_loading) return const Center(child: CircularProgressIndicator());
 
-    final center = _users.isNotEmpty
-        ? LatLng(_users.values.first.lat, _users.values.first.lng)
+    final visible = _visibleUsers.toList();
+    final center = visible.isNotEmpty
+        ? LatLng(visible.first.lat, visible.first.lng)
         : const LatLng(39.8283, -98.5795); // continental US fallback
 
     return Row(
@@ -192,7 +270,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           child: Stack(children: [
             FlutterMap(
               mapController: _mapCtrl,
-              options: MapOptions(initialCenter: center, initialZoom: _users.isEmpty ? 4 : 13),
+              options: MapOptions(initialCenter: center, initialZoom: visible.isEmpty ? 4 : 13),
               children: [
                 TileLayer(urlTemplate: _kOsmTileUrl, userAgentPackageName: 'com.peninsulathreat.resqruck'),
                 CircleLayer(
@@ -220,11 +298,11 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                         height: 44,
                         child: const Icon(Icons.emergency, color: Colors.red, size: 36),
                       )),
-                  ..._users.values.map((u) => Marker(
+                  ...visible.map((u) => Marker(
                         point: LatLng(u.lat, u.lng),
                         width: 120,
                         height: 56,
-                        child: _UserMarker(user: u),
+                        child: _UserMarker(user: u, showMission: _mode == _MapMode.allUsers),
                       )),
                 ]),
               ],
@@ -248,13 +326,15 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
             child: ListView(
               padding: const EdgeInsets.all(12),
               children: [
-                Text('On map (${_users.length})', style: Theme.of(context).textTheme.titleSmall),
+                Text('On map (${visible.length})', style: Theme.of(context).textTheme.titleSmall),
                 const SizedBox(height: 8),
-                ..._users.values.map((u) => ListTile(
+                ...visible.map((u) => ListTile(
                       dense: true,
                       leading: const Icon(Icons.circle, size: 12, color: Colors.green),
                       title: Text(u.callsign),
-                      subtitle: Text('${u.status} • ${u.batteryLevel ?? '—'}%'),
+                      subtitle: Text(_mode == _MapMode.allUsers
+                          ? '${u.missionCode.isEmpty ? 'no mission' : u.missionCode} • ${u.batteryLevel ?? '—'}%'
+                          : '${u.status} • ${u.batteryLevel ?? '—'}%'),
                     )),
                 if (_sos.isNotEmpty) ...[
                   const Divider(),
@@ -278,7 +358,8 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
 class _UserMarker extends StatelessWidget {
   final TacUser user;
-  const _UserMarker({required this.user});
+  final bool showMission;
+  const _UserMarker({required this.user, this.showMission = false});
 
   @override
   Widget build(BuildContext context) {
@@ -289,7 +370,10 @@ class _UserMarker extends StatelessWidget {
           color: Colors.black87,
           borderRadius: BorderRadius.circular(4),
         ),
-        child: Text(user.callsign, style: const TextStyle(color: Colors.white, fontSize: 11)),
+        child: Text(
+          showMission && user.missionCode.isNotEmpty ? '${user.callsign} · ${user.missionCode}' : user.callsign,
+          style: const TextStyle(color: Colors.white, fontSize: 11),
+        ),
       ),
       const Icon(Icons.person_pin_circle, color: Colors.teal, size: 32),
     ]);

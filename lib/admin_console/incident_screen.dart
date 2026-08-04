@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'admin_shell.dart';
-import 'incident_service.dart';
+import '../incident_service.dart';
 
 class IncidentScreen extends StatefulWidget {
   final ActiveIncidentController controller;
@@ -57,17 +57,25 @@ class _IncidentScreenState extends State<IncidentScreen> {
       ),
     );
     if (created != true || !mounted) return;
-    final incident = await IncidentService.instance.createIncident(
-      name: nameCtrl.text.trim(),
-      missionCode: codeCtrl.text.trim().toUpperCase(),
-    );
-    if (incident != null) {
-      widget.controller.select(incident);
-      _load();
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not create incident — check Settings/connection.')),
+    try {
+      final incident = await IncidentService.instance.createIncident(
+        name: nameCtrl.text.trim(),
+        missionCode: codeCtrl.text.trim().toUpperCase(),
       );
+      if (incident != null) {
+        widget.controller.select(incident);
+        _load();
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not create incident — check Settings/connection.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not create incident: $e')),
+        );
+      }
     }
   }
 
@@ -86,9 +94,15 @@ class _IncidentScreenState extends State<IncidentScreen> {
       ),
     );
     if (ok != true) return;
-    await IncidentService.instance.closeIncident(incident.id);
-    if (widget.controller.incident?.id == incident.id) widget.controller.select(null);
-    _load();
+    try {
+      await IncidentService.instance.closeIncident(incident.id);
+      if (widget.controller.incident?.id == incident.id) widget.controller.select(null);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not close incident: $e')));
+      }
+    }
   }
 
   @override

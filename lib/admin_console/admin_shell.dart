@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'incident_service.dart';
+import '../incident_service.dart';
 import 'incident_screen.dart';
 import 'roster_screen.dart';
 import 'live_map_screen.dart';

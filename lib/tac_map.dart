@@ -20,9 +20,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'protocol_admin.dart' show SupabaseService;
 import 'gps_tools.dart';
+import 'incident_service.dart';
 import 'lz_assessment.dart';
 import 'offline_maps.dart';
 import 'sun_weather.dart';
+import 'user_profile.dart';
 
 // wildfire.gov uses a government CA absent from Dart's trust store.
 // SecurityContext(withTrustedRoots:false) + badCertificateCallback bypass
@@ -78,6 +80,47 @@ const _kCallsign = 'tac_callsign';
 const _kMissionCode = 'tac_mission_code';
 const _kIsAdmin = 'tac_is_admin';
 const _kUserId = 'tac_user_id';
+
+/// Fires whenever this device joins a mission, however that happened — via
+/// the Join Mission sheet below, or a silent accept-flow elsewhere in the
+/// app (see joinMissionSilently). The Tac Map screen is kept alive for the
+/// whole app session (IndexedStack in MainShell), so without this signal it
+/// has no way to know a join happened anywhere but its own bottom sheet.
+class TacMissionBus {
+  TacMissionBus._();
+  static final ValueNotifier<int> listenable = ValueNotifier<int>(0);
+  static void notifyChanged() => listenable.value++;
+}
+
+/// Writes the SharedPreferences that put this device "on" a mission, without
+/// going through the Join Mission UI. Used by that screen's own submit
+/// handler below and by the mobile "accept mission assignment" prompt.
+Future<void> joinMissionSilently({
+  required String callsign,
+  required String missionCode,
+  bool isAdmin = false,
+}) async {
+  final prefs = await SharedPreferences.getInstance();
+  final userId = prefs.getString(_kUserId) ?? '';
+  await prefs.setString(_kCallsign, callsign);
+  await prefs.setString(_kMissionCode, missionCode);
+  await prefs.setBool(_kIsAdmin, isAdmin);
+  // tac_users' primary key is (id, mission_code), so switching missions
+  // without restarting the app (e.g. accepting a new assignment) would
+  // otherwise leave the old mission's row behind forever — only an app
+  // cold-start cleans those up today. Drop anything under a different
+  // mission_code for this device right when we join the new one.
+  if (userId.isNotEmpty) {
+    try {
+      await Supabase.instance.client
+          .from('tac_users')
+          .delete()
+          .eq('id', userId)
+          .neq('mission_code', missionCode);
+    } catch (_) {}
+  }
+  TacMissionBus.notifyChanged();
+}
 
 enum TacMarkerType {
   patient,
@@ -1192,99 +1235,145 @@ class _MissionSetupScreen extends StatefulWidget {
 }
 
 class _MissionSetupScreenState extends State<_MissionSetupScreen> {
-  final _callsignCtrl = TextEditingController();
   final _missionCtrl = TextEditingController();
   bool _isAdmin = false;
   bool _joining = false;
+  UserProfile? _profile;
+  List<TacIncident> _openIncidents = [];
+  TacIncident? _selectedIncident;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    SharedPreferences.getInstance().then((prefs) {
-      final saved = prefs.getString(_kCallsign) ?? '';
-      if (saved.isNotEmpty && mounted) _callsignCtrl.text = saved;
-    });
+    _load();
+  }
+
+  Future<void> _load() async {
+    final profile = await UserProfile.load();
+    final incidents = await IncidentService.instance.fetchIncidents(openOnly: true);
+    if (mounted) setState(() { _profile = profile; _openIncidents = incidents; });
+  }
+
+  // Callsign is set once at login (see UserProfile) — no need to ask again
+  // here. This just gives a quick way back to that screen if it needs fixing
+  // without reintroducing a text field in the join sheet itself.
+  Future<void> _editProfile() async {
+    await Navigator.push(context, MaterialPageRoute(
+      builder: (_) => LoginScreen(onLoggedIn: () => Navigator.pop(context)),
+    ));
+    _load();
   }
 
   Future<void> _join() async {
-    final callsign = _callsignCtrl.text.trim().toUpperCase();
+    final profile = _profile;
     final mission = _missionCtrl.text.trim().toUpperCase();
-    if (callsign.isEmpty || mission.isEmpty) return;
-    setState(() => _joining = true);
+    if (profile == null || mission.isEmpty) return;
 
-    final prefs = await SharedPreferences.getInstance();
-    String? userId = prefs.getString(_kUserId);
-    if (userId == null) {
-      userId = _randomId();
-      await prefs.setString(_kUserId, userId);
+    // If a console mission was picked, the typed code must actually match it —
+    // picking a name isn't a shortcut to skip knowing the real code.
+    final selected = _selectedIncident;
+    if (selected != null && mission != selected.missionCode.toUpperCase()) {
+      setState(() => _error = 'That code doesn\'t match "${selected.name.isEmpty ? selected.missionCode : selected.name}".');
+      return;
     }
-    await prefs.setString(_kCallsign, callsign);
-    await prefs.setString(_kMissionCode, mission);
-    await prefs.setBool(_kIsAdmin, _isAdmin);
+
+    setState(() { _joining = true; _error = null; });
+
+    await joinMissionSilently(
+      callsign: profile.displayCallsign,
+      missionCode: mission,
+      isAdmin: _isAdmin,
+    );
 
     widget.onJoined();
   }
 
-  String _randomId() {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    final rng = Random.secure();
-    return List.generate(12, (_) => chars[rng.nextInt(chars.length)]).join();
-  }
-
   @override
   void dispose() {
-    _callsignCtrl.dispose();
     _missionCtrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final profile = _profile;
     return Scaffold(
       appBar: AppBar(title: const Text('Tac Map — Join Mission')),
       body: Padding(
         padding: const EdgeInsets.all(24),
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.radar, size: 64, color: Colors.teal),
-          const SizedBox(height: 24),
-          TextField(
-            controller: _callsignCtrl,
-            textCapitalization: TextCapitalization.characters,
-            decoration: const InputDecoration(
-              labelText: 'Callsign',
-              hintText: 'MEDIC-1',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.person),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _missionCtrl,
-            textCapitalization: TextCapitalization.characters,
-            decoration: const InputDecoration(
-              labelText: 'Mission Code',
-              hintText: 'ALPHA-01',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.tag),
-            ),
-          ),
-          const SizedBox(height: 12),
-          SwitchListTile(
-            title: const Text('Admin'),
-            subtitle: const Text('Can view all missions and delete any marker'),
-            value: _isAdmin,
-            onChanged: (v) => setState(() => _isAdmin = v),
-          ),
-          const SizedBox(height: 20),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: _joining ? null : _join,
-              icon: const Icon(Icons.login),
-              label: _joining ? const Text('Joining…') : const Text('Join Mission'),
-            ),
-          ),
-        ]),
+        child: profile == null
+            ? const Center(child: CircularProgressIndicator())
+            : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                const Icon(Icons.radar, size: 64, color: Colors.teal),
+                const SizedBox(height: 24),
+                Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Icon(Icons.person, color: Colors.grey[600]),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text('Joining as ${profile.displayCallsign}',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.edit, size: 18),
+                    tooltip: 'Edit callsign',
+                    onPressed: _editProfile,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                if (_openIncidents.isNotEmpty) ...[
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Active missions',
+                        style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey[700])),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _openIncidents.map((incident) {
+                      final isSelected = _selectedIncident?.id == incident.id;
+                      return ChoiceChip(
+                        label: Text(incident.name.isEmpty ? incident.missionCode : incident.name),
+                        selected: isSelected,
+                        onSelected: (v) => setState(() {
+                          _selectedIncident = v ? incident : null;
+                          _error = null;
+                        }),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                TextField(
+                  controller: _missionCtrl,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: InputDecoration(
+                    labelText: 'Mission Code',
+                    hintText: 'ALPHA-01',
+                    border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.tag),
+                    errorText: _error,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  title: const Text('Admin'),
+                  subtitle: const Text('Can view all missions and delete any marker'),
+                  value: _isAdmin,
+                  onChanged: (v) => setState(() => _isAdmin = v),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _joining ? null : _join,
+                    icon: const Icon(Icons.login),
+                    label: _joining ? const Text('Joining…') : const Text('Join Mission'),
+                  ),
+                ),
+              ]),
       ),
     );
   }
@@ -1350,7 +1439,14 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   void initState() {
     super.initState();
     _setup();
+    TacMissionBus.listenable.addListener(_onMissionBusChanged);
   }
+
+  // A join can now happen without this screen's own bottom sheet (e.g. the
+  // mobile "accept mission assignment" prompt in main.dart) — pick it up
+  // here since this screen otherwise stays mounted, unaware, for the
+  // lifetime of the app session.
+  void _onMissionBusChanged() => _reloadMissionState();
 
   Future<void> _setup() async {
     final prefs = await SharedPreferences.getInstance();
@@ -1382,8 +1478,10 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       isScrollControlled: true,
       useSafeArea: true,
       builder: (_) => _MissionSetupScreen(onJoined: () {
+        // joinMissionSilently() (called by the sheet's own submit handler)
+        // already fired TacMissionBus, which triggers _reloadMissionState —
+        // don't call it again here or "mission joined" side effects double-fire.
         Navigator.pop(context);
-        _reloadMissionState();
       }),
     );
   }
@@ -1425,7 +1523,42 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           'created_at': DateTime.now().toUtc().toIso8601String(),
         });
       } catch (_) {}
+      _dedupOwnCallsign();
+      _purgeStaleRoster();
     }
+  }
+
+  /// Removes older tac_users rows sharing this callsign under a different id
+  /// (e.g. a reinstall generated a new random id, or someone rejoined). Only
+  /// targets entries quiet for a bit so two different people who happen to
+  /// share a callsign string don't race-delete each other on near-
+  /// simultaneous publishes.
+  Future<void> _dedupOwnCallsign() async {
+    if (_callsign.isEmpty || _missionCode.isEmpty) return;
+    try {
+      final cutoff = DateTime.now().toUtc().subtract(const Duration(seconds: 60)).toIso8601String();
+      await _supabase
+          .from('tac_users')
+          .delete()
+          .eq('mission_code', _missionCode)
+          .eq('callsign', _callsign)
+          .neq('id', _userId)
+          .lt('updated_at', cutoff);
+    } catch (_) {}
+  }
+
+  /// Garbage-collects roster entries nobody has published from in over a
+  /// week (force-quit, dead battery, never explicitly left the mission).
+  Future<void> _purgeStaleRoster() async {
+    if (_missionCode.isEmpty) return;
+    try {
+      final staleCutoff = DateTime.now().toUtc().subtract(const Duration(days: 7)).toIso8601String();
+      await _supabase
+          .from('tac_users')
+          .delete()
+          .eq('mission_code', _missionCode)
+          .lt('updated_at', staleCutoff);
+    } catch (_) {}
   }
 
   // ── TAK / ATAK integration ────────────────────────────────────────────────
@@ -1744,6 +1877,10 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         });
       } catch (_) {}
     }
+    // Roster housekeeping every 360th publish (~hourly) — covers missions
+    // nobody rejoins for a long stretch, since _purgeStaleRoster otherwise
+    // only runs right after a fresh join.
+    if (_breadcrumbTick % 360 == 0) _purgeStaleRoster();
   }
 
   void _subscribeRealtime() {
@@ -2278,6 +2415,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
   @override
   void dispose() {
+    TacMissionBus.listenable.removeListener(_onMissionBusChanged);
     _locationTimer?.cancel();
     _refreshTimer?.cancel();
     _sosTimer?.cancel();

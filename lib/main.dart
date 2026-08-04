@@ -22,6 +22,7 @@ import 'team_command.dart';
 import 'mci_triage.dart';
 import 'cert_vault.dart';
 import 'tac_map.dart';
+import 'incident_service.dart';
 import 'protocol_admin.dart';
 import 'backcountry_guide.dart';
 import 'rems_checklist.dart';
@@ -160,6 +161,8 @@ class _MainShellState extends State<MainShell> {
   bool _isAdmin = false;
   bool _unlocked = false;
   RealtimeChannel? _alertChannel;
+  RealtimeChannel? _missionChannel;
+  bool _showingMissionPrompt = false;
 
   @override
   void initState() {
@@ -172,7 +175,14 @@ class _MainShellState extends State<MainShell> {
       setState(() => _isAdmin = v);
       if (v) _subscribeToAlerts();
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
+    // Run the mission-assignment check after the update dialog resolves —
+    // both use a non-dismissible AlertDialog and shouldn't race to
+    // showDialog on the same Navigator at startup.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _checkForUpdate();
+      _checkPendingMissionAssignment();
+      _subscribeMissionAssignments();
+    });
   }
 
   Future<void> _showPaywall() async {
@@ -186,7 +196,69 @@ class _MainShellState extends State<MainShell> {
   @override
   void dispose() {
     _alertChannel?.unsubscribe();
+    _missionChannel?.unsubscribe();
     super.dispose();
+  }
+
+  // ── Mission assignment (Command Console → field device) ──────────────────
+
+  Future<void> _checkPendingMissionAssignment() async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('tac_user_id') ?? '';
+    if (userId.isEmpty || !mounted) return;
+    final pending = await IncidentService.instance.fetchPendingForUser(userId);
+    if (pending.isNotEmpty) _showMissionAssignmentPrompt(pending.first);
+  }
+
+  Future<void> _subscribeMissionAssignments() async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('tac_user_id') ?? '';
+    if (userId.isEmpty) return;
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok || !mounted) return;
+    _missionChannel?.unsubscribe();
+    _missionChannel = SupabaseService.client!
+        .channel('incident_members_$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'incident_members',
+          filter: PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq, column: 'user_id', value: userId),
+          callback: (payload) {
+            if (!mounted) return;
+            final r = payload.newRecord;
+            if (r['accepted_at'] == null && r['left_at'] == null) {
+              _checkPendingMissionAssignment();
+            }
+          },
+        )
+        .subscribe();
+  }
+
+  Future<void> _showMissionAssignmentPrompt(PendingAssignment pending) async {
+    if (_showingMissionPrompt || !mounted) return;
+    _showingMissionPrompt = true;
+    final incident = pending.incident;
+    final label = incident.name.isEmpty ? incident.missionCode : incident.name;
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Mission Assignment'),
+        icon: const Icon(Icons.local_fire_department_outlined),
+        content: Text('You\'ve been assigned to mission: $label'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Not Now')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Accept')),
+        ],
+      ),
+    );
+    _showingMissionPrompt = false;
+    if (accepted != true || !mounted) return;
+    await IncidentService.instance.acceptMembership(pending.member.id);
+    final profile = await UserProfile.load();
+    await joinMissionSilently(callsign: profile.displayCallsign, missionCode: incident.missionCode);
   }
 
   Future<void> _subscribeToAlerts() async {

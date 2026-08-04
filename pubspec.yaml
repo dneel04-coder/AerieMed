@@ -1,7 +1,7 @@
 name: resqruck
 description: ResQruck - Field Medical Protocols
 publish_to: 'none'
-version: 1.0.1+99
+version: 1.0.1+100
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -42,6 +42,7 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^3.0.0
   flutter_launcher_icons: ^0.13.1
+  msix: ^3.18.0
 
 flutter_launcher_icons:
   android: "launcher_icon"
@@ -56,6 +57,25 @@ flutter_launcher_icons:
   macos:
     generate: true
     image_path: "ResQruckIcon (2).jpg"
+
+# Command Console (lib/main_admin.dart) Microsoft Store packaging.
+# build_windows is false because `flutter build windows` needs -t
+# lib/main_admin.dart to build the console rather than the field app —
+# msix would otherwise rebuild the wrong entry point itself. Build the
+# console first (see scripts/build_windows_both.ps1), then run
+# `dart run msix:create` to wrap that existing output.
+msix_config:
+  store: true
+  display_name: ResQruck Command Console
+  publisher_display_name: allamericanconsulting
+  identity_name: allamericanconsulting.Res-Q-RuckCommandConsole
+  publisher: CN=E427069E-AABA-41B5-88C2-BB1C9C371A8F
+  msix_version: 1.0.1.0
+  logo_path: "ResQruckIcon (2).jpg"
+  capabilities: internetClient
+  build_windows: false
+  output_path: dist/msix
+  output_name: ResQruckCommandConsole
 
 flutter:
   uses-material-design: true
