@@ -1,7 +1,7 @@
 name: resqruck
 description: ResQruck - Field Medical Protocols
 publish_to: 'none'
-version: 1.0.1+100
+version: 1.0.1+101
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -66,7 +66,7 @@ flutter_launcher_icons:
 # `dart run msix:create` to wrap that existing output.
 msix_config:
   store: true
-  display_name: ResQruck Command Console
+  display_name: Res-Q-Ruck Command Console
   publisher_display_name: allamericanconsulting
   identity_name: allamericanconsulting.Res-Q-RuckCommandConsole
   publisher: CN=E427069E-AABA-41B5-88C2-BB1C9C371A8F

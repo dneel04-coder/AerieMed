@@ -4,7 +4,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../protocol_admin.dart' show SupabaseService;
-import '../tac_map.dart' show TacUser, TacZone, TacMarker, TacSosEvent;
+import '../tac_map.dart'
+    show TacUser, TacZone, TacMarker, TacSosEvent, resourceTypeIcon, parseHexColor, showPersonnelInfoSheet;
 import '../incident_service.dart';
 
 const _kOsmTileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -34,6 +35,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   final Map<String, TacZone> _zones = {};
   final Map<String, TacMarker> _markers = {};
   final Map<String, TacSosEvent> _sos = {};
+  final Map<String, String> _resourceTypeByUser = {};
+  final Map<String, Color> _teamColorByUser = {};
+  final Map<String, String> _teamNameByUser = {};
   RealtimeChannel? _channel;
   bool _loading = true;
   late _MapMode _mode;
@@ -73,6 +77,22 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
   Iterable<TacUser> get _visibleUsers => _users.values.where(_isCurrent);
 
+  Future<void> _resolveSos(TacSosEvent s) async {
+    setState(() => _sos.remove(s.id)); // optimistic — realtime confirms shortly after
+    final client = SupabaseService.client;
+    if (client == null) return;
+    try {
+      await client.from('tac_sos').update({
+        'resolved_at': DateTime.now().toUtc().toIso8601String(),
+        'resolved_by': 'Command Console',
+      }).eq('id', s.id);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not resolve SOS: $e')));
+      }
+    }
+  }
+
   void _setMode(_MapMode mode) {
     if (mode == _mode) return;
     setState(() => _mode = mode);
@@ -89,6 +109,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     _zones.clear();
     _markers.clear();
     _sos.clear();
+    _resourceTypeByUser.clear();
+    _teamColorByUser.clear();
+    _teamNameByUser.clear();
     if (_mode == _MapMode.thisIncident && widget.incident == null) return;
     setState(() => _loading = true);
 
@@ -134,6 +157,35 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       for (final r in sosRows) {
         final s = TacSosEvent.fromMap(r as Map<String, dynamic>);
         if (!s.resolved) _sos[s.id] = s;
+      }
+      // Personnel role/team — separate tables from tac_users (location), so
+      // resolved into lookup maps here rather than joined server-side.
+      // Degrades silently (no icon/color override) if the schema migration
+      // for teams/resource_type/team_id hasn't been run yet.
+      final teamRows = await client.from('teams').select('id, name, color_hex') as List;
+      final colorByTeam = <String, Color>{};
+      final nameByTeam = <String, String>{};
+      for (final r in teamRows) {
+        final m = r as Map<String, dynamic>;
+        final id = m['id'] as String;
+        final color = parseHexColor(m['color_hex'] as String?);
+        if (color != null) colorByTeam[id] = color;
+        nameByTeam[id] = m['name'] as String? ?? '';
+      }
+      final profileRows = await client.from('user_profiles').select('user_id, resource_type, team_id') as List;
+      for (final r in profileRows) {
+        final m = r as Map<String, dynamic>;
+        final userId = m['user_id'] as String? ?? '';
+        if (userId.isEmpty) continue;
+        final resourceType = m['resource_type'] as String? ?? '';
+        if (resourceType.isNotEmpty) _resourceTypeByUser[userId] = resourceType;
+        final teamId = m['team_id'] as String?;
+        if (teamId != null) {
+          final teamColor = colorByTeam[teamId];
+          if (teamColor != null) _teamColorByUser[userId] = teamColor;
+          final teamName = nameByTeam[teamId];
+          if (teamName != null && teamName.isNotEmpty) _teamNameByUser[userId] = teamName;
+        }
       }
     } catch (_) {}
 
@@ -302,7 +354,13 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                         point: LatLng(u.lat, u.lng),
                         width: 120,
                         height: 56,
-                        child: _UserMarker(user: u, showMission: _mode == _MapMode.allUsers),
+                        child: _UserMarker(
+                          user: u,
+                          showMission: _mode == _MapMode.allUsers,
+                          resourceType: _resourceTypeByUser[u.id],
+                          teamName: _teamNameByUser[u.id],
+                          teamColor: _teamColorByUser[u.id],
+                        ),
                       )),
                 ]),
               ],
@@ -345,6 +403,10 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                         dense: true,
                         leading: const Icon(Icons.emergency, color: Colors.red, size: 18),
                         title: Text(s.callsign),
+                        trailing: TextButton(
+                          onPressed: () => _resolveSos(s),
+                          child: const Text('Resolve'),
+                        ),
                       )),
                 ],
               ],
@@ -359,23 +421,49 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 class _UserMarker extends StatelessWidget {
   final TacUser user;
   final bool showMission;
-  const _UserMarker({required this.user, this.showMission = false});
+  final String? resourceType;
+  final String? teamName;
+  final Color? teamColor;
+  const _UserMarker({
+    required this.user,
+    this.showMission = false,
+    this.resourceType,
+    this.teamName,
+    this.teamColor,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Column(mainAxisSize: MainAxisSize.min, children: [
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(
-          color: Colors.black87,
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Text(
-          showMission && user.missionCode.isNotEmpty ? '${user.callsign} · ${user.missionCode}' : user.callsign,
-          style: const TextStyle(color: Colors.white, fontSize: 11),
-        ),
+    final rt = resourceType ?? '';
+    final icon = rt.isNotEmpty ? resourceTypeIcon(rt) : Icons.person_pin_circle;
+    final color = teamColor ?? Colors.teal;
+    return GestureDetector(
+      onTap: () => showPersonnelInfoSheet(
+        context,
+        userId: user.id,
+        callsign: user.callsign,
+        resourceType: resourceType,
+        teamName: teamName,
+        teamColor: teamColor,
+        assignedBy: 'Command Console',
       ),
-      const Icon(Icons.person_pin_circle, color: Colors.teal, size: 32),
-    ]);
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.black87,
+            borderRadius: BorderRadius.circular(4),
+            // Team-color ring so team members read as visually grouped even
+            // when their resource_type/icon differs.
+            border: teamColor != null ? Border.all(color: teamColor!, width: 2) : null,
+          ),
+          child: Text(
+            showMission && user.missionCode.isNotEmpty ? '${user.callsign} · ${user.missionCode}' : user.callsign,
+            style: const TextStyle(color: Colors.white, fontSize: 11),
+          ),
+        ),
+        Icon(icon, color: color, size: 32),
+      ]),
+    );
   }
 }

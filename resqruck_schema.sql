@@ -359,6 +359,90 @@ begin
     alter publication supabase_realtime add table incident_members;
   exception when others then null;
   end;
+
+  -- teams: standing organizational teams (not mission-specific), matching
+  -- REMS roster conventions (Type 1/Type 2 resource typing, A/B squad
+  -- designations). color_hex drives team color-coding on the map/roster.
+  create table if not exists teams (
+    id uuid default gen_random_uuid() primary key,
+    name text not null,
+    color_hex text not null default '#2196F3',
+    designation text not null default '',
+    notes text default '',
+    created_at timestamptz default now()
+  );
+  begin
+    alter table teams enable row level security;
+    create policy "public_access" on teams
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  begin
+    alter publication supabase_realtime add table teams;
+  exception when others then null;
+  end;
+
+  -- user_profiles: single-resource typing (wildland fire ICS conventions —
+  -- EMT, EMT-Paramedic, Rope Rescue Technician, Driver/Operator, Team Leader)
+  -- and standing team membership. resource_type is intentionally free text,
+  -- not a check constraint, matching how status/cert_level/zone_type are
+  -- validated client-side elsewhere in this schema rather than locked at
+  -- the DB level.
+  alter table if exists user_profiles add column if not exists resource_type text default '';
+  alter table if exists user_profiles add column if not exists team_id uuid references teams(id);
+
+  -- assets: persistent, org-wide resource registry (vehicles, equipment,
+  -- caches). Not mission-scoped — where an asset currently is / who has it
+  -- lives in asset_assignments below, so its history isn't lost when it moves.
+  create table if not exists assets (
+    id uuid default gen_random_uuid() primary key,
+    type text not null,
+    identifier text not null,
+    status text not null default 'Available',
+    notes text default '',
+    created_at timestamptz default now(),
+    unique(type, identifier)
+  );
+  begin
+    alter table assets enable row level security;
+    create policy "public_access" on assets
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  begin
+    alter publication supabase_realtime add table assets;
+  exception when others then null;
+  end;
+
+  -- asset_assignments: polymorphic — an asset can be assigned to a user, a
+  -- team, or a mission (incident). assignable_id is resolved by the app
+  -- against user_profiles/teams/incidents based on assignable_type; Postgres
+  -- can't natively FK-constrain across a type discriminator without a
+  -- trigger, so referential integrity here is enforced app-side, same as
+  -- incident_members.user_id elsewhere in this schema. The partial unique
+  -- index ensures an asset has only one active assignment at a time.
+  create table if not exists asset_assignments (
+    id uuid default gen_random_uuid() primary key,
+    asset_id uuid not null references assets(id) on delete cascade,
+    assignable_type text not null check (assignable_type in ('user', 'team', 'mission')),
+    assignable_id text not null,
+    assigned_at timestamptz default now(),
+    assigned_by text default '',
+    unassigned_at timestamptz,
+    notes text default ''
+  );
+  create unique index if not exists asset_assignments_one_active_uq
+    on asset_assignments (asset_id) where unassigned_at is null;
+  begin
+    alter table asset_assignments enable row level security;
+    create policy "public_access" on asset_assignments
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  begin
+    alter publication supabase_realtime add table asset_assignments;
+  exception when others then null;
+  end;
 end;
 $func$;
 

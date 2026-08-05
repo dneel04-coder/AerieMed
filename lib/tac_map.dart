@@ -20,6 +20,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'protocol_admin.dart' show SupabaseService;
 import 'gps_tools.dart';
+import 'asset_service.dart';
 import 'incident_service.dart';
 import 'lz_assessment.dart';
 import 'offline_maps.dart';
@@ -164,6 +165,262 @@ Color _statusColor(String s) => switch (s) {
   'Off Duty'    => Colors.grey,
   _             => Colors.teal,
 };
+
+/// Maps a personnel resource_type (user_profiles.resource_type — wildland
+/// fire single-resource categories) to a map marker icon. Placeholder using
+/// Material icons pending a supplied custom icon set: swapping in real
+/// assets later only needs to change this one function, not any of the
+/// call sites that render personnel markers on either map screen.
+IconData resourceTypeIcon(String resourceType) => switch (resourceType) {
+      'EMT' => Icons.medical_services,
+      'EMT-Paramedic' => Icons.local_hospital,
+      'Rope Rescue Technician' => Icons.terrain,
+      'Driver/Operator' => Icons.local_shipping,
+      'Team Leader' => Icons.shield,
+      _ => Icons.person_pin_circle,
+    };
+
+/// Parses a '#RRGGBB' or '#AARRGGBB' hex string (as stored in
+/// teams.color_hex) into a Color. Returns null for anything absent or
+/// unparseable so callers fall back to their own default instead of
+/// silently showing a wrong color.
+Color? parseHexColor(String? hex) {
+  if (hex == null || hex.isEmpty) return null;
+  var h = hex.trim().replaceFirst('#', '');
+  if (h.length == 6) h = 'FF$h';
+  if (h.length != 8) return null;
+  final value = int.tryParse(h, radix: 16);
+  return value == null ? null : Color(value);
+}
+
+// ── Personnel info sheet — shared by the mobile map and Command Console ───────
+
+/// Shown on long-press (or tap) of a personnel marker: entity info, team,
+/// and currently assigned assets, with an action to assign another asset.
+Future<void> showPersonnelInfoSheet(
+  BuildContext context, {
+  required String userId,
+  required String callsign,
+  String? resourceType,
+  String? teamName,
+  Color? teamColor,
+  String assignedBy = '',
+}) {
+  return showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (_) => _PersonnelInfoSheet(
+      userId: userId,
+      callsign: callsign,
+      resourceType: resourceType,
+      teamName: teamName,
+      teamColor: teamColor,
+      assignedBy: assignedBy,
+    ),
+  );
+}
+
+class _PersonnelInfoSheet extends StatefulWidget {
+  final String userId;
+  final String callsign;
+  final String? resourceType;
+  final String? teamName;
+  final Color? teamColor;
+  final String assignedBy;
+
+  const _PersonnelInfoSheet({
+    required this.userId,
+    required this.callsign,
+    this.resourceType,
+    this.teamName,
+    this.teamColor,
+    this.assignedBy = '',
+  });
+
+  @override
+  State<_PersonnelInfoSheet> createState() => _PersonnelInfoSheetState();
+}
+
+class _PersonnelInfoSheetState extends State<_PersonnelInfoSheet> {
+  bool _loading = true;
+  List<({AssetAssignment assignment, Asset? asset})> _assigned = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final assignments = await AssetService.instance.getAssignmentsFor(AssignableType.user, widget.userId);
+    final active = assignments.where((a) => a.isActive).toList();
+    final assets = await AssetService.instance.fetchAssets();
+    final assetById = {for (final a in assets) a.id: a};
+    if (mounted) {
+      setState(() {
+        _assigned = active.map((a) => (assignment: a, asset: assetById[a.assetId])).toList();
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _openPicker() async {
+    final asset = await showModalBottomSheet<Asset>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => const _AssetPickerSheet(),
+    );
+    if (asset == null || !mounted) return;
+    try {
+      await AssetService.instance.assignAssetToUser(asset.id, widget.userId, assignedBy: widget.assignedBy);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not assign asset: $e')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasResourceType = widget.resourceType != null && widget.resourceType!.isNotEmpty;
+    final hasTeam = widget.teamName != null && widget.teamName!.isNotEmpty;
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            CircleAvatar(
+              backgroundColor: (widget.teamColor ?? Colors.teal).withValues(alpha: 0.2),
+              child: Icon(
+                hasResourceType ? resourceTypeIcon(widget.resourceType!) : Icons.person_pin_circle,
+                color: widget.teamColor ?? Colors.teal,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(widget.callsign, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                if (hasResourceType)
+                  Text(widget.resourceType!, style: TextStyle(color: Colors.grey[600])),
+                if (hasTeam)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Container(
+                        width: 10, height: 10,
+                        decoration: BoxDecoration(color: widget.teamColor ?? Colors.grey, shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(widget.teamName!, style: TextStyle(color: Colors.grey[600])),
+                    ]),
+                  ),
+              ]),
+            ),
+          ]),
+          const SizedBox(height: 16),
+          Text('Assigned Assets', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 8),
+          if (_loading)
+            const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Center(child: CircularProgressIndicator()))
+          else if (_assigned.isEmpty)
+            Text('No assets currently assigned.', style: TextStyle(color: Colors.grey[600]))
+          else
+            ..._assigned.map((r) => ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.inventory_2_outlined),
+                  title: Text(r.asset?.identifier ?? '(deleted asset)'),
+                  subtitle: Text(r.asset?.type ?? ''),
+                )),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _openPicker,
+              icon: const Icon(Icons.add),
+              label: const Text('Assign Asset'),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _AssetPickerSheet extends StatefulWidget {
+  const _AssetPickerSheet();
+
+  @override
+  State<_AssetPickerSheet> createState() => _AssetPickerSheetState();
+}
+
+class _AssetPickerSheetState extends State<_AssetPickerSheet> {
+  bool _loading = true;
+  List<Asset> _available = [];
+  String? _typeFilter;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final assets = await AssetService.instance.fetchUnassignedAssets();
+    if (mounted) setState(() { _available = assets; _loading = false; });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final types = _available.map((a) => a.type).toSet().toList()..sort();
+    final filtered = _typeFilter == null ? _available : _available.where((a) => a.type == _typeFilter).toList();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Assign Asset', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 12),
+        if (types.isNotEmpty)
+          DropdownButtonFormField<String?>(
+            initialValue: _typeFilter,
+            decoration: const InputDecoration(labelText: 'Type', isDense: true, border: OutlineInputBorder()),
+            items: [
+              const DropdownMenuItem<String?>(value: null, child: Text('All types')),
+              ...types.map((t) => DropdownMenuItem<String?>(value: t, child: Text(t))),
+            ],
+            onChanged: (v) => setState(() => _typeFilter = v),
+          ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 320,
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : filtered.isEmpty
+                  ? Center(
+                      child: Text('No unassigned assets${_typeFilter != null ? ' of this type' : ''}.',
+                          style: TextStyle(color: Colors.grey[600])))
+                  : ListView.builder(
+                      itemCount: filtered.length,
+                      itemBuilder: (_, i) {
+                        final a = filtered[i];
+                        return ListTile(
+                          leading: const Icon(Icons.inventory_2_outlined),
+                          title: Text(a.identifier),
+                          subtitle: Text(a.type),
+                          onTap: () => Navigator.pop(context, a),
+                        );
+                      },
+                    ),
+        ),
+      ]),
+    );
+  }
+}
 
 // ── Zone types ────────────────────────────────────────────────────────────────
 const _kZoneTypes = ['Perimeter', 'LZ', 'Base Camp', 'Staging', 'Custom'];
@@ -1399,6 +1656,14 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   final Map<String, TacUser> _users = {};
   final Map<String, TacMarker> _markers = {};
 
+  // Personnel resource_type + team color, keyed by user_id — resolved once
+  // from user_profiles/teams (see _loadPersonnelMeta) rather than joined
+  // per-marker, since tac_users (location) and user_profiles (role/team)
+  // are separate tables with no server-side join available here.
+  final Map<String, String> _resourceTypeByUser = {};
+  final Map<String, Color> _teamColorByUser = {};
+  final Map<String, String> _teamNameByUser = {};
+
   RealtimeChannel? _realtimeChannel;
   Timer? _locationTimer;
   Timer? _refreshTimer;
@@ -1467,6 +1732,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     if (_callsign.isNotEmpty) _startLocationPublish();
     _subscribeRealtime();
     _loadInitialData();
+    _loadPersonnelMeta();
     _subscribeTakPositions();
     _loadTakData();
   }
@@ -2023,6 +2289,42 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     } catch (_) {}
   }
 
+  Future<void> _loadPersonnelMeta() async {
+    try {
+      final teamRows = await _supabase.from('teams').select('id, name, color_hex') as List;
+      final colorByTeam = <String, Color>{};
+      final nameByTeam = <String, String>{};
+      for (final r in teamRows) {
+        final m = r as Map<String, dynamic>;
+        final id = m['id'] as String;
+        final color = parseHexColor(m['color_hex'] as String?);
+        if (color != null) colorByTeam[id] = color;
+        nameByTeam[id] = m['name'] as String? ?? '';
+      }
+      final profileRows = await _supabase.from('user_profiles').select('user_id, resource_type, team_id') as List;
+      if (!mounted) return;
+      setState(() {
+        for (final r in profileRows) {
+          final m = r as Map<String, dynamic>;
+          final userId = m['user_id'] as String? ?? '';
+          if (userId.isEmpty) continue;
+          final resourceType = m['resource_type'] as String? ?? '';
+          if (resourceType.isNotEmpty) _resourceTypeByUser[userId] = resourceType;
+          final teamId = m['team_id'] as String?;
+          if (teamId != null) {
+            final teamColor = colorByTeam[teamId];
+            if (teamColor != null) _teamColorByUser[userId] = teamColor;
+            final teamName = nameByTeam[teamId];
+            if (teamName != null && teamName.isNotEmpty) _teamNameByUser[userId] = teamName;
+          }
+        }
+      });
+    } catch (_) {
+      // teams/resource_type/team_id may not exist yet if the schema
+      // migration hasn't been run — degrade to the existing generic look.
+    }
+  }
+
   Future<void> _loadInitialData() async {
     _checkPendingInvites();
     // Load users first — silent fail is acceptable
@@ -2211,6 +2513,44 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('SOS failed: $e'), backgroundColor: Colors.red));
     }
+  }
+
+  static const _kSosRowHeight = 32.0;
+
+  double get _sosBannerHeight => _activeSos.length * _kSosRowHeight;
+
+  Widget _buildSosRow(TacSosEvent s) {
+    final isMine = s.userId == _userId;
+    final canResolve = isMine || _isAdmin;
+    return SizedBox(
+      height: _kSosRowHeight,
+      child: InkWell(
+        onTap: () => _mapCtrl.move(LatLng(s.lat, s.lng), 14),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Row(children: [
+            const Icon(Icons.sos, color: Colors.white, size: 16),
+            const SizedBox(width: 8),
+            Expanded(child: Text(
+              '🚨 SOS — ${s.callsign}',
+              style: const TextStyle(color: Colors.white,
+                  fontWeight: FontWeight.bold, fontSize: 12),
+              overflow: TextOverflow.ellipsis)),
+            if (canResolve)
+              TextButton(
+                onPressed: () => _resolveSos(s.id),
+                style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(0, 0),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                child: Text(isMine ? 'Cancel SOS' : 'Resolve',
+                    style: const TextStyle(color: Colors.white,
+                        fontSize: 11, fontWeight: FontWeight.bold)),
+              ),
+          ]),
+        ),
+      ),
+    );
   }
 
   Future<void> _resolveSos(String sosId) async {
@@ -2523,48 +2863,72 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       final battLabel = user.batteryLevel != null ? '🔋${user.batteryLevel}%' : '';
       // SOS highlight
       final hasSos = _activeSos.any((s) => s.userId == user.id);
+      // Role icon (resource_type) and team-color ring layer on top of the
+      // existing mission-relationship badge color and status border — team
+      // members should read as visually grouped by color even when their
+      // resource_type/icon differs, without losing the existing signals.
+      final resourceType = _resourceTypeByUser[user.id] ?? '';
+      final teamColor = _teamColorByUser[user.id];
+      final personIcon = resourceType.isNotEmpty
+          ? resourceTypeIcon(resourceType)
+          : (isMe ? Icons.person_pin : Icons.person_pin_circle);
+      final ringColor = teamColor ?? statusCol;
+      final ringWidth = teamColor != null ? 2.5 : 1.5;
+      void showInfo() => showPersonnelInfoSheet(
+            context,
+            userId: user.id,
+            callsign: user.callsign,
+            resourceType: resourceType.isEmpty ? null : resourceType,
+            teamName: _teamNameByUser[user.id],
+            teamColor: teamColor,
+            assignedBy: _callsign,
+          );
       markers.add(Marker(
         point: LatLng(user.lat, user.lng),
         width: 100,
         height: hasSos ? 82 : 72,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            if (hasSos)
+        child: GestureDetector(
+          onTap: showInfo,
+          onLongPress: showInfo,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              if (hasSos)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(4)),
+                  child: const Text('🚨 SOS', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(4)),
-                child: const Text('🚨 SOS', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                constraints: const BoxConstraints(maxWidth: 96),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+                decoration: BoxDecoration(
+                  color: hasSos ? Colors.red : baseColor,
+                  borderRadius: BorderRadius.circular(5),
+                  border: Border.all(color: hasSos ? statusCol : ringColor, width: ringWidth),
+                  boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 3, offset: Offset(1,1))],
+                ),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text(user.callsign,
+                      textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                  if (battLabel.isNotEmpty || timeLabel.isNotEmpty)
+                    Text('$battLabel${battLabel.isNotEmpty && timeLabel.isNotEmpty ? ' · ' : ''}$timeLabel',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 8)),
+                  if (user.status != 'Active')
+                    Text(user.status,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: statusCol == Colors.teal ? Colors.white : statusCol,
+                            fontSize: 7, fontWeight: FontWeight.w600)),
+                ]),
               ),
-            Container(
-              constraints: const BoxConstraints(maxWidth: 96),
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
-              decoration: BoxDecoration(
-                color: hasSos ? Colors.red : baseColor,
-                borderRadius: BorderRadius.circular(5),
-                border: Border.all(color: statusCol, width: 1.5),
-                boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 3, offset: Offset(1,1))],
-              ),
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Text(user.callsign,
-                    textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
-                if (battLabel.isNotEmpty || timeLabel.isNotEmpty)
-                  Text('$battLabel${battLabel.isNotEmpty && timeLabel.isNotEmpty ? ' · ' : ''}$timeLabel',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 8)),
-                if (user.status != 'Active')
-                  Text(user.status,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: statusCol == Colors.teal ? Colors.white : statusCol,
-                          fontSize: 7, fontWeight: FontWeight.w600)),
-              ]),
-            ),
-            Icon(isMe ? Icons.person_pin : Icons.person_pin_circle,
-                color: hasSos ? Colors.red : baseColor, size: 32,
-                shadows: const [Shadow(color: Colors.black45, blurRadius: 4)]),
-          ],
+              Icon(personIcon,
+                  color: hasSos ? Colors.red : (teamColor ?? baseColor), size: 32,
+                  shadows: const [Shadow(color: Colors.black45, blurRadius: 4)]),
+            ],
+          ),
         ),
       ));
     }
@@ -2808,50 +3172,20 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             ],
           ),
 
-          // ── SOS alert banner ────────────────────────────────────────────
+          // ── SOS alert banner — one row per active SOS, each clearable on
+          // its own (originator cancels their own; admin toggle resolves any) ──
           if (_activeSos.isNotEmpty)
             Positioned(top: 0, left: 0, right: 0,
               child: Material(color: Colors.red,
-                child: InkWell(
-                  onTap: () => _mapCtrl.move(
-                      LatLng(_activeSos.first.lat, _activeSos.first.lng), 14),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    child: Row(children: [
-                      const Icon(Icons.sos, color: Colors.white, size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(child: Text(
-                        '🚨 SOS — ${_activeSos.map((s) => s.callsign).join(', ')}',
-                        style: const TextStyle(color: Colors.white,
-                            fontWeight: FontWeight.bold, fontSize: 12))),
-                      // Originator can cancel their own SOS; admin resolves any
-                      Builder(builder: (_) {
-                        final myOwnSos = _activeSos
-                            .where((s) => s.userId == _userId)
-                            .toList();
-                        if (myOwnSos.isNotEmpty) {
-                          return TextButton(
-                            onPressed: () => _resolveSos(myOwnSos.first.id),
-                            child: const Text('Cancel SOS',
-                                style: TextStyle(color: Colors.white,
-                                    fontSize: 11, fontWeight: FontWeight.bold)));
-                        }
-                        if (_isAdmin) {
-                          return TextButton(
-                            onPressed: () => _resolveSos(_activeSos.first.id),
-                            child: const Text('Resolve',
-                                style: TextStyle(color: Colors.white, fontSize: 11)));
-                        }
-                        return const SizedBox.shrink();
-                      }),
-                    ]),
-                  ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: _activeSos.map(_buildSosRow).toList(),
                 )),
             ),
 
           // ── ATAK top header bar ─────────────────────────────────────────
           Positioned(
-            top: _activeSos.isNotEmpty ? 36 : 0,
+            top: _sosBannerHeight,
             left: 0, right: 0,
             child: Container(
               color: bg.withValues(alpha: 0.9),
@@ -2950,7 +3284,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
           // ── Compass (ATAK style) ────────────────────────────────────────
           Positioned(
-            top: (_activeSos.isNotEmpty ? 36 : 0) + 34,
+            top: (_sosBannerHeight) + 34,
             right: 52,
             child: Container(
               width: 32, height: 32,
@@ -2970,7 +3304,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
           // ── Zoom badge ─────────────────────────────────────────────────
           Positioned(
-            top: (_activeSos.isNotEmpty ? 36 : 0) + 34,
+            top: (_sosBannerHeight) + 34,
             left: 8,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -2987,7 +3321,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           // ── Right tool panel ────────────────────────────────────────────
           Positioned(
             right: 8,
-            top: (_activeSos.isNotEmpty ? 36 : 0) + 34,
+            top: (_sosBannerHeight) + 34,
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               // Zoom
               _atakBtn(Icons.add, bg, Colors.white70,

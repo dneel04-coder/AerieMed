@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../incident_service.dart';
 import 'incident_screen.dart';
 import 'roster_screen.dart';
+import 'assets_screen.dart';
 import 'live_map_screen.dart';
 import 'deployment_orders_console_screen.dart';
 import 'reports_console_screen.dart';
@@ -39,6 +40,7 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
     NavigationRailDestination(icon: Icon(Icons.local_fire_department_outlined), selectedIcon: Icon(Icons.local_fire_department), label: Text('Incidents')),
     NavigationRailDestination(icon: Icon(Icons.map_outlined), selectedIcon: Icon(Icons.map), label: Text('Live Map')),
     NavigationRailDestination(icon: Icon(Icons.groups_outlined), selectedIcon: Icon(Icons.groups), label: Text('Roster')),
+    NavigationRailDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: Text('Assets')),
     NavigationRailDestination(icon: Icon(Icons.upload_file_outlined), selectedIcon: Icon(Icons.upload_file), label: Text('Deployment Orders')),
     NavigationRailDestination(icon: Icon(Icons.assignment_outlined), selectedIcon: Icon(Icons.assignment), label: Text('Reports')),
     NavigationRailDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: Text('Settings')),
@@ -75,6 +77,7 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
                         IncidentScreen(controller: _activeIncident),
                         LiveMapScreen(incident: _activeIncident.incident),
                         RosterScreen(incident: _activeIncident.incident),
+                        const AssetsScreen(),
                         DeploymentOrdersConsoleScreen(incident: _activeIncident.incident),
                         ReportsConsoleScreen(incident: _activeIncident.incident),
                         const SettingsScreen(),
