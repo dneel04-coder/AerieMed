@@ -391,6 +391,12 @@ begin
   alter table if exists user_profiles add column if not exists resource_type text default '';
   alter table if exists user_profiles add column if not exists team_id uuid references teams(id);
 
+  -- deployment_status: where someone is relative to an incident assignment —
+  -- Standby / In Transit / On Mission / Off Duty. Independent of incident
+  -- membership: people can be on standby with assets pre-staged, or moving
+  -- toward an incident, before any incident_members row exists for them.
+  alter table if exists user_profiles add column if not exists deployment_status text default 'Standby';
+
   -- assets: persistent, org-wide resource registry (vehicles, equipment,
   -- caches). Not mission-scoped — where an asset currently is / who has it
   -- lives in asset_assignments below, so its history isn't lost when it moves.
@@ -441,6 +447,21 @@ begin
   end;
   begin
     alter publication supabase_realtime add table asset_assignments;
+  exception when others then null;
+  end;
+
+  -- app_settings: simple team-wide key/value config (currently just the
+  -- shared team drive link patient reports can be sent to). Unlike admin
+  -- credentials elsewhere (per-device, in SharedPreferences), this is meant
+  -- to be the same for every device, so it lives here instead.
+  create table if not exists app_settings (
+    key text primary key,
+    value text not null default ''
+  );
+  begin
+    alter table app_settings enable row level security;
+    create policy "public_access" on app_settings
+      for all using (true) with check (true);
   exception when others then null;
   end;
 end;

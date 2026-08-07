@@ -1,8 +1,28 @@
 import 'package:flutter/material.dart';
 import '../protocol_admin.dart' show ProtocolSyncService;
+import '../team_settings_service.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  String _teamDriveLink = '';
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final link = await TeamSettingsService.getTeamDriveLink();
+    if (mounted) setState(() { _teamDriveLink = link; _loading = false; });
+  }
 
   Future<void> _changeCredentials(BuildContext context) async {
     final curUserCtrl = TextEditingController();
@@ -52,6 +72,46 @@ class SettingsScreen extends StatelessWidget {
     }
   }
 
+  Future<void> _editTeamDriveLink(BuildContext context) async {
+    final ctrl = TextEditingController(text: _teamDriveLink);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Team Drive Link'),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text(
+            'A Dropbox / Google Drive / OneDrive shared-folder link. Field '
+            'users see this when sending a report via "Send to Team Drive" '
+            '— they get the link plus the OS share sheet with the PDF '
+            'attached (Dropbox/Drive/OneDrive show up there automatically '
+            'if installed).',
+            style: TextStyle(fontSize: 12),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: ctrl,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Shared folder link',
+              hintText: 'https://www.dropbox.com/scl/fo/…',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final link = ctrl.text.trim();
+    await TeamSettingsService.setTeamDriveLink(link);
+    if (!mounted) return;
+    setState(() => _teamDriveLink = link);
+    ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(content: Text('Team drive link saved')));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -67,6 +127,19 @@ class SettingsScreen extends StatelessWidget {
               trailing: FilledButton.tonal(
                 onPressed: () => _changeCredentials(context),
                 child: const Text('Change'),
+              ),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.folder_shared_outlined),
+              title: const Text('Team Drive Link'),
+              subtitle: Text(_loading
+                  ? 'Loading…'
+                  : (_teamDriveLink.isEmpty ? 'Not set — field app shows nothing yet' : _teamDriveLink)),
+              trailing: FilledButton.tonal(
+                onPressed: _loading ? null : () => _editTeamDriveLink(context),
+                child: const Text('Edit'),
               ),
             ),
           ),

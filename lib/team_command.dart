@@ -3471,67 +3471,32 @@ class _AvailabilityTabState extends State<_AvailabilityTab>
     await _load();
   }
 
-  /// Removes orphaned and duplicate calendar entries.
-  /// - Orphaned: user_id not present in user_profiles
-  /// - Duplicate: same callsign (case-insensitive) across multiple user_ids;
-  ///   keeps the canonical user_id (the one still in user_profiles)
+  /// Removes orphaned calendar entries (user_id no longer present in
+  /// user_profiles — e.g. the profile was deleted). Does NOT attempt to
+  /// dedupe by callsign/name: that used to pick a "canonical" user_id and
+  /// delete every other matching row, which meant two people who happened
+  /// to share a callsign/name would have one of their live availability
+  /// entries silently wiped on every calendar load. Duplicate callsigns are
+  /// now rejected at profile creation instead (see UserProfile.callsignTaken).
   Future<void> _cleanCalendar() async {
     final ok = await SupabaseService.ensureInitialized();
     if (!ok) return;
     final client = SupabaseService.client!;
     try {
-      // 1. Fetch all valid profiles
       final profiles = await client
           .from('user_profiles')
-          .select('user_id, name, callsign') as List;
+          .select('user_id') as List;
       if (profiles.isEmpty) return; // safety — don't wipe calendar if profiles table is empty
+      final validIds = profiles.map((p) => p['user_id'] as String).toSet();
 
-      final validIds = <String>{};
-      // callsign/name → canonical user_id (case-insensitive)
-      final csToUid = <String, String>{};
-      for (final p in profiles) {
-        final uid  = p['user_id'] as String;
-        final name = (p['name'] as String? ?? '').toLowerCase().trim();
-        final cs   = (p['callsign'] as String? ?? '').toLowerCase().trim();
-        validIds.add(uid);
-        if (name.isNotEmpty) csToUid[name] = uid;
-        if (cs.isNotEmpty)   csToUid[cs]   = uid;
-      }
-
-      // 2. Fetch all user_ids present in team_availability
       final avail = await client
           .from('team_availability')
-          .select('user_id, callsign') as List;
+          .select('user_id') as List;
+      final seenUids = avail.map((r) => r['user_id'] as String).toSet();
 
-      final seenUids = <String, String>{}; // user_id → lowercase callsign
-      for (final r in avail) {
-        final uid = r['user_id'] as String;
-        final cs  = (r['callsign'] as String? ?? '').toLowerCase().trim();
-        seenUids[uid] = cs;
-      }
-
-      // 3. Delete orphaned user_ids (no matching user_profile)
-      final orphaned = seenUids.keys.where((uid) => !validIds.contains(uid)).toList();
+      final orphaned = seenUids.where((uid) => !validIds.contains(uid)).toList();
       for (final uid in orphaned) {
         await client.from('team_availability').delete().eq('user_id', uid);
-      }
-
-      // 4. Among valid user_ids, remove duplicates by callsign (case-insensitive)
-      //    Keep the canonical user_id; delete the rest.
-      final csGroups = <String, List<String>>{}; // lowercase cs → [user_ids with that cs]
-      for (final uid in seenUids.keys.where((u) => validIds.contains(u))) {
-        final cs = seenUids[uid]!;
-        if (cs.isNotEmpty) csGroups.putIfAbsent(cs, () => []).add(uid);
-      }
-      for (final entry in csGroups.entries) {
-        if (entry.value.length <= 1) continue;
-        final canonicalUid = csToUid[entry.key];
-        if (canonicalUid == null) continue;
-        for (final uid in entry.value) {
-          if (uid != canonicalUid) {
-            await client.from('team_availability').delete().eq('user_id', uid);
-          }
-        }
       }
     } catch (_) {}
   }

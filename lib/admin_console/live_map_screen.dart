@@ -38,6 +38,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   final Map<String, String> _resourceTypeByUser = {};
   final Map<String, Color> _teamColorByUser = {};
   final Map<String, String> _teamNameByUser = {};
+  final Map<String, String> _deploymentStatusByUser = {};
   RealtimeChannel? _channel;
   bool _loading = true;
   late _MapMode _mode;
@@ -112,6 +113,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     _resourceTypeByUser.clear();
     _teamColorByUser.clear();
     _teamNameByUser.clear();
+    _deploymentStatusByUser.clear();
     if (_mode == _MapMode.thisIncident && widget.incident == null) return;
     setState(() => _loading = true);
 
@@ -172,13 +174,17 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         if (color != null) colorByTeam[id] = color;
         nameByTeam[id] = m['name'] as String? ?? '';
       }
-      final profileRows = await client.from('user_profiles').select('user_id, resource_type, team_id') as List;
+      final profileRows = await client
+          .from('user_profiles')
+          .select('user_id, resource_type, team_id, deployment_status') as List;
       for (final r in profileRows) {
         final m = r as Map<String, dynamic>;
         final userId = m['user_id'] as String? ?? '';
         if (userId.isEmpty) continue;
         final resourceType = m['resource_type'] as String? ?? '';
         if (resourceType.isNotEmpty) _resourceTypeByUser[userId] = resourceType;
+        final deploymentStatus = m['deployment_status'] as String? ?? '';
+        if (deploymentStatus.isNotEmpty) _deploymentStatusByUser[userId] = deploymentStatus;
         final teamId = m['team_id'] as String?;
         if (teamId != null) {
           final teamColor = colorByTeam[teamId];
@@ -360,6 +366,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                           resourceType: _resourceTypeByUser[u.id],
                           teamName: _teamNameByUser[u.id],
                           teamColor: _teamColorByUser[u.id],
+                          deploymentStatus: _deploymentStatusByUser[u.id],
                         ),
                       )),
                 ]),
@@ -424,12 +431,14 @@ class _UserMarker extends StatelessWidget {
   final String? resourceType;
   final String? teamName;
   final Color? teamColor;
+  final String? deploymentStatus;
   const _UserMarker({
     required this.user,
     this.showMission = false,
     this.resourceType,
     this.teamName,
     this.teamColor,
+    this.deploymentStatus,
   });
 
   @override
@@ -445,6 +454,7 @@ class _UserMarker extends StatelessWidget {
         resourceType: resourceType,
         teamName: teamName,
         teamColor: teamColor,
+        deploymentStatus: deploymentStatus,
         assignedBy: 'Command Console',
       ),
       child: Column(mainAxisSize: MainAxisSize.min, children: [

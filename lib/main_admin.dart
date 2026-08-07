@@ -41,6 +41,20 @@ class _CommandConsoleAppState extends State<CommandConsoleApp> {
   void initState() {
     super.initState();
     _init();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maximizeWindow());
+  }
+
+  // Some window managers don't apply the SC_MAXIMIZE syscommand instantly on
+  // first launch (race with the initial WM_SIZE/DPI messages) — a short
+  // delay plus a setBounds fallback makes this reliable even when the
+  // native maximize flag doesn't stick on the first attempt.
+  Future<void> _maximizeWindow() async {
+    await windowManager.maximize();
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (await windowManager.isMaximized()) return;
+    final view = WidgetsBinding.instance.platformDispatcher.views.first;
+    final screenSize = view.physicalSize / view.devicePixelRatio;
+    await windowManager.setBounds(Rect.fromLTWH(0, 0, screenSize.width, screenSize.height));
   }
 
   Future<void> _init() async {

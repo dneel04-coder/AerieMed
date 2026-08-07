@@ -5,11 +5,13 @@ import 'package:crypto/crypto.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'patient_report.dart';
 import 'report_pdf.dart';
+import 'team_settings_service.dart';
 
 // 20 000 iterations of SHA-256 hash-chain keyed on a fixed app salt.
 // Produces a 256-bit key from an arbitrary passphrase.
@@ -78,6 +80,49 @@ Future<String?> _requireTeamKey(BuildContext context) async {
   );
 }
 
+
+/// Shows the admin-configured team drive link (Dropbox/Drive/OneDrive
+/// shared folder) and lets the user copy it, then hands the report PDF to
+/// the OS share sheet — Dropbox/Drive/OneDrive apps show up there
+/// automatically if installed, so the file lands in the right place
+/// without any OAuth/API integration on our end.
+Future<void> sendToTeamDrive(BuildContext context, PatientReport report) async {
+  final link = await TeamSettingsService.getTeamDriveLink();
+  if (!context.mounted) return;
+  if (link.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No team drive link configured yet — ask your admin to set one in Command Console Settings.')));
+    return;
+  }
+  final proceed = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Send to Team Drive'),
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Team drive:', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
+        SelectableText(link),
+        const SizedBox(height: 12),
+        const Text(
+          'Copy the link if you need to open it in a browser, then continue '
+          'to share the PDF — pick Dropbox/Drive/OneDrive from the share '
+          'menu if it\'s installed.',
+          style: TextStyle(fontSize: 12),
+        ),
+      ]),
+      actions: [
+        TextButton(
+          onPressed: () => Clipboard.setData(ClipboardData(text: link)),
+          child: const Text('Copy Link'),
+        ),
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Continue to Share')),
+      ],
+    ),
+  );
+  if (proceed != true || !context.mounted) return;
+  await generateAndSharePdf(context, report);
+}
 
 Future<void> exportEncryptedBundle(BuildContext context, PatientReport report) async {
   final teamKey = await _requireTeamKey(context);
@@ -188,6 +233,17 @@ class TransferOptionsSheet extends StatelessWidget {
             onTap: () {
               Navigator.pop(context);
               generateAndSharePdf(context, report);
+            },
+          ),
+          _option(
+            context,
+            icon: Icons.folder_shared_outlined,
+            color: Colors.blue,
+            title: 'Send to Team Drive',
+            subtitle: 'Shared Dropbox/Drive/OneDrive folder set by your admin',
+            onTap: () {
+              Navigator.pop(context);
+              sendToTeamDrive(context, report);
             },
           ),
           _option(

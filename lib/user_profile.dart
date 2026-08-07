@@ -107,17 +107,26 @@ class UserProfile {
         'rope_rescue': ropeRescue,
         'updated_at': DateTime.now().toIso8601String(),
       }, onConflict: 'user_id');
-
-      // Remove stale duplicate rows for this same person (same name, different
-      // user_id — happens when the app is reinstalled and generates a new ID).
-      if (name.isNotEmpty) {
-        await client
-            .from('user_profiles')
-            .delete()
-            .ilike('name', name)
-            .neq('user_id', userId);
-      }
     } catch (_) {}
+  }
+
+  /// Returns true if another profile (different user_id) already uses this
+  /// callsign. Case-insensitive, matching how callsigns are compared
+  /// elsewhere (map markers, calendar cleanup).
+  static Future<bool> callsignTaken(String callsign, {required String excludeUserId}) async {
+    final client = SupabaseService.client;
+    if (client == null || callsign.isEmpty) return false;
+    try {
+      final rows = await client
+          .from('user_profiles')
+          .select('user_id')
+          .ilike('callsign', callsign)
+          .neq('user_id', excludeUserId)
+          .limit(1);
+      return (rows as List).isNotEmpty;
+    } catch (_) {
+      return false;
+    }
   }
 }
 
@@ -177,7 +186,29 @@ class _LoginScreenState extends State<LoginScreen> {
           const SnackBar(content: Text('Full name is required.')));
       return;
     }
+    final callsign = _callsignCtrl.text.trim();
+    if (callsign.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Callsign is required.')));
+      return;
+    }
     setState(() => _saving = true);
+
+    final ok0 = await SupabaseService.ensureInitialized();
+    if (ok0) {
+      final taken = await UserProfile.callsignTaken(
+          callsign, excludeUserId: _existing?.userId ?? '');
+      if (taken) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('A profile with that callsign already exists.'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 4)));
+        setState(() => _saving = false);
+        return;
+      }
+    }
+    if (!mounted) return;
 
     // Validate access code on first login.
     if (!_accessValidated) {
@@ -291,8 +322,8 @@ class _LoginScreenState extends State<LoginScreen> {
               controller: _callsignCtrl,
               textCapitalization: TextCapitalization.characters,
               decoration: const InputDecoration(
-                labelText: 'Callsign',
-                hintText: 'Leave blank to use your name',
+                labelText: 'Callsign *',
+                hintText: 'Must be unique — no one else can use this',
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.radio),
               ),

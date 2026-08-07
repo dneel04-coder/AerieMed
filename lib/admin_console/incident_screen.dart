@@ -13,6 +13,9 @@ class IncidentScreen extends StatefulWidget {
 class _IncidentScreenState extends State<IncidentScreen> {
   List<TacIncident> _incidents = [];
   bool _loading = true;
+  final Set<String> _expanded = {};
+  final Map<String, List<IncidentMember>> _membersByIncident = {};
+  final Set<String> _loadingMembers = {};
 
   @override
   void initState() {
@@ -79,6 +82,23 @@ class _IncidentScreenState extends State<IncidentScreen> {
     }
   }
 
+  Future<void> _toggleExpanded(TacIncident incident) async {
+    if (_expanded.contains(incident.id)) {
+      setState(() => _expanded.remove(incident.id));
+      return;
+    }
+    setState(() => _expanded.add(incident.id));
+    if (_membersByIncident.containsKey(incident.id)) return;
+    setState(() => _loadingMembers.add(incident.id));
+    final members = await IncidentService.instance.fetchMembers(incident.id);
+    if (mounted) {
+      setState(() {
+        _membersByIncident[incident.id] = members;
+        _loadingMembers.remove(incident.id);
+      });
+    }
+  }
+
   Future<void> _closeIncident(TacIncident incident) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -135,23 +155,65 @@ class _IncidentScreenState extends State<IncidentScreen> {
                   itemBuilder: (_, i) {
                     final incident = _incidents[i];
                     final active = widget.controller.incident?.id == incident.id;
+                    final isExpanded = _expanded.contains(incident.id);
+                    final members = _membersByIncident[incident.id]
+                            ?.where((m) => m.isActive)
+                            .toList() ??
+                        const <IncidentMember>[];
                     return Card(
                       color: active ? Theme.of(context).colorScheme.primaryContainer : null,
-                      child: ListTile(
-                        leading: Icon(incident.isOpen ? Icons.local_fire_department : Icons.check_circle_outline,
-                            color: incident.isOpen ? Colors.deepOrange : Colors.grey),
-                        title: Text(incident.name.isEmpty ? incident.missionCode : incident.name),
-                        subtitle: Text('Code: ${incident.missionCode} • Opened ${_fmt(incident.openedAt)}'
-                            '${incident.isOpen ? '' : ' • Closed ${_fmt(incident.closedAt!)}'}'),
-                        trailing: incident.isOpen
-                            ? IconButton(
+                      child: Column(children: [
+                        ListTile(
+                          leading: Icon(incident.isOpen ? Icons.local_fire_department : Icons.check_circle_outline,
+                              color: incident.isOpen ? Colors.deepOrange : Colors.grey),
+                          title: Text(incident.name.isEmpty ? incident.missionCode : incident.name),
+                          subtitle: Text('Code: ${incident.missionCode} • Opened ${_fmt(incident.openedAt)}'
+                              '${incident.isOpen ? '' : ' • Closed ${_fmt(incident.closedAt!)}'}'),
+                          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                            if (incident.isOpen)
+                              IconButton(
                                 icon: const Icon(Icons.stop_circle_outlined),
                                 tooltip: 'Close incident',
                                 onPressed: () => _closeIncident(incident),
-                              )
-                            : null,
-                        onTap: () => widget.controller.select(incident),
-                      ),
+                              ),
+                            IconButton(
+                              icon: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
+                              tooltip: isExpanded ? 'Hide assigned' : 'Show assigned',
+                              onPressed: () => _toggleExpanded(incident),
+                            ),
+                          ]),
+                          onTap: () => widget.controller.select(incident),
+                        ),
+                        if (isExpanded)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: _loadingMembers.contains(incident.id)
+                                  ? const Padding(
+                                      padding: EdgeInsets.symmetric(vertical: 8),
+                                      child: SizedBox(
+                                          width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                                    )
+                                  : members.isEmpty
+                                      ? Text('No one assigned yet.',
+                                          style: TextStyle(color: Colors.grey[600], fontSize: 13))
+                                      : Wrap(
+                                          spacing: 6,
+                                          runSpacing: 6,
+                                          children: members
+                                              .map((m) => Chip(
+                                                    avatar: Icon(
+                                                        m.isPending ? Icons.hourglass_top : Icons.check_circle,
+                                                        size: 16),
+                                                    label: Text(m.callsign.isEmpty ? m.userId : m.callsign),
+                                                    visualDensity: VisualDensity.compact,
+                                                  ))
+                                              .toList(),
+                                        ),
+                            ),
+                          ),
+                      ]),
                     );
                   },
                 ),

@@ -84,6 +84,25 @@ class AssetAssignment {
       );
 }
 
+/// Suggested team designations — REMS/medical-module resource typing used
+/// on wildland fire incidents (not firefighting crews). Free text in the DB
+/// (see `designation` on Team), so this is just what the picker offers.
+const List<String> kTeamDesignations = [
+  'Type 1',
+  'Type 2',
+  'A',
+  'B',
+  'REMS Type 1',
+  'REMS Type 2',
+  'REMS Type 3',
+  'Med Mod',
+];
+
+/// Where someone is relative to an incident assignment. Free text in the DB
+/// (user_profiles.deployment_status) — not enforced, matching every other
+/// categorical field in this schema.
+const List<String> kDeploymentStatuses = ['Standby', 'In Transit', 'On Mission', 'Off Duty'];
+
 /// A standing organizational team (not mission-specific) — REMS roster
 /// conventions (Type 1/Type 2 resource typing, A/B squad designations).
 class Team {
@@ -317,5 +336,22 @@ class AssetService {
     } catch (_) {
       return [];
     }
+  }
+
+  Future<Team?> createTeam({
+    required String name,
+    String colorHex = '#2196F3',
+    String designation = '',
+    String notes = '',
+  }) async {
+    final client = await _client();
+    if (client == null) return null;
+    final row = await client.from('teams').insert({
+      'name': name,
+      'color_hex': colorHex,
+      'designation': designation,
+      'notes': notes,
+    }).select().single();
+    return Team.fromMap(row);
   }
 }

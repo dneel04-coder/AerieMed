@@ -166,6 +166,19 @@ Color _statusColor(String s) => switch (s) {
   _             => Colors.teal,
 };
 
+/// Individual single-resource categories (user_profiles.resource_type) —
+/// wildland fire ICS conventions, including non-firefighting medical
+/// single resources. Free text in the DB; this is just what pickers offer.
+const List<String> kResourceTypes = [
+  'EMT',
+  'EMT-Paramedic',
+  'Rope Rescue Technician',
+  'Driver/Operator',
+  'Team Leader',
+  'Single Resource Paramedic',
+  'Single Resource EMT',
+];
+
 /// Maps a personnel resource_type (user_profiles.resource_type — wildland
 /// fire single-resource categories) to a map marker icon. Placeholder using
 /// Material icons pending a supplied custom icon set: swapping in real
@@ -177,6 +190,8 @@ IconData resourceTypeIcon(String resourceType) => switch (resourceType) {
       'Rope Rescue Technician' => Icons.terrain,
       'Driver/Operator' => Icons.local_shipping,
       'Team Leader' => Icons.shield,
+      'Single Resource Paramedic' => Icons.medical_information,
+      'Single Resource EMT' => Icons.health_and_safety,
       _ => Icons.person_pin_circle,
     };
 
@@ -195,6 +210,15 @@ Color? parseHexColor(String? hex) {
 
 // ── Personnel info sheet — shared by the mobile map and Command Console ───────
 
+/// Color for a user_profiles.deployment_status value — Standby/In
+/// Transit/On Mission/Off Duty — used on the personnel info sheet.
+Color deploymentStatusColor(String status) => switch (status) {
+      'On Mission' => Colors.blue,
+      'In Transit' => Colors.orange,
+      'Off Duty' => Colors.grey,
+      _ => Colors.green, // Standby
+    };
+
 /// Shown on long-press (or tap) of a personnel marker: entity info, team,
 /// and currently assigned assets, with an action to assign another asset.
 Future<void> showPersonnelInfoSheet(
@@ -204,6 +228,7 @@ Future<void> showPersonnelInfoSheet(
   String? resourceType,
   String? teamName,
   Color? teamColor,
+  String? deploymentStatus,
   String assignedBy = '',
 }) {
   return showModalBottomSheet(
@@ -216,6 +241,7 @@ Future<void> showPersonnelInfoSheet(
       resourceType: resourceType,
       teamName: teamName,
       teamColor: teamColor,
+      deploymentStatus: deploymentStatus,
       assignedBy: assignedBy,
     ),
   );
@@ -227,6 +253,7 @@ class _PersonnelInfoSheet extends StatefulWidget {
   final String? resourceType;
   final String? teamName;
   final Color? teamColor;
+  final String? deploymentStatus;
   final String assignedBy;
 
   const _PersonnelInfoSheet({
@@ -235,6 +262,7 @@ class _PersonnelInfoSheet extends StatefulWidget {
     this.resourceType,
     this.teamName,
     this.teamColor,
+    this.deploymentStatus,
     this.assignedBy = '',
   });
 
@@ -304,7 +332,24 @@ class _PersonnelInfoSheetState extends State<_PersonnelInfoSheet> {
             const SizedBox(width: 12),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(widget.callsign, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                Row(children: [
+                  Text(widget.callsign, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  if (widget.deploymentStatus != null && widget.deploymentStatus!.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: deploymentStatusColor(widget.deploymentStatus!).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(widget.deploymentStatus!,
+                          style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: deploymentStatusColor(widget.deploymentStatus!))),
+                    ),
+                  ],
+                ]),
                 if (hasResourceType)
                   Text(widget.resourceType!, style: TextStyle(color: Colors.grey[600])),
                 if (hasTeam)
@@ -1663,6 +1708,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   final Map<String, String> _resourceTypeByUser = {};
   final Map<String, Color> _teamColorByUser = {};
   final Map<String, String> _teamNameByUser = {};
+  final Map<String, String> _deploymentStatusByUser = {};
 
   RealtimeChannel? _realtimeChannel;
   Timer? _locationTimer;
@@ -2301,7 +2347,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         if (color != null) colorByTeam[id] = color;
         nameByTeam[id] = m['name'] as String? ?? '';
       }
-      final profileRows = await _supabase.from('user_profiles').select('user_id, resource_type, team_id') as List;
+      final profileRows = await _supabase
+          .from('user_profiles')
+          .select('user_id, resource_type, team_id, deployment_status') as List;
       if (!mounted) return;
       setState(() {
         for (final r in profileRows) {
@@ -2310,6 +2358,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           if (userId.isEmpty) continue;
           final resourceType = m['resource_type'] as String? ?? '';
           if (resourceType.isNotEmpty) _resourceTypeByUser[userId] = resourceType;
+          final deploymentStatus = m['deployment_status'] as String? ?? '';
+          if (deploymentStatus.isNotEmpty) _deploymentStatusByUser[userId] = deploymentStatus;
           final teamId = m['team_id'] as String?;
           if (teamId != null) {
             final teamColor = colorByTeam[teamId];
@@ -2881,6 +2931,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             resourceType: resourceType.isEmpty ? null : resourceType,
             teamName: _teamNameByUser[user.id],
             teamColor: teamColor,
+            deploymentStatus: _deploymentStatusByUser[user.id],
             assignedBy: _callsign,
           );
       markers.add(Marker(
