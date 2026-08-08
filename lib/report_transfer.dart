@@ -81,15 +81,22 @@ Future<String?> _requireTeamKey(BuildContext context) async {
 }
 
 
-/// Shows the admin-configured team drive link (Dropbox/Drive/OneDrive
-/// shared folder) and lets the user copy it, then hands the report PDF to
-/// the OS share sheet — Dropbox/Drive/OneDrive apps show up there
-/// automatically if installed, so the file lands in the right place
-/// without any OAuth/API integration on our end.
+/// Shows the admin-configured team drive links (Dropbox/Drive/OneDrive
+/// shared folders) and lets the user copy each, then hands the report PDF
+/// to the OS share sheet once per configured link — Dropbox/Drive/OneDrive
+/// apps show up there automatically if installed, so the file lands in the
+/// right place without any OAuth/API integration on our end.
 Future<void> sendToTeamDrive(BuildContext context, PatientReport report) async {
-  final link = await TeamSettingsService.getTeamDriveLink();
+  List<String> links;
+  try {
+    links = (await TeamSettingsService.getTeamDriveLinks()).where((l) => l.isNotEmpty).toList();
+  } catch (e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load team drive links: $e')));
+    return;
+  }
   if (!context.mounted) return;
-  if (link.isEmpty) {
+  if (links.isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('No team drive link configured yet — ask your admin to set one in Command Console Settings.')));
     return;
@@ -99,29 +106,49 @@ Future<void> sendToTeamDrive(BuildContext context, PatientReport report) async {
     builder: (ctx) => AlertDialog(
       title: const Text('Send to Team Drive'),
       content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Team drive:', style: TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 4),
-        SelectableText(link),
+        for (var i = 0; i < links.length; i++) ...[
+          if (i > 0) const SizedBox(height: 12),
+          Text('Team drive ${links.length > 1 ? i + 1 : ''}:'.trim(),
+              style: const TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Row(children: [
+            Expanded(child: SelectableText(links[i])),
+            IconButton(
+              icon: const Icon(Icons.copy, size: 18),
+              tooltip: 'Copy link',
+              onPressed: () => Clipboard.setData(ClipboardData(text: links[i])),
+            ),
+          ]),
+        ],
         const SizedBox(height: 12),
-        const Text(
-          'Copy the link if you need to open it in a browser, then continue '
-          'to share the PDF — pick Dropbox/Drive/OneDrive from the share '
-          'menu if it\'s installed.',
-          style: TextStyle(fontSize: 12),
+        Text(
+          links.length > 1
+              ? 'Continuing will open the share sheet once per link — pick '
+                  'Dropbox/Drive/OneDrive each time if installed.'
+              : 'Continue to share the PDF — pick Dropbox/Drive/OneDrive '
+                  'from the share menu if it\'s installed.',
+          style: const TextStyle(fontSize: 12),
         ),
       ]),
       actions: [
-        TextButton(
-          onPressed: () => Clipboard.setData(ClipboardData(text: link)),
-          child: const Text('Copy Link'),
-        ),
         TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
         FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Continue to Share')),
       ],
     ),
   );
   if (proceed != true || !context.mounted) return;
-  await generateAndSharePdf(context, report);
+
+  try {
+    final bytes = await buildReportPdf(report);
+    final filename = '${await ReportFilename.build(report)}.pdf';
+    for (var i = 0; i < links.length; i++) {
+      await _printingSharePdf(bytes, filename);
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('PDF generation failed: $e')));
+    }
+  }
 }
 
 Future<void> exportEncryptedBundle(BuildContext context, PatientReport report) async {
@@ -410,7 +437,7 @@ Future<void> generateAndSharePdf(BuildContext context, PatientReport report) asy
   final messenger = ScaffoldMessenger.of(context);
   try {
     final bytes = await buildReportPdf(report);
-    final filename = 'ResQruck_${report.patientId.isEmpty ? report.id : report.patientId.replaceAll(' ', '_')}.pdf';
+    final filename = '${await ReportFilename.build(report)}.pdf';
     await _printingSharePdf(bytes, filename);
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text('PDF generation failed: $e')));

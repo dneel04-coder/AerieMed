@@ -2,7 +2,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../protocol_admin.dart' show SupabaseService;
-import '../patient_report.dart' show PatientReport;
+import '../patient_report.dart' show PatientReport, ReportFilename;
 import '../report_pdf.dart';
 import '../tac_map.dart' show TacUser;
 import '../incident_service.dart';
@@ -117,8 +117,7 @@ class _ReportsConsoleScreenState extends State<ReportsConsoleScreen> {
   Future<void> _downloadPdf(_ReportRow row) async {
     try {
       final bytes = await buildReportPdf(row.report);
-      final defaultName =
-          'ResQruck_${row.report.patientId.isEmpty ? row.report.id : row.report.patientId.replaceAll(' ', '_')}.pdf';
+      final defaultName = '${await ReportFilename.build(row.report)}.pdf';
       final savePath = await FilePicker.platform.saveFile(
         dialogTitle: 'Save Patient Report PDF',
         fileName: defaultName,

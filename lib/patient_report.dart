@@ -144,6 +144,10 @@ class PatientReport {
   String broselowColor;
   // Sync state
   bool isSynced;
+  // Filename metadata (see ReportFilename) — not shown in the PDF body,
+  // used only to build the standardized export filename.
+  String incidentNumber, lastName;
+  bool isCritical;
 
   PatientReport({
     required this.id,
@@ -171,6 +175,9 @@ class PatientReport {
     List<String>? photoPaths,
     this.broselowColor = '',
     this.isSynced = false,
+    this.incidentNumber = '',
+    this.lastName = '',
+    this.isCritical = false,
   })  : vitalSets = vitalSets ?? [],
         bodyMarkers = bodyMarkers ?? [],
         photoPaths = photoPaths ?? [];
@@ -293,6 +300,9 @@ class PatientReport {
         'photoPaths': photoPaths,
         'broselowColor': broselowColor,
         'isSynced': isSynced,
+        'incidentNumber': incidentNumber,
+        'lastName': lastName,
+        'isCritical': isCritical,
       };
 
   factory PatientReport.fromJson(Map<String, dynamic> j) {
@@ -352,6 +362,9 @@ class PatientReport {
       photoPaths: (j['photoPaths'] as List? ?? []).cast<String>(),
       broselowColor: j['broselowColor'] as String? ?? '',
       isSynced: j['isSynced'] as bool? ?? false,
+      incidentNumber: j['incidentNumber'] as String? ?? '',
+      lastName: j['lastName'] as String? ?? '',
+      isCritical: j['isCritical'] as bool? ?? false,
     );
   }
 }
@@ -449,6 +462,64 @@ class ReportSyncer {
     final reports = await ReportStorage.load();
     for (final r in reports.where((r) => !r.isSynced)) {
       await trySyncReport(r);
+    }
+  }
+}
+
+
+/// Builds the standardized export filename:
+/// IncidentNumber-Resource#-YYMMDD-LastName-Sequential[-Major]
+/// e.g. "MT-CGF-00199-E-27-260715-Smith-2-Major"
+class ReportFilename {
+  static Future<String> build(PatientReport report) async {
+    final d = report.createdAt;
+    final yymmdd = '${(d.year % 100).toString().padLeft(2, '0')}'
+        '${d.month.toString().padLeft(2, '0')}${d.day.toString().padLeft(2, '0')}';
+    final incident = _sanitize(report.incidentNumber.isEmpty ? 'UNK' : report.incidentNumber);
+    final resource = _sanitize(report.unit.isEmpty ? 'UNK' : report.unit);
+    final last = _sanitize(report.lastName.isEmpty
+        ? (report.patientId.isEmpty ? 'Unknown' : report.patientId)
+        : report.lastName);
+    final seq = await _sequenceNumber(report);
+    final critical = report.isCritical ? '-Major' : '';
+    return '$incident-$resource-$yymmdd-$last-$seq$critical';
+  }
+
+  static String _sanitize(String s) =>
+      s.trim().replaceAll(RegExp(r'[\\/:*?"<>|\s]+'), '_');
+
+  /// Nth document for this last name on this date of care, across the
+  /// whole team if reachable (Supabase), falling back to this device's
+  /// own saved reports if offline.
+  static Future<int> _sequenceNumber(PatientReport report) async {
+    if (report.lastName.isEmpty) return 1;
+    final d = report.createdAt;
+    final datePrefix = '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    try {
+      final client = Supabase.instance.client;
+      final rows = await client
+          .from('patient_reports')
+          .select('id')
+          .ilike('report_data->>lastName', report.lastName)
+          .ilike('report_data->>createdAt', '$datePrefix%');
+      final count = (rows as List).where((r) => r['id'] != report.id).length;
+      return count + 1;
+    } catch (_) {
+      try {
+        final local = await ReportStorage.load();
+        final count = local
+            .where((r) =>
+                r.id != report.id &&
+                r.lastName.toLowerCase() == report.lastName.toLowerCase() &&
+                r.createdAt.year == report.createdAt.year &&
+                r.createdAt.month == report.createdAt.month &&
+                r.createdAt.day == report.createdAt.day)
+            .length;
+        return count + 1;
+      } catch (_) {
+        return 1;
+      }
     }
   }
 }
@@ -654,7 +725,9 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
   // Controllers
   final _provider = TextEditingController();
   final _unit = TextEditingController();
+  final _incidentNumber = TextEditingController();
   final _patientId = TextEditingController();
+  final _lastName = TextEditingController();
   final _age = TextEditingController();
   final _weight = TextEditingController();
   final _chiefComplaint = TextEditingController();
@@ -669,6 +742,7 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
   final _notes = TextEditingController();
 
   String? _sex, _disposition;
+  bool _isCritical = false;
   String _formType = 'MIST';
   List<VitalSet> _vitalSets = [];
   List<BodyMarker> _bodyMarkers = [];
@@ -694,7 +768,10 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
     if (e != null) {
       _provider.text = e.provider;
       _unit.text = e.unit;
+      _incidentNumber.text = e.incidentNumber;
       _patientId.text = e.patientId;
+      _lastName.text = e.lastName;
+      _isCritical = e.isCritical;
       _age.text = e.age;
       _weight.text = e.weight;
       _chiefComplaint.text = e.chiefComplaint;
@@ -728,9 +805,10 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
   void dispose() {
     _tabs.dispose();
     for (final c in [
-      _provider, _unit, _patientId, _age, _weight, _chiefComplaint,
-      _allergies, _mechanism, _injuries, _subjective, _objective,
-      _assessmentCtrl, _planCtrl, _treatments, _notes,
+      _provider, _unit, _incidentNumber, _patientId, _lastName, _age,
+      _weight, _chiefComplaint, _allergies, _mechanism, _injuries,
+      _subjective, _objective, _assessmentCtrl, _planCtrl, _treatments,
+      _notes,
     ]) { c.dispose(); }
     _speech.cancel();
     super.dispose();
@@ -740,7 +818,10 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
     _draft.formType = _formType;
     _draft.provider = _provider.text.trim();
     _draft.unit = _unit.text.trim();
+    _draft.incidentNumber = _incidentNumber.text.trim();
     _draft.patientId = _patientId.text.trim();
+    _draft.lastName = _lastName.text.trim();
+    _draft.isCritical = _isCritical;
     _draft.age = _age.text.trim();
     _draft.sex = _sex ?? '';
     _draft.weight = _weight.text.trim();
@@ -959,12 +1040,18 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
           Row(children: [
             Expanded(child: _tf('Provider Name', _provider)),
             const SizedBox(width: 8),
-            Expanded(child: _tf('Unit / Agency', _unit)),
+            Expanded(child: _tf('Unit / Agency (Resource #)', _unit)),
           ]),
+          const SizedBox(height: 8),
+          _tf('Incident Number', _incidentNumber, hint: 'e.g. MT-CGF-00199'),
         ]),
 
         _card('Patient Information', Colors.teal, [
-          _tf('Patient ID / Name', _patientId),
+          Row(children: [
+            Expanded(child: _tf('Patient ID / Name', _patientId)),
+            const SizedBox(width: 8),
+            Expanded(child: _tf('Last Name', _lastName)),
+          ]),
           const SizedBox(height: 8),
           Row(children: [
             SizedBox(width: 72, child: _tf('Age', _age)),
@@ -983,6 +1070,23 @@ class _PatientReportFormScreenState extends State<PatientReportFormScreen>
             const SizedBox(height: 8),
             _broselowRow(),
           ],
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(
+              color: _isCritical ? Colors.red.withValues(alpha: 0.1) : null,
+              border: Border.all(color: _isCritical ? Colors.red : Colors.grey.shade400),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _isCritical,
+              onChanged: (v) => setState(() => _isCritical = v),
+              activeThumbColor: Colors.red,
+              title: const Text('Critical Patient'),
+              secondary: Icon(Icons.warning_amber_rounded, color: _isCritical ? Colors.red : Colors.grey),
+            ),
+          ),
         ]),
 
         _card('Mechanism of Injury / Illness', Colors.orange, [

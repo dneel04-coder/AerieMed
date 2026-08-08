@@ -10,7 +10,7 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  String _teamDriveLink = '';
+  List<String> _teamDriveLinks = const ['', ''];
   bool _loading = true;
 
   @override
@@ -20,8 +20,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _load() async {
-    final link = await TeamSettingsService.getTeamDriveLink();
-    if (mounted) setState(() { _teamDriveLink = link; _loading = false; });
+    try {
+      final links = await TeamSettingsService.getTeamDriveLinks();
+      if (mounted) setState(() { _teamDriveLinks = links; _loading = false; });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not load team drive links: $e')));
+      }
+    }
   }
 
   Future<void> _changeCredentials(BuildContext context) async {
@@ -72,28 +80,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _editTeamDriveLink(BuildContext context) async {
-    final ctrl = TextEditingController(text: _teamDriveLink);
+  Future<void> _editTeamDriveLinks(BuildContext context) async {
+    final ctrl1 = TextEditingController(text: _teamDriveLinks[0]);
+    final ctrl2 = TextEditingController(text: _teamDriveLinks[1]);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Team Drive Link'),
+        title: const Text('Team Drive Links'),
         content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text(
-            'A Dropbox / Google Drive / OneDrive shared-folder link. Field '
-            'users see this when sending a report via "Send to Team Drive" '
-            '— they get the link plus the OS share sheet with the PDF '
-            'attached (Dropbox/Drive/OneDrive show up there automatically '
-            'if installed).',
+            'Up to two Dropbox / Google Drive / OneDrive shared-folder links. '
+            'Field users see both when sending a report via "Send to Team '
+            'Drive" — they get the links plus the OS share sheet with the '
+            'PDF attached, opened once per configured link (Dropbox/Drive/'
+            'OneDrive show up there automatically if installed). Leave a '
+            'field blank to not use that slot.',
             style: TextStyle(fontSize: 12),
           ),
           const SizedBox(height: 14),
           TextField(
-            controller: ctrl,
+            controller: ctrl1,
             autofocus: true,
             decoration: const InputDecoration(
-              labelText: 'Shared folder link',
+              labelText: 'Team Drive Link 1',
               hintText: 'https://www.dropbox.com/scl/fo/…',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: ctrl2,
+            decoration: const InputDecoration(
+              labelText: 'Team Drive Link 2',
+              hintText: 'https://drive.google.com/drive/folders/…',
               border: OutlineInputBorder(),
             ),
           ),
@@ -105,11 +124,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (ok != true) return;
-    final link = ctrl.text.trim();
-    await TeamSettingsService.setTeamDriveLink(link);
-    if (!mounted) return;
-    setState(() => _teamDriveLink = link);
-    ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(content: Text('Team drive link saved')));
+    final link1 = ctrl1.text.trim();
+    final link2 = ctrl2.text.trim();
+    try {
+      await TeamSettingsService.setTeamDriveLinks(link1, link2);
+      if (!mounted) return;
+      setState(() => _teamDriveLinks = [link1, link2]);
+      ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(content: Text('Team drive links saved')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(this.context)
+          .showSnackBar(SnackBar(content: Text('Could not save team drive links: $e')));
+    }
   }
 
   @override
@@ -133,12 +159,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Card(
             child: ListTile(
               leading: const Icon(Icons.folder_shared_outlined),
-              title: const Text('Team Drive Link'),
+              title: const Text('Team Drive Links'),
               subtitle: Text(_loading
                   ? 'Loading…'
-                  : (_teamDriveLink.isEmpty ? 'Not set — field app shows nothing yet' : _teamDriveLink)),
+                  : (_teamDriveLinks.every((l) => l.isEmpty)
+                      ? 'Not set — field app shows nothing yet'
+                      : _teamDriveLinks.where((l) => l.isNotEmpty).join('\n'))),
+              isThreeLine: !_loading && _teamDriveLinks.where((l) => l.isNotEmpty).length > 1,
               trailing: FilledButton.tonal(
-                onPressed: _loading ? null : () => _editTeamDriveLink(context),
+                onPressed: _loading ? null : () => _editTeamDriveLinks(context),
                 child: const Text('Edit'),
               ),
             ),
