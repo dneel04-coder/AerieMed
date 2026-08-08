@@ -44,6 +44,8 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   String? _error;
   late _MapMode _mode;
   Timer? _agingTimer;
+  Timer? _refreshTimer;
+  bool _rebinding = false;
 
   @override
   void initState() {
@@ -57,6 +59,13 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     _agingTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) setState(() {});
     });
+    // Safety net: the realtime channel is supposed to push every update
+    // live, but if its WebSocket silently drops (network blip, idle
+    // disconnect) with no error surfaced, tac_users stops updating and
+    // everyone quietly ages out past _kCurrentWindow with no visible cause
+    // — this periodically re-syncs from a plain REST fetch regardless of
+    // realtime's own health, so the map self-heals either way.
+    _refreshTimer = Timer.periodic(const Duration(seconds: 45), (_) => _refreshUsers());
   }
 
   @override
@@ -72,7 +81,57 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   void dispose() {
     _channel?.unsubscribe();
     _agingTimer?.cancel();
+    _refreshTimer?.cancel();
     super.dispose();
+  }
+
+  /// Silent, non-disruptive re-sync of tac_users only — unlike _bind(),
+  /// doesn't clear existing state or show a loading spinner, so it's safe
+  /// to run on a timer in the background without the map flashing blank.
+  Future<void> _refreshUsers() async {
+    if (!mounted) return;
+    final client = SupabaseService.client;
+    if (client == null) return;
+    final mission = _missionFilter;
+    try {
+      final rows = mission == null
+          ? await client.from('tac_users').select()
+          : await client.from('tac_users').select().eq('mission_code', mission);
+      final fresh = <String, TacUser>{};
+      for (final r in rows as List) {
+        final u = TacUser.fromMap(r as Map<String, dynamic>);
+        final existing = fresh[u.id];
+        if (existing == null || u.updatedAt.isAfter(existing.updatedAt)) {
+          fresh[u.id] = u;
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _users
+            ..clear()
+            ..addAll(fresh);
+        });
+      }
+    } catch (_) {
+      // Transient — the next timer tick or a live realtime update will
+      // catch up; no need to surface this as a hard error like _bind()'s
+      // initial load does.
+    }
+  }
+
+  /// Fires when the realtime channel drops (network blip, idle disconnect,
+  /// server-side error) so the map doesn't just silently go stale until
+  /// someone happens to switch modes/incidents. Guarded against overlapping
+  /// rebinds if multiple drop events arrive in quick succession.
+  void _onChannelStatus(RealtimeSubscribeStatus status, Object? error) {
+    if (status == RealtimeSubscribeStatus.closed || status == RealtimeSubscribeStatus.channelError || status == RealtimeSubscribeStatus.timedOut) {
+      if (_rebinding || !mounted) return;
+      _rebinding = true;
+      Future.delayed(const Duration(seconds: 2), () {
+        _rebinding = false;
+        if (mounted) _bind();
+      });
+    }
   }
 
   bool _isCurrent(TacUser u) => DateTime.now().toUtc().difference(u.updatedAt.toUtc()) < _kCurrentWindow;
@@ -282,7 +341,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
             });
           }
         });
-    _channel = channelBuilder.subscribe();
+    _channel = channelBuilder.subscribe(_onChannelStatus);
   }
 
   void _fitToMarkers() {
