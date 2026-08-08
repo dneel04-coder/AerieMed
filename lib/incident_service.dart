@@ -168,7 +168,11 @@ class IncidentService {
     }
   }
 
-  /// Adds (or re-activates, clearing `left_at`) a member on the incident roster.
+  /// Adds (or re-activates, clearing `left_at`) a member on the incident
+  /// roster. Always resets `accepted_at` to null — upsert only touches the
+  /// columns given here, so a re-assignment (e.g. after they'd previously
+  /// accepted and later left) would otherwise leave the old accepted_at
+  /// timestamp in place and the mobile accept-prompt would never fire again.
   Future<void> addMember(String incidentId, {required String userId, required String callsign}) async {
     final client = await _client();
     if (client == null) return;
@@ -177,6 +181,7 @@ class IncidentService {
       'user_id': userId,
       'callsign': callsign,
       'left_at': null,
+      'accepted_at': null,
     }, onConflict: 'incident_id,user_id');
   }
 

@@ -41,6 +41,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   final Map<String, String> _deploymentStatusByUser = {};
   RealtimeChannel? _channel;
   bool _loading = true;
+  String? _error;
   late _MapMode _mode;
   Timer? _agingTimer;
 
@@ -115,20 +116,32 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     _teamNameByUser.clear();
     _deploymentStatusByUser.clear();
     if (_mode == _MapMode.thisIncident && widget.incident == null) return;
-    setState(() => _loading = true);
+    setState(() { _loading = true; _error = null; });
 
     final client = SupabaseService.client;
     if (client == null) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() { _loading = false; _error = 'Not connected to Supabase.'; });
       return;
     }
     final mission = _missionFilter;
 
     try {
-      final userRows = mission == null
-          ? await client.from('tac_users').select() as List
-          : await client.from('tac_users').select().eq('mission_code', mission) as List;
-      for (final r in userRows) {
+      // Run every fetch in parallel (rather than 6 sequential awaits) so a
+      // single slow query doesn't multiply the total wait, and cap the whole
+      // batch with a timeout — previously a stalled/failed query here was
+      // swallowed by a bare `catch (_) {}` with no timeout at all, leaving
+      // every map empty (already cleared above) and _loading set to false:
+      // a genuinely blank map with no indication anything went wrong.
+      final results = await Future.wait([
+        mission == null ? client.from('tac_users').select() : client.from('tac_users').select().eq('mission_code', mission),
+        mission == null ? client.from('tac_zones').select() : client.from('tac_zones').select().eq('mission_code', mission),
+        mission == null ? client.from('tac_markers').select() : client.from('tac_markers').select().eq('mission_code', mission),
+        mission == null ? client.from('tac_sos').select() : client.from('tac_sos').select().eq('mission_code', mission),
+        client.from('teams').select('id, name, color_hex'),
+        client.from('user_profiles').select('user_id, resource_type, team_id, deployment_status'),
+      ]).timeout(const Duration(seconds: 15));
+
+      for (final r in results[0] as List) {
         final u = TacUser.fromMap(r as Map<String, dynamic>);
         // Keyed by id, so this naturally collapses any leftover rows under a
         // different mission_code (see joinMissionSilently) — but query order
@@ -139,45 +152,30 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           _users[u.id] = u;
         }
       }
-      final zoneRows = mission == null
-          ? await client.from('tac_zones').select() as List
-          : await client.from('tac_zones').select().eq('mission_code', mission) as List;
-      for (final r in zoneRows) {
+      for (final r in results[1] as List) {
         final z = TacZone.fromMap(r as Map<String, dynamic>);
         _zones[z.id] = z;
       }
-      final markerRows = mission == null
-          ? await client.from('tac_markers').select() as List
-          : await client.from('tac_markers').select().eq('mission_code', mission) as List;
-      for (final r in markerRows) {
+      for (final r in results[2] as List) {
         final m = TacMarker.fromMap(r as Map<String, dynamic>);
         _markers[m.id] = m;
       }
-      final sosRows = mission == null
-          ? await client.from('tac_sos').select() as List
-          : await client.from('tac_sos').select().eq('mission_code', mission) as List;
-      for (final r in sosRows) {
+      for (final r in results[3] as List) {
         final s = TacSosEvent.fromMap(r as Map<String, dynamic>);
         if (!s.resolved) _sos[s.id] = s;
       }
       // Personnel role/team — separate tables from tac_users (location), so
       // resolved into lookup maps here rather than joined server-side.
-      // Degrades silently (no icon/color override) if the schema migration
-      // for teams/resource_type/team_id hasn't been run yet.
-      final teamRows = await client.from('teams').select('id, name, color_hex') as List;
       final colorByTeam = <String, Color>{};
       final nameByTeam = <String, String>{};
-      for (final r in teamRows) {
+      for (final r in results[4] as List) {
         final m = r as Map<String, dynamic>;
         final id = m['id'] as String;
         final color = parseHexColor(m['color_hex'] as String?);
         if (color != null) colorByTeam[id] = color;
         nameByTeam[id] = m['name'] as String? ?? '';
       }
-      final profileRows = await client
-          .from('user_profiles')
-          .select('user_id, resource_type, team_id, deployment_status') as List;
-      for (final r in profileRows) {
+      for (final r in results[5] as List) {
         final m = r as Map<String, dynamic>;
         final userId = m['user_id'] as String? ?? '';
         if (userId.isEmpty) continue;
@@ -193,7 +191,15 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           if (teamName != null && teamName.isNotEmpty) _teamNameByUser[userId] = teamName;
         }
       }
-    } catch (_) {}
+    } on TimeoutException {
+      if (mounted) {
+        setState(() { _loading = false; _error = 'Loading timed out — check your connection and try again.'; });
+      }
+      return;
+    } catch (e) {
+      if (mounted) setState(() { _loading = false; _error = 'Could not load map data: $e'; });
+      return;
+    }
 
     if (mounted) setState(() => _loading = false);
     _fitToMarkers();
@@ -316,6 +322,20 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
   Widget _buildBody() {
     if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_error != null) {
+      return Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.wifi_off, size: 48, color: Colors.grey[400]),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Text(_error!, textAlign: TextAlign.center, style: TextStyle(color: Colors.grey[600])),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(onPressed: _bind, icon: const Icon(Icons.refresh), label: const Text('Retry')),
+        ]),
+      );
+    }
 
     final visible = _visibleUsers.toList();
     final center = visible.isNotEmpty

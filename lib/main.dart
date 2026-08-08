@@ -26,6 +26,7 @@ import 'incident_service.dart';
 import 'protocol_admin.dart';
 import 'backcountry_guide.dart';
 import 'rems_checklist.dart';
+import 'push_notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -182,6 +183,7 @@ class _MainShellState extends State<MainShell> {
       await _checkForUpdate();
       _checkPendingMissionAssignment();
       _subscribeMissionAssignments();
+      _initPushNotifications();
     });
   }
 
@@ -201,6 +203,12 @@ class _MainShellState extends State<MainShell> {
   }
 
   // ── Mission assignment (Command Console → field device) ──────────────────
+
+  Future<void> _initPushNotifications() async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('tac_user_id') ?? '';
+    await PushNotificationService.instance.initialize(userId);
+  }
 
   Future<void> _checkPendingMissionAssignment() async {
     final prefs = await SharedPreferences.getInstance();

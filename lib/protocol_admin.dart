@@ -2826,6 +2826,56 @@ begin
       for all using (true) with check (true);
   exception when others then null;
   end;
+
+  -- device_push_tokens: one current FCM token per user_id, overwritten on
+  -- each registration — mirrors the single-device assumption already baked
+  -- into tac_user_id / callsign uniqueness elsewhere in this app.
+  create table if not exists device_push_tokens (
+    user_id text primary key,
+    fcm_token text not null,
+    platform text not null default '',
+    updated_at timestamptz default now()
+  );
+  begin
+    alter table device_push_tokens enable row level security;
+    create policy "public_access" on device_push_tokens
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+
+  -- Fires on a new/reset incident assignment (mirrors the same
+  -- accepted_at/left_at both-null guard used client-side in
+  -- _subscribeMissionAssignments) and POSTs to the push-mission-assignment
+  -- Edge Function so the assigned user gets a real push notification even
+  -- if their app is closed. Silently no-ops (net.http_post still fires, but
+  -- the function 401s) until the one-time, never-committed
+  -- app.settings.push_trigger_secret is set — see reference_codemagic-style
+  -- manual setup notes for this feature.
+  begin
+    create extension if not exists pg_net;
+  exception when others then null;
+  end;
+
+  create or replace function notify_incident_member_pending() returns trigger as \$trg\$
+  begin
+    perform net.http_post(
+      url := 'https://vlgiclyuxaleyusalexo.supabase.co/functions/v1/push-mission-assignment',
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'x-push-secret', current_setting('app.settings.push_trigger_secret', true)
+      ),
+      body := jsonb_build_object('user_id', new.user_id, 'incident_id', new.incident_id)
+    );
+    return new;
+  end;
+  \$trg\$ language plpgsql security definer;
+
+  drop trigger if exists incident_members_push_trigger on incident_members;
+  create trigger incident_members_push_trigger
+    after insert or update of accepted_at, left_at on incident_members
+    for each row
+    when (new.accepted_at is null and new.left_at is null)
+    execute function notify_incident_member_pending();
 end;
 \$func\$;
 

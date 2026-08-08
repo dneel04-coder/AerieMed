@@ -1,0 +1,7 @@
+project_id = "vlgiclyuxaleyusalexo"
+
+[functions.push-mission-assignment]
+# Authenticated via the x-push-secret header instead — this is an internal
+# server-to-server call from a Postgres trigger, not a client request, so no
+# Supabase JWT/apikey is available or needed.
+verify_jwt = false
