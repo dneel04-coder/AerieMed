@@ -45,7 +45,6 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   late _MapMode _mode;
   Timer? _agingTimer;
   Timer? _refreshTimer;
-  bool _rebinding = false;
 
   @override
   void initState() {
@@ -119,30 +118,18 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     }
   }
 
-  /// Fires when the realtime channel drops (network blip, idle disconnect,
-  /// server-side error) so the map doesn't just silently go stale until
-  /// someone happens to switch modes/incidents. Guarded against overlapping
-  /// rebinds if multiple drop events arrive in quick succession.
-  ///
-  /// Deliberately does NOT call _bind() — that clears every collection and
-  /// flips _loading to true, which tears down and remounts FlutterMap (a
-  /// visible flash to a spinner, then a fresh camera). If the realtime
-  /// socket flaps repeatedly this used to make the map flicker and reset
-  /// pan/zoom every time. Recovery here is just: re-subscribe the channel,
-  /// then silently resync data the same way the periodic refresh does.
-  void _onChannelStatus(RealtimeSubscribeStatus status, Object? error) {
-    if (status == RealtimeSubscribeStatus.closed || status == RealtimeSubscribeStatus.channelError || status == RealtimeSubscribeStatus.timedOut) {
-      if (_rebinding || !mounted) return;
-      _rebinding = true;
-      Future.delayed(const Duration(seconds: 2), () {
-        _rebinding = false;
-        if (!mounted) return;
-        _channel?.unsubscribe();
-        _subscribeChannel();
-        _refreshUsers();
-      });
-    }
-  }
+  // A previous version of this file force-recreated the channel whenever
+  // its status went to closed/channelError/timedOut, on the theory that a
+  // dropped socket would otherwise sit stale forever. In practice the
+  // realtime client already auto-rejoins on its own within tens of
+  // milliseconds of a drop — the forced recreation was firing 2 seconds
+  // after every drop (including ones the library had already healed),
+  // which itself produced a new "closed" event and re-armed the same
+  // 2-second timer, so it never stopped: confirmed via a debug log showing
+  // closed/subscribed pairs repeating exactly every ~2.0s indefinitely.
+  // The periodic _refreshUsers() REST poll is a sufficient, non-disruptive
+  // safety net for the case where the socket is ever genuinely stuck, so
+  // there is no channel-status handling here at all now.
 
   bool _isCurrent(TacUser u) => DateTime.now().toUtc().difference(u.updatedAt.toUtc()) < _kCurrentWindow;
 
@@ -357,7 +344,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
             });
           }
         });
-    _channel = channelBuilder.subscribe(_onChannelStatus);
+    _channel = channelBuilder.subscribe();
   }
 
   void _fitToMarkers() {
