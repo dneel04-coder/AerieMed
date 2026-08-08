@@ -2843,26 +2843,47 @@ begin
   exception when others then null;
   end;
 
+  -- internal_secrets: NOT publicly readable — RLS is enabled with zero
+  -- policies, which denies all access via the REST API (anon/authenticated
+  -- roles), while the SECURITY DEFINER trigger function below (running as
+  -- the table owner) bypasses RLS entirely, per Postgres's default
+  -- owner-exempt-from-RLS behavior. This exists because Supabase's hosted
+  -- Postgres doesn't grant superuser to any customer-accessible role
+  -- (confirmed: `alter database ... set app.settings.x` fails with
+  -- "permission denied" even from the SQL editor's own connection), so the
+  -- originally-planned session-GUC approach for storing the push trigger
+  -- secret isn't available — this table is the workaround.
+  create table if not exists internal_secrets (
+    key text primary key,
+    value text not null
+  );
+  begin
+    alter table internal_secrets enable row level security;
+  exception when others then null;
+  end;
+
   -- Fires on a new/reset incident assignment (mirrors the same
   -- accepted_at/left_at both-null guard used client-side in
   -- _subscribeMissionAssignments) and POSTs to the push-mission-assignment
   -- Edge Function so the assigned user gets a real push notification even
   -- if their app is closed. Silently no-ops (net.http_post still fires, but
-  -- the function 401s) until the one-time, never-committed
-  -- app.settings.push_trigger_secret is set — see reference_codemagic-style
-  -- manual setup notes for this feature.
+  -- the function 401s) until the one-time push_trigger_secret row is
+  -- inserted into internal_secrets.
   begin
     create extension if not exists pg_net;
   exception when others then null;
   end;
 
   create or replace function notify_incident_member_pending() returns trigger as \$trg\$
+  declare
+    secret_value text;
   begin
+    select value into secret_value from internal_secrets where key = 'push_trigger_secret';
     perform net.http_post(
       url := 'https://vlgiclyuxaleyusalexo.supabase.co/functions/v1/push-mission-assignment',
       headers := jsonb_build_object(
         'Content-Type', 'application/json',
-        'x-push-secret', current_setting('app.settings.push_trigger_secret', true)
+        'x-push-secret', coalesce(secret_value, '')
       ),
       body := jsonb_build_object('user_id', new.user_id, 'incident_id', new.incident_id)
     );
