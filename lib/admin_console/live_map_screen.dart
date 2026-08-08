@@ -123,13 +123,23 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   /// server-side error) so the map doesn't just silently go stale until
   /// someone happens to switch modes/incidents. Guarded against overlapping
   /// rebinds if multiple drop events arrive in quick succession.
+  ///
+  /// Deliberately does NOT call _bind() — that clears every collection and
+  /// flips _loading to true, which tears down and remounts FlutterMap (a
+  /// visible flash to a spinner, then a fresh camera). If the realtime
+  /// socket flaps repeatedly this used to make the map flicker and reset
+  /// pan/zoom every time. Recovery here is just: re-subscribe the channel,
+  /// then silently resync data the same way the periodic refresh does.
   void _onChannelStatus(RealtimeSubscribeStatus status, Object? error) {
     if (status == RealtimeSubscribeStatus.closed || status == RealtimeSubscribeStatus.channelError || status == RealtimeSubscribeStatus.timedOut) {
       if (_rebinding || !mounted) return;
       _rebinding = true;
       Future.delayed(const Duration(seconds: 2), () {
         _rebinding = false;
-        if (mounted) _bind();
+        if (!mounted) return;
+        _channel?.unsubscribe();
+        _subscribeChannel();
+        _refreshUsers();
       });
     }
   }
@@ -262,7 +272,13 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
     if (mounted) setState(() => _loading = false);
     _fitToMarkers();
+    _subscribeChannel();
+  }
 
+  void _subscribeChannel() {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    final mission = _missionFilter;
     var channelBuilder = client.channel('admin_console_map_${mission ?? 'all'}');
     channelBuilder = channelBuilder.onPostgresChanges(
         event: PostgresChangeEvent.all,
