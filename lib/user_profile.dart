@@ -335,6 +335,8 @@ class _LoginScreenState extends State<LoginScreen> {
               TextField(
                 controller: _codeCtrl,
                 textCapitalization: TextCapitalization.characters,
+                autocorrect: false,
+                enableSuggestions: false,
                 decoration: InputDecoration(
                   labelText: 'Access Code *',
                   hintText: 'Contact your administrator for a code',

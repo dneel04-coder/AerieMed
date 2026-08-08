@@ -104,6 +104,8 @@ class _PaywallScreenState extends State<PaywallScreen> {
         content: TextField(
           controller: ctrl,
           textCapitalization: TextCapitalization.characters,
+          autocorrect: false,
+          enableSuggestions: false,
           decoration: const InputDecoration(
             labelText: 'Access Code',
             hintText: 'Contact your administrator for a code',
