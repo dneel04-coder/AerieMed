@@ -397,9 +397,6 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     }
 
     final visible = _visibleUsers.toList();
-    final center = visible.isNotEmpty
-        ? LatLng(visible.first.lat, visible.first.lng)
-        : const LatLng(39.8283, -98.5795); // continental US fallback
 
     return Row(
       children: [
@@ -407,7 +404,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           child: Stack(children: [
             FlutterMap(
               mapController: _mapCtrl,
-              options: MapOptions(initialCenter: center, initialZoom: visible.isEmpty ? 4 : 13),
+              // Fixed initial camera only — real positioning is done via _mapCtrl
+              // (see _fitToMarkers) so periodic data refreshes don't reset pan/zoom.
+              options: const MapOptions(initialCenter: LatLng(39.8283, -98.5795), initialZoom: 4),
               children: [
                 TileLayer(urlTemplate: _kOsmTileUrl, userAgentPackageName: 'com.peninsulathreat.resqruck'),
                 CircleLayer(
