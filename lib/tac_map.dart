@@ -1907,6 +1907,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   final Map<String, List<LatLng>> _breadcrumbs = {};
   int _breadcrumbTick = 0;
   bool _showTrails = false; // opt-in — user taps the route icon to enable
+  bool _toolsExpanded = true; // right tool column can be collapsed to a single toggle
   final List<TacZone> _zones = [];
   final List<TacSosEvent> _activeSos = [];
   bool _placingZone = false;
@@ -3715,7 +3716,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           // ── Navigation banner — road route + ETA to a tapped marker ────────
           if (_isRouting)
             Positioned(
-              left: 12, right: 12, bottom: _bottomChromeHeight + 8,
+              left: 12, right: 56, bottom: _bottomChromeHeight + 8,
               child: Material(
                 color: bg, borderRadius: BorderRadius.circular(8), elevation: 4,
                 child: const Padding(
@@ -3731,7 +3732,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             )
           else if (_navRoute != null)
             Positioned(
-              left: 12, right: 12, bottom: _bottomChromeHeight + 8,
+              left: 12, right: 56, bottom: _bottomChromeHeight + 8,
               child: Material(
                 color: bg, borderRadius: BorderRadius.circular(8), elevation: 4,
                 child: Padding(
@@ -3758,7 +3759,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           // ── Route planning: pick stops in order, then calculate ─────────
           if (_planningRoute)
             Positioned(
-              left: 12, right: 12, bottom: _bottomChromeHeight + 8,
+              left: 12, right: 56, bottom: _bottomChromeHeight + 8,
               child: Material(
                 color: bg, borderRadius: BorderRadius.circular(8), elevation: 4,
                 child: Padding(
@@ -3794,7 +3795,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             )
           else if (_multiRoute != null)
             Positioned(
-              left: 12, right: 12, bottom: _bottomChromeHeight + 8,
+              left: 12, right: 56, bottom: _bottomChromeHeight + 8,
               child: Material(
                 color: bg, borderRadius: BorderRadius.circular(8), elevation: 4,
                 child: Padding(
@@ -3969,21 +3970,19 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           // Height-constrained to stop above the bottom panel (rather than
           // just growing downward indefinitely) and scrollable, so every
           // button stays reachable regardless of screen height or how many
-          // tools end up in this column.
+          // tools end up in this column. Collapsible via the toggle at the
+          // top, since a full column of tools can otherwise run into the
+          // route/nav banners lower on screen. Pinch-to-zoom already covers
+          // zoom, so the +/- buttons that used to be here are gone.
           Positioned(
             right: 8,
             top: (_sosBannerHeight) + 34,
             bottom: _bottomChromeHeight + 8,
             child: SingleChildScrollView(
               child: Column(mainAxisSize: MainAxisSize.min, children: [
-              // Zoom
-              _atakBtn(Icons.add, bg, Colors.white70,
-                  () { final z = (zoom + 1).clamp(3.0, 20.0);
-                        _mapCtrl.move(_mapCtrl.camera.center, z); }),
-              const SizedBox(height: 1),
-              _atakBtn(Icons.remove, bg, Colors.white70,
-                  () { final z = (zoom - 1).clamp(3.0, 20.0);
-                        _mapCtrl.move(_mapCtrl.camera.center, z); }),
+              _atakBtn(_toolsExpanded ? Icons.chevron_right : Icons.chevron_left, bg,
+                  Colors.white70, () => setState(() => _toolsExpanded = !_toolsExpanded)),
+              if (_toolsExpanded) ...[
               const SizedBox(height: 6),
               // Re-centre
               _atakBtn(Icons.my_location, bg,
@@ -4042,6 +4041,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               const SizedBox(height: 6),
               // Overflow menu
               _atakPopup(bg, dim),
+              ],
             ]),
             ),
           ),
