@@ -2829,6 +2829,14 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
   double get _sosBannerHeight => _activeSos.length * _kSosRowHeight;
 
+  // Approximate height of the bottom-docked _TeamPanel (MISSION row + PLACE
+  // row, only shown once a mission is joined) plus the coordinate bar that's
+  // always shown below it. Used so nothing else on screen — the nav/route
+  // banners, the right-side tool column — visually overlaps or gets covered
+  // by that bottom panel, which paints on top since it's declared last in
+  // the Stack.
+  double get _bottomChromeHeight => _hasMission ? 125.0 : 40.0;
+
   Widget _buildSosRow(TacSosEvent s) {
     final isMine = s.userId == _userId;
     final canResolve = isMine || _isAdmin;
@@ -3707,7 +3715,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           // ── Navigation banner — road route + ETA to a tapped marker ────────
           if (_isRouting)
             Positioned(
-              left: 12, right: 12, bottom: 16,
+              left: 12, right: 12, bottom: _bottomChromeHeight + 8,
               child: Material(
                 color: bg, borderRadius: BorderRadius.circular(8), elevation: 4,
                 child: const Padding(
@@ -3723,7 +3731,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             )
           else if (_navRoute != null)
             Positioned(
-              left: 12, right: 12, bottom: 16,
+              left: 12, right: 12, bottom: _bottomChromeHeight + 8,
               child: Material(
                 color: bg, borderRadius: BorderRadius.circular(8), elevation: 4,
                 child: Padding(
@@ -3750,7 +3758,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           // ── Route planning: pick stops in order, then calculate ─────────
           if (_planningRoute)
             Positioned(
-              left: 12, right: 12, bottom: 16,
+              left: 12, right: 12, bottom: _bottomChromeHeight + 8,
               child: Material(
                 color: bg, borderRadius: BorderRadius.circular(8), elevation: 4,
                 child: Padding(
@@ -3786,7 +3794,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             )
           else if (_multiRoute != null)
             Positioned(
-              left: 12, right: 12, bottom: 16,
+              left: 12, right: 12, bottom: _bottomChromeHeight + 8,
               child: Material(
                 color: bg, borderRadius: BorderRadius.circular(8), elevation: 4,
                 child: Padding(
@@ -3958,10 +3966,16 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           ),
 
           // ── Right tool panel ────────────────────────────────────────────
+          // Height-constrained to stop above the bottom panel (rather than
+          // just growing downward indefinitely) and scrollable, so every
+          // button stays reachable regardless of screen height or how many
+          // tools end up in this column.
           Positioned(
             right: 8,
             top: (_sosBannerHeight) + 34,
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
+            bottom: _bottomChromeHeight + 8,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
               // Zoom
               _atakBtn(Icons.add, bg, Colors.white70,
                   () { final z = (zoom + 1).clamp(3.0, 20.0);
@@ -4029,6 +4043,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               // Overflow menu
               _atakPopup(bg, dim),
             ]),
+            ),
           ),
 
           // ── Join Mission button (when no mission) ───────────────────────
