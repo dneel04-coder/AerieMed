@@ -557,6 +557,86 @@ begin
     for each row
     when (new.accepted_at is null and new.left_at is null)
     execute function notify_incident_member_pending();
+
+  -- access_requests: self-serve "request access" gate ahead of the paywall.
+  -- A user without an admin-issued access code can submit name/callsign/
+  -- company/email here instead; nothing about the purchase flow is reachable
+  -- until an admin sets status to 'approved' (see notify_access_decision
+  -- below and the mobile app's pending-status check before the paywall).
+  create table if not exists access_requests (
+    id uuid default gen_random_uuid() primary key,
+    user_id text not null unique,
+    name text not null,
+    callsign text not null default '',
+    company text not null default '',
+    email text not null default '',
+    status text not null default 'pending',
+    requested_at timestamptz default now(),
+    decided_at timestamptz,
+    decided_by text default ''
+  );
+  begin
+    alter table access_requests enable row level security;
+    create policy "public_access" on access_requests
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  begin
+    alter publication supabase_realtime add table access_requests;
+  exception when others then null;
+  end;
+
+  -- Fires once per new access request, emailing the admin via the
+  -- notify-access-request Edge Function (Resend). Same secret-table
+  -- workaround as the push trigger above — see internal_secrets comment.
+  create or replace function notify_new_access_request() returns trigger as $areq$
+  declare
+    secret_value text;
+  begin
+    select value into secret_value from internal_secrets where key = 'access_request_secret';
+    perform net.http_post(
+      url := 'https://vlgiclyuxaleyusalexo.supabase.co/functions/v1/notify-access-request',
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'x-access-secret', coalesce(secret_value, '')
+      ),
+      body := jsonb_build_object('user_id', new.user_id)
+    );
+    return new;
+  end;
+  $areq$ language plpgsql security definer;
+
+  drop trigger if exists access_requests_insert_trigger on access_requests;
+  create trigger access_requests_insert_trigger
+    after insert on access_requests
+    for each row execute function notify_new_access_request();
+
+  -- Fires when an admin approves/denies a request, pushing a notification
+  -- to the requester's device via notify-access-decision (reuses the same
+  -- FCM credential already set up for push-mission-assignment).
+  create or replace function notify_access_decision() returns trigger as $adec$
+  declare
+    secret_value text;
+  begin
+    if new.status is distinct from old.status and new.status in ('approved', 'denied') then
+      select value into secret_value from internal_secrets where key = 'access_request_secret';
+      perform net.http_post(
+        url := 'https://vlgiclyuxaleyusalexo.supabase.co/functions/v1/notify-access-decision',
+        headers := jsonb_build_object(
+          'Content-Type', 'application/json',
+          'x-access-secret', coalesce(secret_value, '')
+        ),
+        body := jsonb_build_object('user_id', new.user_id, 'status', new.status)
+      );
+    end if;
+    return new;
+  end;
+  $adec$ language plpgsql security definer;
+
+  drop trigger if exists access_requests_decision_trigger on access_requests;
+  create trigger access_requests_decision_trigger
+    after update on access_requests
+    for each row execute function notify_access_decision();
 end;
 $func$;
 

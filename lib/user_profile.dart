@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'protocol_admin.dart' show SupabaseService;
+import 'push_notification_service.dart';
 
 const List<String> kCertLevels = ['Paramedic', 'AEMT', 'EMT', 'None'];
 
@@ -126,6 +127,24 @@ class UserProfile {
       return (rows as List).isNotEmpty;
     } catch (_) {
       return false;
+    }
+  }
+
+  /// Status of this device's self-serve access request, if any:
+  /// 'pending' | 'approved' | 'denied' | null (no request submitted — the
+  /// access-code fast path is unaffected by any of this).
+  static Future<String?> fetchAccessRequestStatus(String userId) async {
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) return null;
+    try {
+      final rows = await SupabaseService.client!
+          .from('access_requests')
+          .select('status')
+          .eq('user_id', userId)
+          .limit(1);
+      return (rows as List).isEmpty ? null : rows.first['status'] as String;
+    } catch (_) {
+      return null;
     }
   }
 }
@@ -351,6 +370,23 @@ class _LoginScreenState extends State<LoginScreen> {
                 'A one-time access code is required to activate your account.',
                 style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
               ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  onPressed: () async {
+                    final profile = _existing ?? await UserProfile.load();
+                    if (!mounted) return;
+                    await Navigator.push(context, MaterialPageRoute(
+                        builder: (_) => RequestAccessScreen(
+                              userId: profile.userId,
+                              nameHint: _nameCtrl.text.trim(),
+                              callsignHint: _callsignCtrl.text.trim(),
+                              onApproved: () => setState(() => _accessValidated = true),
+                            )));
+                  },
+                  child: const Text("Don't have a code? Request Access"),
+                ),
+              ),
               const SizedBox(height: 14),
             ],
 
@@ -413,6 +449,230 @@ class _LoginScreenState extends State<LoginScreen> {
                   : const Text('Continue'),
             ),
           ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// Self-serve alternative to an admin-issued access code: submit name/
+/// callsign/company/email for review instead. Nothing about the purchase
+/// flow is reachable until an admin approves the request (see
+/// AccessPendingScreen and the access_requests schema/triggers).
+class RequestAccessScreen extends StatefulWidget {
+  final String userId;
+  final String nameHint;
+  final String callsignHint;
+  final VoidCallback onApproved;
+  const RequestAccessScreen({
+    super.key,
+    required this.userId,
+    required this.onApproved,
+    this.nameHint = '',
+    this.callsignHint = '',
+  });
+
+  @override
+  State<RequestAccessScreen> createState() => _RequestAccessScreenState();
+}
+
+class _RequestAccessScreenState extends State<RequestAccessScreen> {
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _callsignCtrl;
+  final _companyCtrl = TextEditingController();
+  final _emailCtrl = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: widget.nameHint);
+    _callsignCtrl = TextEditingController(text: widget.callsignHint);
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _callsignCtrl.dispose();
+    _companyCtrl.dispose();
+    _emailCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Full name is required.')));
+      return;
+    }
+    setState(() => _submitting = true);
+    final ok = await SupabaseService.ensureInitialized();
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Cannot reach server. Check your connection.'),
+          backgroundColor: Colors.red));
+      setState(() => _submitting = false);
+      return;
+    }
+    try {
+      await SupabaseService.client!.from('access_requests').insert({
+        'user_id': widget.userId,
+        'name': name,
+        'callsign': _callsignCtrl.text.trim(),
+        'company': _companyCtrl.text.trim(),
+        'email': _emailCtrl.text.trim(),
+      });
+      // Register this device for a push notification the moment an admin
+      // decides, before login/purchase even exist for this user yet.
+      await PushNotificationService.instance.initialize(widget.userId);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Could not submit request: $e'), backgroundColor: Colors.red));
+        setState(() => _submitting = false);
+      }
+      return;
+    }
+    if (!mounted) return;
+    Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => AccessPendingScreen(userId: widget.userId, onApproved: widget.onApproved)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Request Access')),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const Text(
+              "Tell us who you are and we'll review your request. "
+              "You'll be notified as soon as it's approved.",
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _nameCtrl,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                  labelText: 'Full Name *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.person_outline)),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _callsignCtrl,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                  labelText: 'Callsign', border: OutlineInputBorder(), prefixIcon: Icon(Icons.radio)),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _companyCtrl,
+              decoration: const InputDecoration(
+                  labelText: 'Company / Affiliation',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.business_outlined)),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _emailCtrl,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                  labelText: 'Email (optional, for follow-up)',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.email_outlined)),
+            ),
+            const SizedBox(height: 24),
+            FilledButton(
+              onPressed: _submitting ? null : _submit,
+              child: _submitting
+                  ? const SizedBox(width: 20, height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Submit Request'),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown while a self-serve access request is pending, and again on relaunch
+/// (see main.dart) until it's decided. Denied requests stay here with no
+/// path forward to login/paywall; approved ones hand control back to
+/// LoginScreen via onApproved.
+class AccessPendingScreen extends StatefulWidget {
+  final String userId;
+  final VoidCallback onApproved;
+  const AccessPendingScreen({super.key, required this.userId, required this.onApproved});
+
+  @override
+  State<AccessPendingScreen> createState() => _AccessPendingScreenState();
+}
+
+class _AccessPendingScreenState extends State<AccessPendingScreen> {
+  bool _checking = false;
+  String? _status;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    setState(() => _checking = true);
+    final status = await UserProfile.fetchAccessRequestStatus(widget.userId);
+    if (!mounted) return;
+    setState(() { _status = status; _checking = false; });
+    if (status == 'approved') {
+      await UserProfile.markAccessValidated();
+      if (!mounted) return;
+      widget.onApproved();
+      // When pushed from RequestAccessScreen this reveals LoginScreen
+      // underneath; when used as main.dart's root widget there's nothing to
+      // pop — onApproved() alone makes the parent swap away from this screen.
+      if (Navigator.canPop(context)) Navigator.pop(context);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final denied = _status == 'denied';
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(denied ? Icons.block : Icons.hourglass_top,
+                  size: 72, color: denied ? Colors.red : Theme.of(context).colorScheme.primary),
+              const SizedBox(height: 20),
+              Text(
+                denied ? 'Access Request Not Approved' : 'Access Request Pending',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                denied
+                    ? "Your request wasn't approved. Contact the administrator if you think this is a mistake."
+                    : "We'll send you a notification as soon as it's reviewed. You can also check back here.",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                onPressed: _checking ? null : _check,
+                icon: _checking
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.refresh),
+                label: const Text('Check Again'),
+              ),
+            ]),
+          ),
         ),
       ),
     );

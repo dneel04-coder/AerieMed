@@ -993,6 +993,17 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
           const Divider(indent: 72, endIndent: 16),
           ListTile(
             leading: const CircleAvatar(
+                backgroundColor: Colors.indigo,
+                child: Icon(Icons.how_to_reg, color: Colors.white)),
+            title: const Text('Access Requests'),
+            subtitle: const Text('Approve or deny self-serve access requests'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const AdminAccessRequestsScreen())),
+          ),
+          const Divider(indent: 72, endIndent: 16),
+          ListTile(
+            leading: const CircleAvatar(
                 backgroundColor: Colors.green,
                 child: Icon(Icons.lock_open, color: Colors.white)),
             title: const Text('Grant Full Access (This Device)'),
@@ -2358,6 +2369,142 @@ class _AdminAccessCodesScreenState extends State<AdminAccessCodesScreen> {
   }
 }
 
+/// Mobile counterpart to the Command Console's Access Requests screen —
+/// review self-serve "request access" submissions and approve/deny them.
+/// Reload-on-open/pull-to-refresh is sufficient here (no live subscription,
+/// unlike the desktop screen — this is meant for occasional phone checks).
+class AdminAccessRequestsScreen extends StatefulWidget {
+  const AdminAccessRequestsScreen({super.key});
+  @override
+  State<AdminAccessRequestsScreen> createState() => _AdminAccessRequestsScreenState();
+}
+
+class _AdminAccessRequestsScreenState extends State<AdminAccessRequestsScreen> {
+  List<Map<String, dynamic>> _requests = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok || !mounted) return;
+    try {
+      final rows = await SupabaseService.client!
+          .from('access_requests')
+          .select()
+          .order('requested_at', ascending: false);
+      if (mounted) setState(() { _requests = List<Map<String, dynamic>>.from(rows); _loading = false; });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  Future<void> _decide(Map<String, dynamic> row, String status) async {
+    try {
+      await SupabaseService.client!.from('access_requests').update({
+        'status': status,
+        'decided_at': DateTime.now().toUtc().toIso8601String(),
+        'decided_by': 'Mobile Admin',
+      }).eq('id', row['id'] as String);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Access Requests')),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: _requests.isEmpty
+                  ? ListView(children: const [
+                      Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Center(child: Text('No access requests yet', style: TextStyle(color: Colors.grey))),
+                      ),
+                    ])
+                  : ListView.separated(
+                      padding: const EdgeInsets.all(12),
+                      itemCount: _requests.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (_, i) {
+                        final row = _requests[i];
+                        final status = row['status'] as String? ?? 'pending';
+                        final name = row['name'] as String? ?? '';
+                        final callsign = row['callsign'] as String? ?? '';
+                        final company = row['company'] as String? ?? '';
+                        final email = row['email'] as String? ?? '';
+                        final statusColor = switch (status) {
+                          'approved' => Colors.green,
+                          'denied' => Colors.red,
+                          _ => Colors.orange,
+                        };
+                        return Card(
+                          margin: EdgeInsets.zero,
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Row(children: [
+                                Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.bold))),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                  decoration: BoxDecoration(
+                                      color: statusColor.withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(4)),
+                                  child: Text(status.toUpperCase(),
+                                      style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.bold)),
+                                ),
+                              ]),
+                              if (callsign.isNotEmpty || company.isNotEmpty)
+                                Text([if (callsign.isNotEmpty) callsign, if (company.isNotEmpty) company].join(' · '),
+                                    style: TextStyle(color: Colors.grey[600])),
+                              if (email.isNotEmpty)
+                                Text(email, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                              if (status == 'pending') ...[
+                                const SizedBox(height: 10),
+                                Row(children: [
+                                  Expanded(
+                                    child: OutlinedButton(
+                                      onPressed: () => _decide(row, 'denied'),
+                                      style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                                      child: const Text('Deny'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: FilledButton(
+                                      onPressed: () => _decide(row, 'approved'),
+                                      child: const Text('Approve'),
+                                    ),
+                                  ),
+                                ]),
+                              ],
+                            ]),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+    );
+  }
+}
+
 
 const _kAdditionalSql = '''
 -- ResQruck — Supabase SQL schema
@@ -2919,6 +3066,86 @@ begin
     for each row
     when (new.accepted_at is null and new.left_at is null)
     execute function notify_incident_member_pending();
+
+  -- access_requests: self-serve "request access" gate ahead of the paywall.
+  -- A user without an admin-issued access code can submit name/callsign/
+  -- company/email here instead; nothing about the purchase flow is reachable
+  -- until an admin sets status to 'approved' (see notify_access_decision
+  -- below and the mobile app's pending-status check before the paywall).
+  create table if not exists access_requests (
+    id uuid default gen_random_uuid() primary key,
+    user_id text not null unique,
+    name text not null,
+    callsign text not null default '',
+    company text not null default '',
+    email text not null default '',
+    status text not null default 'pending',
+    requested_at timestamptz default now(),
+    decided_at timestamptz,
+    decided_by text default ''
+  );
+  begin
+    alter table access_requests enable row level security;
+    create policy "public_access" on access_requests
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  begin
+    alter publication supabase_realtime add table access_requests;
+  exception when others then null;
+  end;
+
+  -- Fires once per new access request, emailing the admin via the
+  -- notify-access-request Edge Function (Resend). Same secret-table
+  -- workaround as the push trigger above — see internal_secrets comment.
+  create or replace function notify_new_access_request() returns trigger as \$areq\$
+  declare
+    secret_value text;
+  begin
+    select value into secret_value from internal_secrets where key = 'access_request_secret';
+    perform net.http_post(
+      url := 'https://vlgiclyuxaleyusalexo.supabase.co/functions/v1/notify-access-request',
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'x-access-secret', coalesce(secret_value, '')
+      ),
+      body := jsonb_build_object('user_id', new.user_id)
+    );
+    return new;
+  end;
+  \$areq\$ language plpgsql security definer;
+
+  drop trigger if exists access_requests_insert_trigger on access_requests;
+  create trigger access_requests_insert_trigger
+    after insert on access_requests
+    for each row execute function notify_new_access_request();
+
+  -- Fires when an admin approves/denies a request, pushing a notification
+  -- to the requester's device via notify-access-decision (reuses the same
+  -- FCM credential already set up for push-mission-assignment).
+  create or replace function notify_access_decision() returns trigger as \$adec\$
+  declare
+    secret_value text;
+  begin
+    if new.status is distinct from old.status and new.status in ('approved', 'denied') then
+      select value into secret_value from internal_secrets where key = 'access_request_secret';
+      perform net.http_post(
+        url := 'https://vlgiclyuxaleyusalexo.supabase.co/functions/v1/notify-access-decision',
+        headers := jsonb_build_object(
+          'Content-Type', 'application/json',
+          'x-access-secret', coalesce(secret_value, '')
+        ),
+        body := jsonb_build_object('user_id', new.user_id, 'status', new.status)
+      );
+    end if;
+    return new;
+  end;
+  \$adec\$ language plpgsql security definer;
+
+  drop trigger if exists access_requests_decision_trigger on access_requests;
+  create trigger access_requests_decision_trigger
+    after update on access_requests
+    for each row execute function notify_access_decision();
 end;
 \$func\$;
 

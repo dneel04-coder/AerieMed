@@ -5,3 +5,10 @@ project_id = "vlgiclyuxaleyusalexo"
 # server-to-server call from a Postgres trigger, not a client request, so no
 # Supabase JWT/apikey is available or needed.
 verify_jwt = false
+
+[functions.notify-access-request]
+# Authenticated via x-access-secret — same reasoning as push-mission-assignment.
+verify_jwt = false
+
+[functions.notify-access-decision]
+verify_jwt = false

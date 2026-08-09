@@ -49,6 +49,10 @@ class _ResQruckAppState extends State<ResQruckApp> {
   ThemeMode _themeMode = ThemeMode.system;
   bool _loggedIn = false;
   bool _authChecked = false;
+  // 'pending' | 'denied' | null (no self-serve request outstanding — the
+  // access-code path is unaffected and falls through to normal LoginScreen).
+  String? _accessStatus;
+  String _deviceUserId = '';
 
   @override
   void initState() {
@@ -59,6 +63,19 @@ class _ResQruckAppState extends State<ResQruckApp> {
 
   Future<void> _checkLogin() async {
     final loggedIn = await UserProfile.isLoggedIn();
+    if (!loggedIn) {
+      final profile = await UserProfile.load();
+      final status = await UserProfile.fetchAccessRequestStatus(profile.userId);
+      if (mounted) {
+        setState(() {
+          _deviceUserId = profile.userId;
+          _accessStatus = (status == 'pending' || status == 'denied') ? status : null;
+          _loggedIn = false;
+          _authChecked = true;
+        });
+      }
+      return;
+    }
     if (mounted) setState(() { _loggedIn = loggedIn; _authChecked = true; });
   }
 
@@ -139,9 +156,16 @@ class _ResQruckAppState extends State<ResQruckApp> {
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : _loggedIn
               ? MainShell(onThemeToggle: toggleTheme, onLogout: _logout)
-              : LoginScreen(onLoggedIn: () {
-                  if (mounted) setState(() => _loggedIn = true);
-                }),
+              : _accessStatus != null
+                  ? AccessPendingScreen(
+                      userId: _deviceUserId,
+                      onApproved: () {
+                        if (mounted) setState(() => _accessStatus = null);
+                      },
+                    )
+                  : LoginScreen(onLoggedIn: () {
+                      if (mounted) setState(() => _loggedIn = true);
+                    }),
     );
   }
 }

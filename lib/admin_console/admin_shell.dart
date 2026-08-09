@@ -6,6 +6,7 @@ import 'assets_screen.dart';
 import 'live_map_screen.dart';
 import 'deployment_orders_console_screen.dart';
 import 'reports_console_screen.dart';
+import 'access_requests_screen.dart';
 import 'settings_screen.dart';
 
 /// Carries the admin's currently-selected incident to every console screen.
@@ -43,6 +44,7 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
     NavigationRailDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: Text('Assets')),
     NavigationRailDestination(icon: Icon(Icons.upload_file_outlined), selectedIcon: Icon(Icons.upload_file), label: Text('Deployment Orders')),
     NavigationRailDestination(icon: Icon(Icons.assignment_outlined), selectedIcon: Icon(Icons.assignment), label: Text('Reports')),
+    NavigationRailDestination(icon: Icon(Icons.how_to_reg_outlined), selectedIcon: Icon(Icons.how_to_reg), label: Text('Access Requests')),
     NavigationRailDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: Text('Settings')),
   ];
 
@@ -80,6 +82,7 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
                         const AssetsScreen(),
                         DeploymentOrdersConsoleScreen(incident: _activeIncident.incident),
                         ReportsConsoleScreen(incident: _activeIncident.incident),
+                        const AccessRequestsScreen(),
                         const SettingsScreen(),
                       ],
                     ),
