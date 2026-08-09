@@ -73,7 +73,7 @@ msix_config:
   publisher_display_name: allamericanconsulting
   identity_name: allamericanconsulting.Res-Q-RuckCommandConsole
   publisher: CN=E427069E-AABA-41B5-88C2-BB1C9C371A8F
-  msix_version: 1.0.3.0
+  msix_version: 1.0.4.0
   logo_path: "ResQruckIcon (2).jpg"
   capabilities: internetClient
   build_windows: false
