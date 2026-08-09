@@ -5,8 +5,30 @@ import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../protocol_admin.dart' show SupabaseService;
 import '../tac_map.dart'
-    show TacUser, TacZone, TacMarker, TacSosEvent, resourceTypeIcon, parseHexColor, showPersonnelInfoSheet;
+    show
+        TacUser,
+        TacZone,
+        TacMarker,
+        TacMarkerType,
+        TacSosEvent,
+        resourceTypeIcon,
+        parseHexColor,
+        showPersonnelInfoSheet,
+        kZoneTypes,
+        insertTacMarker,
+        insertTacZone,
+        waypointRoutePoints,
+        firstMarkerOfType,
+        groupMarkersByMission,
+        loadHiddenMarkerTypes,
+        saveHiddenMarkerTypes,
+        loadHiddenZoneTypes,
+        saveHiddenZoneTypes,
+        formatMarkerTimestamp,
+        parseLatLng,
+        parseUsng;
 import '../incident_service.dart';
+import '../routing_service.dart';
 
 const _kOsmTileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
@@ -46,11 +68,35 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   Timer? _agingTimer;
   Timer? _refreshTimer;
 
+  // Marker/zone placement (new — this screen was view-only before)
+  TacMarkerType? _placingType;
+  bool _placingZone = false;
+  Set<TacMarkerType> _hiddenMarkerTypes = {};
+  Set<String> _hiddenZoneTypes = {};
+
+  // Dispatch ETA: pick a deployed unit, then a destination marker, to get a
+  // road-based distance/ETA between them (the Console has no GPS of its own,
+  // so this is the desktop equivalent of mobile's self-navigation feature).
+  bool _pickingRoute = false;
+  TacUser? _routeOriginUser;
+  RouteResult? _navRoute;
+  TacMarker? _navTarget;
+  bool _routing = false;
+
+  // Multi-stop route planning — tap existing markers in order (origin, any
+  // points between, destination) for a total ETA plus a per-segment
+  // breakdown. Mutually exclusive with Dispatch ETA above.
+  bool _planningRoute = false;
+  final List<TacMarker> _routeStops = [];
+  MultiRouteResult? _multiRoute;
+  bool _isMultiRouting = false;
+
   @override
   void initState() {
     super.initState();
     _mode = widget.incident == null ? _MapMode.allUsers : _MapMode.thisIncident;
     _bind();
+    _loadLayerVisibility();
     // _users doesn't change on its own between publishes, but "is this still
     // current" does as time passes — re-render periodically so a marker
     // actually disappears once its owner stops transmitting, rather than
@@ -361,22 +407,534 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     } catch (_) {}
   }
 
+  // ── Layer visibility (hide by type — local-only, persisted, non-destructive) ─
+
+  Future<void> _loadLayerVisibility() async {
+    final markerTypes = await loadHiddenMarkerTypes();
+    final zoneTypes = await loadHiddenZoneTypes();
+    if (mounted) setState(() { _hiddenMarkerTypes = markerTypes; _hiddenZoneTypes = zoneTypes; });
+  }
+
+  void _showLayersSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => StatefulBuilder(builder: (ctx, ss) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, 4),
+              child: Text('Markers', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+            ...TacMarkerType.values.map((t) => CheckboxListTile(
+                  value: !_hiddenMarkerTypes.contains(t),
+                  secondary: Icon(t.icon, color: t.color),
+                  title: Text(t.label),
+                  onChanged: (checked) {
+                    ss(() => setState(() {
+                          if (checked == true) {
+                            _hiddenMarkerTypes.remove(t);
+                          } else {
+                            _hiddenMarkerTypes.add(t);
+                          }
+                        }));
+                    saveHiddenMarkerTypes(_hiddenMarkerTypes);
+                  },
+                )),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, 4),
+              child: Text('Zones', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+            ...kZoneTypes.map((t) => CheckboxListTile(
+                  value: !_hiddenZoneTypes.contains(t),
+                  title: Text(t),
+                  onChanged: (checked) {
+                    ss(() => setState(() {
+                          if (checked == true) {
+                            _hiddenZoneTypes.remove(t);
+                          } else {
+                            _hiddenZoneTypes.add(t);
+                          }
+                        }));
+                    saveHiddenZoneTypes(_hiddenZoneTypes);
+                  },
+                )),
+          ],
+        ),
+      )),
+    );
+  }
+
+  // ── Placement (new surface area — this screen had no way to create
+  // markers/zones before; desktop-appropriate menu + map-click flow) ─────────
+
+  void _startPlacingMarker(TacMarkerType type) {
+    if (widget.incident == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Select an incident to place markers')));
+      return;
+    }
+    setState(() {
+      _placingType = _placingType == type ? null : type;
+      _placingZone = false;
+    });
+  }
+
+  void _startPlacingZone() {
+    if (widget.incident == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Select an incident to place zones')));
+      return;
+    }
+    setState(() { _placingZone = !_placingZone; _placingType = null; });
+  }
+
+  Future<void> _placeMarkerDesktop(LatLng pos, TacMarkerType type) async {
+    setState(() => _placingType = null);
+    await _placeMarkerAtPointDesktop(pos, type);
+  }
+
+  /// Shared by map-click placement and the "Add by Coordinates" dialog.
+  Future<void> _placeMarkerAtPointDesktop(LatLng pos, TacMarkerType type, {String? label}) async {
+    final missionCode = widget.incident!.missionCode;
+    final effectiveLabel = label ?? (type == TacMarkerType.obstacle ? formatMarkerTimestamp(DateTime.now()) : '');
+    try {
+      final saved = await insertTacMarker(SupabaseService.client!,
+          missionCode: missionCode, type: type, label: effectiveLabel,
+          lat: pos.latitude, lng: pos.longitude, placedBy: 'Command Console');
+      // Add directly rather than waiting on realtime — that needs the table
+      // in the realtime publication (a one-time migration step) and even
+      // then there's no reason to round-trip through it just to see your
+      // own just-placed marker.
+      if (mounted) setState(() => _markers[saved.id] = saved);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not place marker: $e')));
+      }
+    }
+  }
+
+  Future<void> _placeWaypointDesktop(LatLng pos) async {
+    setState(() => _placingType = null);
+    String? label;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Name this waypoint'),
+        content: TextField(
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Waypoint name', border: OutlineInputBorder()),
+          onChanged: (v) => label = v.trim(),
+          onSubmitted: (_) => Navigator.pop(context, true),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Place')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final wpLabel = label?.isNotEmpty == true ? label! : 'WP';
+    await _placeMarkerAtPointDesktop(pos, TacMarkerType.waypoint, label: wpLabel);
+  }
+
+  /// Place a marker without needing to click the map — enter decimal
+  /// lat/lng or a USNG/MGRS grid reference directly.
+  Future<void> _showAddByCoordinatesDialog() async {
+    if (widget.incident == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Select an incident to place markers')));
+      return;
+    }
+    TacMarkerType type = TacMarkerType.waypoint;
+    bool useUsng = false;
+    String coordText = '';
+    String labelText = '';
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(builder: (ctx, ss) => AlertDialog(
+        title: const Text('Add Marker by Coordinates'),
+        content: SizedBox(
+          width: 360,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            DropdownButtonFormField<TacMarkerType>(
+              initialValue: type,
+              decoration: const InputDecoration(labelText: 'Marker type', border: OutlineInputBorder()),
+              items: TacMarkerType.values
+                  .map((t) => DropdownMenuItem(
+                        value: t,
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(t.icon, color: t.color, size: 16),
+                          const SizedBox(width: 6),
+                          Text(t.label),
+                        ]),
+                      ))
+                  .toList(),
+              onChanged: (v) => ss(() => type = v ?? type),
+            ),
+            const SizedBox(height: 10),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('Lat/Lng')),
+                ButtonSegment(value: true, label: Text('USNG/MGRS')),
+              ],
+              selected: {useUsng},
+              onSelectionChanged: (s) => ss(() => useUsng = s.first),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: useUsng ? 'USNG/MGRS grid reference' : 'Latitude, Longitude',
+                hintText: useUsng ? '18SUJ2338308450' : '34.0522, -118.2437',
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (v) => coordText = v,
+            ),
+            if (type == TacMarkerType.waypoint) ...[
+              const SizedBox(height: 10),
+              TextField(
+                decoration: const InputDecoration(labelText: 'Waypoint name (optional)', border: OutlineInputBorder()),
+                onChanged: (v) => labelText = v,
+              ),
+            ],
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Place')),
+        ],
+      )),
+    );
+    if (result != true) return;
+    final point = useUsng ? parseUsng(coordText) : parseLatLng(coordText);
+    if (point == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not parse ${useUsng ? 'USNG/MGRS' : 'lat/lng'} coordinates'),
+          backgroundColor: Colors.orange,
+        ));
+      }
+      return;
+    }
+    final label = type == TacMarkerType.waypoint
+        ? (labelText.trim().isNotEmpty ? labelText.trim() : 'WP')
+        : null;
+    await _placeMarkerAtPointDesktop(point, type, label: label);
+  }
+
+  Future<void> _createZoneDesktop(LatLng pos) async {
+    setState(() => _placingZone = false);
+    String? name;
+    String zoneType = 'LZ';
+    double radiusM = 100;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(builder: (ctx, ss) => AlertDialog(
+        title: const Text('Add Zone'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Zone name', border: OutlineInputBorder()),
+            onChanged: (v) => name = v.trim(),
+          ),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            initialValue: zoneType,
+            decoration: const InputDecoration(labelText: 'Type', border: OutlineInputBorder()),
+            items: kZoneTypes.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+            onChanged: (v) => ss(() => zoneType = v ?? 'LZ'),
+          ),
+          const SizedBox(height: 10),
+          TextFormField(
+            initialValue: '100',
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Radius (metres)', border: OutlineInputBorder()),
+            onChanged: (v) => radiusM = double.tryParse(v) ?? 100,
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Create')),
+        ],
+      )),
+    );
+    if (result != true || name == null || name!.isEmpty) return;
+    try {
+      final saved = await insertTacZone(SupabaseService.client!,
+          missionCode: widget.incident!.missionCode, name: name!, zoneType: zoneType,
+          lat: pos.latitude, lng: pos.longitude, radiusM: radiusM, createdBy: 'Command Console');
+      if (mounted) setState(() => _zones[saved.id] = saved);
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Zone create failed: $e')));
+    }
+  }
+
+  void _confirmDeleteMarkerDesktop(TacMarker m) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Marker?'),
+        content: Text('${m.type.label} placed by ${m.placedBy}'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () async {
+              Navigator.pop(context);
+              try {
+                await SupabaseService.client?.from('tac_markers').delete().eq('id', m.id);
+                if (mounted) setState(() => _markers.remove(m.id));
+              } catch (_) {}
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Bulk-clear every marker of a type — for clearing out outdated
+  /// markers in one action instead of long-pressing each one individually.
+  Future<void> _clearMarkersByTypeDesktop(TacMarkerType type) async {
+    final toDelete = _markers.values.where((m) => m.type == type).map((m) => m.id).toList();
+    if (toDelete.isEmpty) return;
+    final client = SupabaseService.client;
+    if (client == null) return;
+    for (final id in toDelete) {
+      try { await client.from('tac_markers').delete().eq('id', id); } catch (_) {}
+    }
+    if (mounted) setState(() { for (final id in toDelete) { _markers.remove(id); } });
+  }
+
+  void _confirmDeleteZoneDesktop(TacZone z) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Remove Zone?'),
+        content: Text('Remove "${z.name}" (${z.zoneType})?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () async {
+              Navigator.pop(context);
+              try { await SupabaseService.client?.from('tac_zones').delete().eq('id', z.id); } catch (_) {}
+            },
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Dispatch ETA (Console's equivalent of mobile's self-navigation — no
+  // GPS of its own, so route between a deployed unit and a destination) ──────
+
+  void _toggleDispatchPicker() {
+    setState(() {
+      _pickingRoute = !_pickingRoute;
+      _routeOriginUser = null;
+      if (!_pickingRoute) { _navRoute = null; _navTarget = null; }
+      if (_pickingRoute) { _planningRoute = false; _routeStops.clear(); _multiRoute = null; }
+    });
+  }
+
+  void _onUserTapped(TacUser u) {
+    if (_pickingRoute && _routeOriginUser == null) {
+      setState(() => _routeOriginUser = u);
+      return;
+    }
+  }
+
+  Future<void> _onMarkerTapped(TacMarker m) async {
+    if (_pickingRoute && _routeOriginUser != null) {
+      await _computeDispatchRoute(_routeOriginUser!, m);
+      return;
+    }
+    if (_planningRoute) {
+      _toggleRouteStop(m);
+    }
+  }
+
+  // ── Multi-stop route planning ────────────────────────────────────────────
+
+  void _toggleRoutePlanning() {
+    setState(() {
+      _planningRoute = !_planningRoute;
+      if (!_planningRoute) _routeStops.clear();
+      _multiRoute = null;
+      if (_planningRoute) { _pickingRoute = false; _routeOriginUser = null; _navRoute = null; _navTarget = null; }
+    });
+  }
+
+  void _toggleRouteStop(TacMarker m) {
+    setState(() {
+      final existing = _routeStops.indexWhere((s) => s.id == m.id);
+      if (existing != -1) {
+        _routeStops.removeAt(existing);
+      } else {
+        _routeStops.add(m);
+      }
+    });
+  }
+
+  String _stopLabel(int index) {
+    if (index < 0 || index >= _routeStops.length) return '?';
+    final m = _routeStops[index];
+    return m.label.isNotEmpty ? m.label : m.type.label;
+  }
+
+  Future<void> _calculateMultiRoute() async {
+    if (_routeStops.length < 2) return;
+    setState(() => _isMultiRouting = true);
+    try {
+      final result = await OsrmRoutingService.routeMultiple(
+          _routeStops.map((m) => LatLng(m.lat, m.lng)).toList());
+      if (mounted) {
+        setState(() {
+          _multiRoute = result;
+          _planningRoute = false;
+          _isMultiRouting = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isMultiRouting = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e is RoutingException ? e.message : 'Routing failed'),
+          backgroundColor: Colors.orange,
+        ));
+      }
+    }
+  }
+
+  Future<void> _computeDispatchRoute(TacUser origin, TacMarker dest) async {
+    setState(() => _routing = true);
+    try {
+      final result = await OsrmRoutingService.route(LatLng(origin.lat, origin.lng), LatLng(dest.lat, dest.lng));
+      if (mounted) {
+        setState(() {
+          _navRoute = result;
+          _navTarget = dest;
+          _pickingRoute = false;
+          _routeOriginUser = null;
+          _routing = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() { _pickingRoute = false; _routeOriginUser = null; _routing = false; });
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e is RoutingException ? e.message : 'Routing failed'),
+          backgroundColor: Colors.orange,
+        ));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(children: [
       Padding(
-        padding: const EdgeInsets.all(12),
-        child: SegmentedButton<_MapMode>(
-          segments: const [
-            ButtonSegment(value: _MapMode.allUsers, label: Text('All Users'), icon: Icon(Icons.public)),
-            ButtonSegment(
-                value: _MapMode.thisIncident,
-                label: Text('This Incident'),
-                icon: Icon(Icons.local_fire_department)),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+        child: Row(children: [
+          SegmentedButton<_MapMode>(
+            segments: const [
+              ButtonSegment(value: _MapMode.allUsers, label: Text('All Users'), icon: Icon(Icons.public)),
+              ButtonSegment(
+                  value: _MapMode.thisIncident,
+                  label: Text('This Incident'),
+                  icon: Icon(Icons.local_fire_department)),
+            ],
+            selected: {_mode},
+            onSelectionChanged: widget.incident == null ? null : (s) => _setMode(s.first),
+          ),
+          const SizedBox(width: 12),
+          PopupMenuButton<TacMarkerType>(
+            tooltip: 'Place a marker',
+            onSelected: _startPlacingMarker,
+            itemBuilder: (_) => TacMarkerType.values
+                .map((t) => PopupMenuItem(
+                      value: t,
+                      child: Row(children: [
+                        Icon(t.icon, color: t.color, size: 18),
+                        const SizedBox(width: 8),
+                        Text(t.label),
+                      ]),
+                    ))
+                .toList(),
+            child: InputChip(
+              label: const Text('Place Marker'),
+              avatar: const Icon(Icons.add_location_alt_outlined, size: 18),
+              selected: _placingType != null,
+              onPressed: null,
+            ),
+          ),
+          const SizedBox(width: 8),
+          InputChip(
+            label: const Text('Add Zone'),
+            avatar: const Icon(Icons.circle_outlined, size: 18),
+            selected: _placingZone,
+            onPressed: _startPlacingZone,
+          ),
+          const SizedBox(width: 8),
+          InputChip(
+            label: const Text('Dispatch ETA'),
+            avatar: const Icon(Icons.alt_route, size: 18),
+            selected: _pickingRoute,
+            onPressed: _toggleDispatchPicker,
+          ),
+          const SizedBox(width: 8),
+          InputChip(
+            label: const Text('Plan Route'),
+            avatar: const Icon(Icons.route, size: 18),
+            selected: _planningRoute || _multiRoute != null,
+            onPressed: _toggleRoutePlanning,
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: 'Layers',
+            onPressed: _showLayersSheet,
+            icon: Icon(Icons.checklist,
+                color: (_hiddenMarkerTypes.isNotEmpty || _hiddenZoneTypes.isNotEmpty)
+                    ? Theme.of(context).colorScheme.primary : null),
+          ),
+          PopupMenuButton<TacMarkerType>(
+            tooltip: 'Clear outdated markers',
+            onSelected: _clearMarkersByTypeDesktop,
+            itemBuilder: (_) => TacMarkerType.values
+                .map((t) => PopupMenuItem(value: t, child: Text('Clear all ${t.label} markers')))
+                .toList(),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4),
+              child: Icon(Icons.layers_clear),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Add Marker by Coordinates',
+            onPressed: _showAddByCoordinatesDialog,
+            icon: const Icon(Icons.pin_drop_outlined),
+          ),
+          if (_placingType != null || _placingZone || _pickingRoute || _planningRoute) ...[
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                _placingType != null
+                    ? 'Click the map to place ${_placingType!.label}'
+                    : _placingZone
+                        ? 'Click the map to place the zone centre'
+                        : _planningRoute
+                            ? 'Click markers in order: origin, then any stops, then destination'
+                            : _routeOriginUser == null
+                                ? 'Click a unit, then a destination marker'
+                                : 'Click a destination marker for ${_routeOriginUser!.callsign}',
+                style: TextStyle(color: Theme.of(context).colorScheme.primary, fontStyle: FontStyle.italic),
+              ),
+            ),
           ],
-          selected: {_mode},
-          onSelectionChanged: widget.incident == null ? null : (s) => _setMode(s.first),
-        ),
+        ]),
       ),
       Expanded(child: _buildBody()),
     ]);
@@ -400,6 +958,29 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     }
 
     final visible = _visibleUsers.toList();
+    final visibleZones = _zones.values.where((z) => !_hiddenZoneTypes.contains(z.zoneType));
+    final visibleMarkers = _markers.values.where((m) => !_hiddenMarkerTypes.contains(m.type));
+
+    // Route lines, grouped by mission so "All Users" mode never connects
+    // waypoints/extraction points that belong to different missions.
+    final polylines = <Polyline>[];
+    for (final group in groupMarkersByMission(visibleMarkers).values) {
+      final start = firstMarkerOfType(group, TacMarkerType.extractionStart);
+      final end = firstMarkerOfType(group, TacMarkerType.extractionEnd);
+      if (start != null && end != null) {
+        polylines.add(Polyline(points: [start, end], color: Colors.orange, strokeWidth: 3));
+      }
+      final wpPts = waypointRoutePoints(group);
+      if (wpPts.length >= 2) {
+        polylines.add(Polyline(points: wpPts, color: TacMarkerType.waypoint.color, strokeWidth: 3));
+      }
+    }
+    if (_navRoute != null) {
+      polylines.add(Polyline(points: _navRoute!.points, color: Colors.cyanAccent, strokeWidth: 4));
+    }
+    if (_multiRoute != null) {
+      polylines.add(Polyline(points: _multiRoute!.points, color: Colors.amberAccent, strokeWidth: 4));
+    }
 
     return Row(
       children: [
@@ -409,11 +990,20 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
               mapController: _mapCtrl,
               // Fixed initial camera only — real positioning is done via _mapCtrl
               // (see _fitToMarkers) so periodic data refreshes don't reset pan/zoom.
-              options: const MapOptions(initialCenter: LatLng(39.8283, -98.5795), initialZoom: 4),
+              options: MapOptions(
+                initialCenter: const LatLng(39.8283, -98.5795),
+                initialZoom: 4,
+                onTap: (_, point) {
+                  if (_placingZone) { _createZoneDesktop(point); return; }
+                  if (_placingType == TacMarkerType.waypoint) { _placeWaypointDesktop(point); return; }
+                  if (_placingType != null) { _placeMarkerDesktop(point, _placingType!); return; }
+                },
+              ),
               children: [
                 TileLayer(urlTemplate: _kOsmTileUrl, userAgentPackageName: 'com.peninsulathreat.resqruck'),
+                PolylineLayer(polylines: polylines),
                 CircleLayer(
-                  circles: _zones.values
+                  circles: visibleZones
                       .map((z) => CircleMarker(
                             point: LatLng(z.lat, z.lng),
                             radius: z.radiusM,
@@ -425,12 +1015,59 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       .toList(),
                 ),
                 MarkerLayer(markers: [
-                  ..._markers.values.map((m) => Marker(
-                        point: LatLng(m.lat, m.lng),
-                        width: 36,
-                        height: 36,
-                        child: Icon(m.type.icon, color: m.type.color, size: 28),
+                  ...visibleZones.map((z) => Marker(
+                        point: LatLng(z.lat, z.lng),
+                        width: 90,
+                        height: 24,
+                        child: GestureDetector(
+                          onLongPress: () => _confirmDeleteZoneDesktop(z),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: z.color.withValues(alpha: 0.85),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(z.name,
+                                textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
+                          ),
+                        ),
                       )),
+                  ...visibleMarkers.map((m) {
+                    final stopIndex = _routeStops.indexWhere((s) => s.id == m.id);
+                    return Marker(
+                      point: LatLng(m.lat, m.lng),
+                      width: m.type.showsLabelPill ? 60 : 36,
+                      height: m.type.showsLabelPill ? 44 : 36,
+                      child: GestureDetector(
+                        onTap: () => _onMarkerTapped(m),
+                        onLongPress: () => _confirmDeleteMarkerDesktop(m),
+                        child: Stack(clipBehavior: Clip.none, children: [
+                          m.type.showsLabelPill
+                              ? Column(mainAxisSize: MainAxisSize.min, children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                    decoration: BoxDecoration(
+                                        color: m.type.color, borderRadius: BorderRadius.circular(4)),
+                                    child: Text(m.label.isNotEmpty ? m.label : m.type.label,
+                                        style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                                  ),
+                                  Icon(m.type.icon, color: m.type.color, size: 22),
+                                ])
+                              : Icon(m.type.icon, color: m.type.color, size: 28),
+                          if (stopIndex != -1)
+                            Positioned(
+                              right: -2, top: -2,
+                              child: CircleAvatar(
+                                radius: 8, backgroundColor: Colors.amberAccent,
+                                child: Text('${stopIndex + 1}',
+                                    style: const TextStyle(fontSize: 9, color: Colors.black, fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                        ]),
+                      ),
+                    );
+                  }),
                   ..._sos.values.map((s) => Marker(
                         point: LatLng(s.lat, s.lng),
                         width: 44,
@@ -448,6 +1085,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                           teamName: _teamNameByUser[u.id],
                           teamColor: _teamColorByUser[u.id],
                           deploymentStatus: _deploymentStatusByUser[u.id],
+                          onTapOverride: _pickingRoute ? () => _onUserTapped(u) : null,
                         ),
                       )),
                 ]),
@@ -463,6 +1101,108 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 child: const Icon(Icons.center_focus_strong),
               ),
             ),
+            if (_routing)
+              const Positioned(
+                left: 12, bottom: 12,
+                child: Card(child: Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                    SizedBox(width: 10),
+                    Text('Routing…'),
+                  ]),
+                )),
+              ),
+            if (_navRoute != null && _navTarget != null && _routeOriginUser == null)
+              Positioned(
+                left: 12,
+                bottom: 12,
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.alt_route),
+                      const SizedBox(width: 8),
+                      Text('${_navTarget!.label.isNotEmpty ? _navTarget!.label : _navTarget!.type.label} · '
+                          '${formatDistance(_navRoute!.distanceMeters)} · ${formatDuration(_navRoute!.duration)}'),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        onPressed: () => setState(() { _navRoute = null; _navTarget = null; }),
+                      ),
+                    ]),
+                  ),
+                ),
+              ),
+            if (_planningRoute)
+              Positioned(
+                left: 12, right: 12, bottom: 12,
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(
+                        _routeStops.isEmpty
+                            ? 'Click markers in order: origin, then any stops, then destination'
+                            : _routeStops.map((m) => m.label.isNotEmpty ? m.label : m.type.label).join(' → '),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(children: [
+                        if (_isMultiRouting)
+                          const Padding(
+                            padding: EdgeInsets.only(right: 8),
+                            child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                          ),
+                        TextButton(
+                          onPressed: _routeStops.isEmpty ? null : () => setState(() => _routeStops.clear()),
+                          child: const Text('Clear'),
+                        ),
+                        const Spacer(),
+                        FilledButton(
+                          onPressed: _routeStops.length >= 2 && !_isMultiRouting ? _calculateMultiRoute : null,
+                          child: Text('Calculate (${_routeStops.length})'),
+                        ),
+                      ]),
+                    ]),
+                  ),
+                ),
+              )
+            else if (_multiRoute != null)
+              Positioned(
+                left: 12, right: 12, bottom: 12,
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        const Icon(Icons.alt_route),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Total: ${formatDistance(_multiRoute!.totalDistanceMeters)} · ${formatDuration(_multiRoute!.totalDuration)}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: () => setState(() { _multiRoute = null; _routeStops.clear(); }),
+                        ),
+                      ]),
+                      const Divider(height: 12),
+                      for (var i = 0; i < _multiRoute!.legs.length; i++)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Text(
+                            '${_stopLabel(i)} → ${_stopLabel(i + 1)}: '
+                            '${formatDistance(_multiRoute!.legs[i].distanceMeters)} · '
+                            '${formatDuration(_multiRoute!.legs[i].duration)}',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ),
+                    ]),
+                  ),
+                ),
+              ),
           ]),
         ),
         SizedBox(
@@ -513,6 +1253,10 @@ class _UserMarker extends StatelessWidget {
   final String? teamName;
   final Color? teamColor;
   final String? deploymentStatus;
+  // When set (Dispatch ETA's unit-picking step), overrides the default tap
+  // behavior (showPersonnelInfoSheet) so this marker can be selected as a
+  // route origin instead.
+  final VoidCallback? onTapOverride;
   const _UserMarker({
     required this.user,
     this.showMission = false,
@@ -520,6 +1264,7 @@ class _UserMarker extends StatelessWidget {
     this.teamName,
     this.teamColor,
     this.deploymentStatus,
+    this.onTapOverride,
   });
 
   @override
@@ -528,16 +1273,17 @@ class _UserMarker extends StatelessWidget {
     final icon = rt.isNotEmpty ? resourceTypeIcon(rt) : Icons.person_pin_circle;
     final color = teamColor ?? Colors.teal;
     return GestureDetector(
-      onTap: () => showPersonnelInfoSheet(
-        context,
-        userId: user.id,
-        callsign: user.callsign,
-        resourceType: resourceType,
-        teamName: teamName,
-        teamColor: teamColor,
-        deploymentStatus: deploymentStatus,
-        assignedBy: 'Command Console',
-      ),
+      onTap: onTapOverride ??
+          () => showPersonnelInfoSheet(
+                context,
+                userId: user.id,
+                callsign: user.callsign,
+                resourceType: resourceType,
+                teamName: teamName,
+                teamColor: teamColor,
+                deploymentStatus: deploymentStatus,
+                assignedBy: 'Command Console',
+              ),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),

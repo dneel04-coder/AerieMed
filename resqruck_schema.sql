@@ -224,6 +224,28 @@ begin
   exception when others then null;
   end;
 
+  -- tac_markers
+  create table if not exists tac_markers (
+    id uuid default gen_random_uuid() primary key,
+    mission_code text not null,
+    type text not null,
+    label text not null default '',
+    lat double precision not null,
+    lng double precision not null,
+    placed_by text not null default '',
+    created_at timestamptz default now()
+  );
+  begin
+    alter table tac_markers enable row level security;
+    create policy "public_access" on tac_markers
+      for all using (true) with check (true);
+  exception when others then null;
+  end;
+  begin
+    alter publication supabase_realtime add table tac_markers;
+  exception when others then null;
+  end;
+
   -- tac_sos
   create table if not exists tac_sos (
     id uuid default gen_random_uuid() primary key,
