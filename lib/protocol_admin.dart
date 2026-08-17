@@ -1001,37 +1001,43 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
             onTap: () => Navigator.push(
                 context, MaterialPageRoute(builder: (_) => const AdminAccessRequestsScreen())),
           ),
-          const Divider(indent: 72, endIndent: 16),
-          ListTile(
-            leading: const CircleAvatar(
-                backgroundColor: Colors.green,
-                child: Icon(Icons.lock_open, color: Colors.white)),
-            title: const Text('Grant Full Access (This Device)'),
-            subtitle: const Text('Bypass paywall for this device without purchasing'),
-            onTap: () async {
-              final confirm = await showDialog<bool>(
-                context: context,
-                builder: (_) => AlertDialog(
-                  title: const Text('Grant Full Access?'),
-                  content: const Text(
-                      'This will unlock all features on this device without going through the paywall. Use this for admin and test devices.'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                    FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Grant')),
-                  ],
-                ),
-              );
-              if (confirm != true || !context.mounted) return;
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.setBool('profile_purchase_unlocked', true);
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('Full access granted. Restart the app to apply.'),
+          // Apple Guideline 3.1.1: paid content on iOS must unlock only
+          // through StoreKit — a manual bypass of the paywall isn't allowed
+          // there, even from an admin-only screen. Kept on Android/Windows/
+          // Mac for admin/test devices.
+          if (!Platform.isIOS) ...[
+            const Divider(indent: 72, endIndent: 16),
+            ListTile(
+              leading: const CircleAvatar(
                   backgroundColor: Colors.green,
-                ));
-              }
-            },
-          ),
+                  child: Icon(Icons.lock_open, color: Colors.white)),
+              title: const Text('Grant Full Access (This Device)'),
+              subtitle: const Text('Bypass paywall for this device without purchasing'),
+              onTap: () async {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: const Text('Grant Full Access?'),
+                    content: const Text(
+                        'This will unlock all features on this device without going through the paywall. Use this for admin and test devices.'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                      FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Grant')),
+                    ],
+                  ),
+                );
+                if (confirm != true || !context.mounted) return;
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setBool('profile_purchase_unlocked', true);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Full access granted. Restart the app to apply.'),
+                    backgroundColor: Colors.green,
+                  ));
+                }
+              },
+            ),
+          ],
           const Divider(indent: 72, endIndent: 16),
           ListTile(
             leading: const CircleAvatar(

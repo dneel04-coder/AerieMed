@@ -269,10 +269,17 @@ class _PaywallScreenState extends State<PaywallScreen> {
                 ),
               ],
               const SizedBox(height: 8),
-              TextButton(
-                onPressed: _purchasing ? null : _redeemCode,
-                child: const Text('Have an access code?'),
-              ),
+              // Apple Guideline 3.1.1: paid content on iOS must unlock only
+              // through StoreKit — a code that bypasses payment (any
+              // app_access_codes row with bypass_paywall=true) isn't
+              // allowed there. Kept on Android/Windows/Mac, where this
+              // app also serves as a way to comp access to specific
+              // partners outside a per-platform store purchase.
+              if (!Platform.isIOS)
+                TextButton(
+                  onPressed: _purchasing ? null : _redeemCode,
+                  child: const Text('Have an access code?'),
+                ),
               Text(
                 'One-time purchase • No subscription • Works offline after purchase',
                 style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),

@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -276,7 +277,10 @@ class _LoginScreenState extends State<LoginScreen> {
         });
       } catch (_) {}
       await UserProfile.markAccessValidated();
-      if (bypass) await UserProfile.markUnlocked();
+      // Apple Guideline 3.1.1: on iOS, paid content must unlock only through
+      // StoreKit — an access code (even one entered here at login, not on
+      // the paywall itself) must never be able to bypass payment.
+      if (bypass && !Platform.isIOS) await UserProfile.markUnlocked();
       setState(() => _accessValidated = true);
     }
 
