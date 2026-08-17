@@ -1,7 +1,7 @@
 name: resqruck
 description: ResQruck - Field Medical Protocols
 publish_to: 'none'
-version: 1.0.1+112
+version: 1.0.1+113
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -39,6 +39,21 @@ dependencies:
   firebase_core: ^4.13.0
   firebase_messaging: ^16.5.0
   mgrs_dart: ^2.0.0
+
+# pdfrx 2.4.0 transitively allows pdfrx_engine down to a version with a real
+# null-safety compile bug in pdf_file_cache.dart: cache!.blockSize on one
+# line doesn't promote cache to non-null on later lines inside the same
+# async closure (captured outer parameter, not a local). Confirmed present
+# in every published version through 0.4.5 by diffing pub.dev release
+# sources directly; genuinely fixed upstream in 0.4.6 (uses a promoted
+# local `resolvedCache` var), but 0.4.6 requires meta ^1.18.0, which
+# conflicts with the meta 1.17.0 this Flutter SDK's flutter_test pins —
+# an unrelated resolution deadlock, not a reason to leave the real bug in.
+# vendor/pdfrx_engine is 0.4.4 (meta-compatible) with that exact upstream
+# fix backported to just this one function.
+dependency_overrides:
+  pdfrx_engine:
+    path: vendor/pdfrx_engine
 
 dev_dependencies:
   flutter_test:
