@@ -5,7 +5,13 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 import 'protocol_admin.dart' show SupabaseService;
 import 'user_profile.dart';
 
-const String kIapProductId = 'resqruck_full_access';
+// The same purchase has a different Product ID per store — App Store
+// Connect's IAP was created as "resqruckFull" (no underscore, camelCase),
+// while Google Play Console's was created separately as
+// "resqruck_full_access" — this is store-side setup, not something the app
+// can unify. Querying the wrong one is indistinguishable from the product
+// not existing at all; StoreKit/Play Billing just return "not found".
+String get kIapProductId => Platform.isIOS ? 'resqruckFull' : 'resqruck_full_access';
 
 // in_app_purchase only works through the iOS/Android app stores — Windows
 // and macOS builds are unlocked via access code only.
