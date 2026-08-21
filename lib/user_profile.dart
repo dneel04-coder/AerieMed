@@ -131,6 +131,43 @@ class UserProfile {
     }
   }
 
+  /// Looks up the existing profile for [callsign], if any — used when a
+  /// reinstall's freshly-generated device id collides with a callsign
+  /// that's already registered, so the app can offer to restore that
+  /// profile instead of just blocking the user.
+  static Future<UserProfile?> fetchByCallsign(String callsign) async {
+    final client = SupabaseService.client;
+    if (client == null || callsign.isEmpty) return null;
+    try {
+      final rows = await client
+          .from('user_profiles')
+          .select('user_id, name, callsign, cert_level, rt130, rope_rescue')
+          .ilike('callsign', callsign)
+          .limit(1);
+      if ((rows as List).isEmpty) return null;
+      final r = rows.first;
+      return UserProfile(
+        userId: r['user_id'] as String,
+        name: r['name'] as String? ?? '',
+        callsign: r['callsign'] as String? ?? '',
+        certLevel: r['cert_level'] as String? ?? 'None',
+        rt130: r['rt130'] as bool? ?? false,
+        ropeRescue: r['rope_rescue'] as bool? ?? false,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Replaces this device's local random id with [userId] — used after
+  /// restoring an existing profile post-reinstall, so this device's saves
+  /// update that same `user_profiles` row (matching on `user_id` primary
+  /// key) instead of colliding with it as a would-be duplicate.
+  static Future<void> adoptUserId(String userId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kUserId, userId);
+  }
+
   /// Status of this device's self-serve access request, if any:
   /// 'pending' | 'approved' | 'denied' | null (no request submitted — the
   /// access-code fast path is unaffected by any of this).
@@ -219,13 +256,44 @@ class _LoginScreenState extends State<LoginScreen> {
       final taken = await UserProfile.callsignTaken(
           callsign, excludeUserId: _existing?.userId ?? '');
       if (taken) {
+        final existingProfile = await UserProfile.fetchByCallsign(callsign);
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('A profile with that callsign already exists.'),
-            backgroundColor: Colors.red,
-            duration: Duration(seconds: 4)));
-        setState(() => _saving = false);
-        return;
+        if (existingProfile == null) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('A profile with that callsign already exists.'),
+              backgroundColor: Colors.red,
+              duration: Duration(seconds: 4)));
+          setState(() => _saving = false);
+          return;
+        }
+        final restore = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Profile Already Exists'),
+            content: Text(
+                'A profile for "${existingProfile.name}" already uses callsign '
+                '"${existingProfile.callsign}". If this is you reinstalling the '
+                'app, restore that profile instead of creating a new one.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Use a different callsign')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('This is me — restore')),
+            ],
+          ),
+        );
+        if (restore != true || !mounted) return;
+        await UserProfile.adoptUserId(existingProfile.userId);
+        setState(() {
+          _existing = existingProfile;
+          _nameCtrl.text = existingProfile.name;
+          _callsignCtrl.text = existingProfile.callsign;
+          _certLevel = existingProfile.certLevel;
+          _rt130 = existingProfile.rt130;
+          _ropeRescue = existingProfile.ropeRescue;
+        });
       }
     }
     if (!mounted) return;
@@ -286,7 +354,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     final profile = UserProfile(
       userId: _existing?.userId ?? '',
-      name: name,
+      name: _nameCtrl.text.trim(),
       callsign: _callsignCtrl.text.trim(),
       certLevel: _certLevel,
       rt130: _rt130,

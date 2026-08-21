@@ -21,7 +21,8 @@ class ActiveIncidentController extends ChangeNotifier {
 }
 
 class AdminShellScreen extends StatefulWidget {
-  const AdminShellScreen({super.key});
+  final VoidCallback onSignOut;
+  const AdminShellScreen({super.key, required this.onSignOut});
 
   @override
   State<AdminShellScreen> createState() => _AdminShellScreenState();
@@ -83,7 +84,7 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
                         DeploymentOrdersConsoleScreen(incident: _activeIncident.incident),
                         ReportsConsoleScreen(incident: _activeIncident.incident),
                         const AccessRequestsScreen(),
-                        const SettingsScreen(),
+                        SettingsScreen(onSignOut: widget.onSignOut),
                       ],
                     ),
                   ),

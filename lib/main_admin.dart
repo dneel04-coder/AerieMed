@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 import 'admin_console/admin_shell.dart';
 import 'protocol_admin.dart' show SupabaseService, showAdminPinDialog;
+
+const _kStayLoggedIn = 'console_stay_logged_in';
 
 /// Entry point for the ResQruck Command Console (desktop-only incident
 /// command app). Built via `flutter build windows -t lib/main_admin.dart`
@@ -59,12 +62,23 @@ class _CommandConsoleAppState extends State<CommandConsoleApp> {
 
   Future<void> _init() async {
     await SupabaseService.ensureInitialized();
-    if (mounted) setState(() => _checking = false);
+    final prefs = await SharedPreferences.getInstance();
+    final stayLoggedIn = prefs.getBool(_kStayLoggedIn) ?? false;
+    if (mounted) setState(() { _checking = false; _authed = stayLoggedIn; });
   }
 
-  Future<void> _authenticate(BuildContext context) async {
+  Future<void> _authenticate(BuildContext context, {required bool stayLoggedIn}) async {
     final ok = await showAdminPinDialog(context);
-    if (ok && mounted) setState(() => _authed = true);
+    if (!ok || !mounted) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kStayLoggedIn, stayLoggedIn);
+    setState(() => _authed = true);
+  }
+
+  Future<void> _signOut() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kStayLoggedIn, false);
+    if (mounted) setState(() => _authed = false);
   }
 
   @override
@@ -83,15 +97,22 @@ class _CommandConsoleAppState extends State<CommandConsoleApp> {
       home: _checking
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : _authed
-              ? const AdminShellScreen()
+              ? AdminShellScreen(onSignOut: _signOut)
               : _LockScreen(onUnlock: _authenticate),
     );
   }
 }
 
-class _LockScreen extends StatelessWidget {
-  final void Function(BuildContext context) onUnlock;
+class _LockScreen extends StatefulWidget {
+  final Future<void> Function(BuildContext context, {required bool stayLoggedIn}) onUnlock;
   const _LockScreen({required this.onUnlock});
+
+  @override
+  State<_LockScreen> createState() => _LockScreenState();
+}
+
+class _LockScreenState extends State<_LockScreen> {
+  bool _stayLoggedIn = true;
 
   @override
   Widget build(BuildContext context) {
@@ -103,11 +124,19 @@ class _LockScreen extends StatelessWidget {
           const Text('ResQruck Command Console', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           Text('Sign in with admin credentials to continue', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Checkbox(
+              value: _stayLoggedIn,
+              onChanged: (v) => setState(() => _stayLoggedIn = v ?? true),
+            ),
+            const Text('Stay signed in on this device'),
+          ]),
+          const SizedBox(height: 8),
           FilledButton.icon(
             icon: const Icon(Icons.lock_open_outlined),
             label: const Text('Sign In'),
-            onPressed: () => onUnlock(context),
+            onPressed: () => widget.onUnlock(context, stayLoggedIn: _stayLoggedIn),
           ),
         ]),
       ),

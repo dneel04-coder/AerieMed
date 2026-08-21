@@ -3,7 +3,8 @@ import '../protocol_admin.dart' show ProtocolSyncService;
 import '../team_settings_service.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  final VoidCallback onSignOut;
+  const SettingsScreen({super.key, required this.onSignOut});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -169,6 +170,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               trailing: FilledButton.tonal(
                 onPressed: _loading ? null : () => _editTeamDriveLinks(context),
                 child: const Text('Edit'),
+              ),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Sign Out'),
+              subtitle: const Text('Clears "stay signed in" and returns to the sign-in screen'),
+              trailing: FilledButton.tonal(
+                onPressed: widget.onSignOut,
+                child: const Text('Sign Out'),
               ),
             ),
           ),
