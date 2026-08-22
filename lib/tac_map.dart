@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -83,6 +84,16 @@ const _kCallsign = 'tac_callsign';
 const _kMissionCode = 'tac_mission_code';
 const _kIsAdmin = 'tac_is_admin';
 const _kUserId = 'tac_user_id';
+const _kBackgroundTracking = 'tac_background_tracking_enabled';
+
+/// Below this age, a personnel marker shows at full color; past it, faded
+/// (but still shown) — background-tracked devices can legitimately go quiet
+/// for a few minutes under OS battery throttling without meaning "gone."
+const kLocationStaleAfter = Duration(minutes: 5);
+
+/// Past this age, a personnel marker is removed entirely — treated as no
+/// longer transmitting rather than merely delayed.
+const kLocationRemoveAfter = Duration(minutes: 15);
 
 /// Fires whenever this device joins a mission, however that happened — via
 /// the Join Mission sheet below, or a silent accept-flow elsewhere in the
@@ -1896,6 +1907,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   bool _fireMapAsBase = false; // true = fire map replaces tile layer
   bool _markerTableWarned = false;
   bool _sharingLocation = true;
+  bool _backgroundTrackingEnabled = false;
   final Set<String> _shownInviteIds = {};
   String? _filterMission; // null = all missions visible
   bool _hasMission = false; // true once callsign + missionCode are set
@@ -2011,6 +2023,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _callsign = prefs.getString(_kCallsign) ?? '';
     _missionCode = prefs.getString(_kMissionCode) ?? '';
     _isAdmin = prefs.getBool(_kIsAdmin) ?? false;
+    _backgroundTrackingEnabled = prefs.getBool(_kBackgroundTracking) ?? false;
     _hasMission = _callsign.isNotEmpty && _missionCode.isNotEmpty;
 
     // Clean up own stale row
@@ -2336,16 +2349,136 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
     // Continuous stream — fires on movement ≥5 m so _myLocation stays current
     // without calling getCurrentPosition on every publish tick (eliminates iOS delay).
+    _rebuildPositionStream();
+  }
+
+  // Background tracking only takes effect if the OS permission is actually
+  // "Always" -- with only "When In Use" granted, AndroidSettings'
+  // foregroundNotificationConfig / AppleSettings.allowBackgroundLocationUpdates
+  // are harmless no-ops and the stream behaves exactly as it does today
+  // (foreground-only), so it's safe to always build platform settings from
+  // this single toggle rather than branching on permission state too.
+  LocationSettings _locationSettingsFor(bool background) {
+    if (!background) {
+      return const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
+    }
+    if (Platform.isAndroid) {
+      return AndroidSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 5,
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationTitle: 'ResQruck — Location sharing active',
+          notificationText: 'Your position is visible to your command team.',
+          enableWakeLock: true,
+        ),
+      );
+    }
+    if (Platform.isIOS) {
+      return AppleSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 5,
+        pauseLocationUpdatesAutomatically: false,
+        showBackgroundLocationIndicator: true,
+        allowBackgroundLocationUpdates: true,
+      );
+    }
+    return const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
+  }
+
+  void _rebuildPositionStream() {
     _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 5,
-        )).listen((pos) {
+        locationSettings: _locationSettingsFor(_backgroundTrackingEnabled)).listen((pos) {
       if (!mounted) return;
       setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
       if (_callsign.isNotEmpty) _applyOwnPosition(pos.latitude, pos.longitude);
     });
+  }
+
+  /// Requests OS-level "Always" location permission, needed for
+  /// _backgroundTrackingEnabled to actually take effect. Returns whether it
+  /// was granted; on failure, shows platform-specific guidance since neither
+  /// OS reliably grants this from a single in-app system dialog.
+  Future<bool> _requestAlwaysLocationPermission() async {
+    if (Platform.isIOS) {
+      final perm = await Geolocator.requestPermission();
+      if (perm == LocationPermission.always) return true;
+      if (!mounted) return false;
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Enable "Always" in Settings'),
+          content: const Text(
+              'Open Settings > ResQruck > Location and choose "Always" to '
+              'finish enabling background sharing.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () { Navigator.pop(context); Geolocator.openAppSettings(); },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        ),
+      );
+      return false;
+    }
+    if (Platform.isAndroid) {
+      var status = await Permission.locationAlways.status;
+      if (status.isGranted) return true;
+      status = await Permission.locationAlways.request();
+      if (status.isGranted) return true;
+      if (!mounted) return false;
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Enable Background Location'),
+          content: const Text(
+              'Android requires this be turned on from Settings. Tap below, '
+              'then choose "Allow all the time" under Location.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () { Navigator.pop(context); Geolocator.openAppSettings(); },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        ),
+      );
+      return false;
+    }
+    return false;
+  }
+
+  Future<void> _persistBackgroundTracking(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kBackgroundTracking, enabled);
+    if (mounted) setState(() => _backgroundTrackingEnabled = enabled);
+    _rebuildPositionStream();
+  }
+
+  Future<void> _setBackgroundTracking(bool enabled) async {
+    if (!enabled) {
+      await _persistBackgroundTracking(false);
+      return;
+    }
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Share Location in Background?'),
+        content: const Text(
+            'ResQruck will keep sharing your position with your command '
+            'team even when your phone is locked or the app is closed. You '
+            'can turn this off at any time.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not Now')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Continue')),
+        ],
+      ),
+    );
+    if (proceed != true || !mounted) return;
+    final granted = await _requestAlwaysLocationPermission();
+    if (!mounted || !granted) return;
+    await _persistBackgroundTracking(true);
   }
 
   // Immediately populate _users with our own entry so the callsign marker
@@ -3154,7 +3287,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   List<Marker> _buildTakMarkers() {
     return _takPositions.values.map((p) {
       final age = DateTime.now().difference(p.lastUpdated);
-      final stale = age.inMinutes > 5;
+      final stale = age >= kLocationStaleAfter;
       final color = stale ? Colors.white24 : p.statusColor;
       return Marker(
         point: LatLng(p.lat, p.lon),
@@ -3223,7 +3356,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   List<Marker> _buildMapMarkers() {
     final markers = <Marker>[];
     final now = DateTime.now();
-    final staleThreshold = now.subtract(const Duration(minutes: 15));
+    final staleThreshold = now.subtract(kLocationRemoveAfter);
 
     // ── User location pins ────────────────────────────────────────────────
     // Deduplicate by callsign: two devices sharing the same callsign should
@@ -3243,8 +3376,10 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       final sameMission = user.missionCode == _missionCode;
       final statusCol = _statusColor(user.status);
       final baseColor = isMe ? Colors.teal : sameMission ? Colors.blue : Colors.deepOrange;
-      final minutesAgo = now.difference(user.updatedAt).inMinutes;
+      final ageSinceUpdate = now.difference(user.updatedAt);
+      final minutesAgo = ageSinceUpdate.inMinutes;
       final timeLabel = minutesAgo < 1 ? 'now' : '${minutesAgo}m';
+      final isStale = ageSinceUpdate >= kLocationStaleAfter;
       final battLabel = user.batteryLevel != null ? '🔋${user.batteryLevel}%' : '';
       // SOS highlight
       final hasSos = _activeSos.any((s) => s.userId == user.id);
@@ -3259,6 +3394,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           : (isMe ? Icons.person_pin : Icons.person_pin_circle);
       final ringColor = teamColor ?? statusCol;
       final ringWidth = teamColor != null ? 2.5 : 1.5;
+      // Fade (not remove) once past kLocationStaleAfter -- keeps the color
+      // coding legible while signalling "not necessarily current."
+      Color fadeIfStale(Color c) => isStale && !hasSos ? c.withValues(alpha: 0.5) : c;
       void showInfo() => showPersonnelInfoSheet(
             context,
             userId: user.id,
@@ -3290,9 +3428,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 constraints: const BoxConstraints(maxWidth: 96),
                 padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
                 decoration: BoxDecoration(
-                  color: hasSos ? Colors.red : baseColor,
+                  color: hasSos ? Colors.red : fadeIfStale(baseColor),
                   borderRadius: BorderRadius.circular(5),
-                  border: Border.all(color: hasSos ? statusCol : ringColor, width: ringWidth),
+                  border: Border.all(color: hasSos ? statusCol : fadeIfStale(ringColor), width: ringWidth),
                   boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 3, offset: Offset(1,1))],
                 ),
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -3311,7 +3449,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 ]),
               ),
               Icon(personIcon,
-                  color: hasSos ? Colors.red : (teamColor ?? baseColor), size: 32,
+                  color: hasSos ? Colors.red : fadeIfStale(teamColor ?? baseColor), size: 32,
                   shadows: const [Shadow(color: Colors.black45, blurRadius: 4)]),
             ],
           ),
@@ -4220,6 +4358,11 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         if (_isAdmin)
           const PopupMenuItem(value: 'add_zone',  child: Text('Add Zone')),
         const PopupMenuItem(value: 'add_by_coords', child: Text('Add Marker by Coordinates')),
+        CheckedPopupMenuItem<String>(
+          value: 'background_location',
+          checked: _backgroundTrackingEnabled,
+          child: const Text('Share Location in Background'),
+        ),
         const PopupMenuItem(value: 'settings',    child: Text('Supabase Settings')),
         if (_incidentOverlay?.imageBytes != null)
           PopupMenuItem(
@@ -4247,6 +4390,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         if (v == 'clear_routes')      _clearRoutes();
         if (v == 'add_zone')          _startZonePlacement();
         if (v == 'add_by_coords')     _showAddByCoordinatesDialog();
+        if (v == 'background_location') _setBackgroundTracking(!_backgroundTrackingEnabled);
         if (v == 'toggle_basemap')    setState(() => _fireMapAsBase = !_fireMapAsBase);
         if (v == 'clear_overlay')     setState(() { _incidentOverlay = null; _fireMapAsBase = false; });
         if (v.startsWith('clear_marker_')) {

@@ -15,6 +15,8 @@ import '../tac_map.dart'
         parseHexColor,
         showPersonnelInfoSheet,
         kZoneTypes,
+        kLocationStaleAfter,
+        kLocationRemoveAfter,
         insertTacMarker,
         insertTacZone,
         waypointRoutePoints,
@@ -32,11 +34,14 @@ import '../routing_service.dart';
 
 const _kOsmTileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
-// A device publishes every ~10s while sharing location — anything older than
-// this is treated as not currently transmitting rather than "their last
-// known spot" (tac_users has no TTL of its own; see joinMissionSilently for
-// the related fix to stop old-mission rows from lingering in the first place).
-const _kCurrentWindow = Duration(minutes: 5);
+// A device publishes every ~10s while sharing location, but background-
+// tracked devices can go quiet for a few minutes under OS battery throttling
+// without meaning "gone" -- use the shared kLocationRemoveAfter (15 min) as
+// the hard cutoff, matching tac_map.dart's own peer-view threshold, rather
+// than a tighter one specific to this screen (tac_users has no TTL of its
+// own; see joinMissionSilently for the related fix to stop old-mission rows
+// from lingering in the first place).
+const _kCurrentWindow = kLocationRemoveAfter;
 
 enum _MapMode { allUsers, thisIncident }
 
@@ -1271,7 +1276,16 @@ class _UserMarker extends StatelessWidget {
   Widget build(BuildContext context) {
     final rt = resourceType ?? '';
     final icon = rt.isNotEmpty ? resourceTypeIcon(rt) : Icons.person_pin_circle;
-    final color = teamColor ?? Colors.teal;
+    final ageSinceUpdate = DateTime.now().toUtc().difference(user.updatedAt.toUtc());
+    final minutesAgo = ageSinceUpdate.inMinutes;
+    final timeLabel = minutesAgo < 1 ? 'now' : '${minutesAgo}m';
+    // Fade (not remove) once past kLocationStaleAfter -- an admin should be
+    // able to tell "current" from "not necessarily current" without the
+    // marker vanishing outright (background tracking can go quiet for a few
+    // minutes under OS battery throttling).
+    final isStale = ageSinceUpdate >= kLocationStaleAfter;
+    final baseColor = teamColor ?? Colors.teal;
+    final color = isStale ? baseColor.withValues(alpha: 0.5) : baseColor;
     return GestureDetector(
       onTap: onTapOverride ??
           () => showPersonnelInfoSheet(
@@ -1292,12 +1306,16 @@ class _UserMarker extends StatelessWidget {
             borderRadius: BorderRadius.circular(4),
             // Team-color ring so team members read as visually grouped even
             // when their resource_type/icon differs.
-            border: teamColor != null ? Border.all(color: teamColor!, width: 2) : null,
+            border: teamColor != null ? Border.all(color: color, width: 2) : null,
           ),
-          child: Text(
-            showMission && user.missionCode.isNotEmpty ? '${user.callsign} · ${user.missionCode}' : user.callsign,
-            style: const TextStyle(color: Colors.white, fontSize: 11),
-          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(
+              showMission && user.missionCode.isNotEmpty ? '${user.callsign} · ${user.missionCode}' : user.callsign,
+              style: TextStyle(color: Colors.white.withValues(alpha: isStale ? 0.6 : 1), fontSize: 11),
+            ),
+            Text(timeLabel,
+                style: TextStyle(color: Colors.white.withValues(alpha: isStale ? 0.5 : 0.7), fontSize: 8)),
+          ]),
         ),
         Icon(icon, color: color, size: 32),
       ]),
