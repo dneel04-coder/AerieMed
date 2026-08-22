@@ -184,7 +184,10 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _tab = 2; // start on Med
   bool _isAdmin = false;
-  bool _unlocked = false;
+  // On iOS the app itself is a paid download (App Store price, not an IAP) --
+  // admin-approved login is the only access gate there, no separate
+  // in-app purchase to unlock. Android keeps the free-download + IAP model.
+  bool _unlocked = Platform.isIOS;
   RealtimeChannel? _alertChannel;
   RealtimeChannel? _missionChannel;
   bool _showingMissionPrompt = false;
@@ -192,9 +195,11 @@ class _MainShellState extends State<MainShell> {
   @override
   void initState() {
     super.initState();
-    UserProfile.isUnlocked().then((v) {
-      if (mounted) setState(() => _unlocked = v);
-    });
+    if (!Platform.isIOS) {
+      UserProfile.isUnlocked().then((v) {
+        if (mounted) setState(() => _unlocked = v);
+      });
+    }
     ProtocolSyncService.instance.isAdminMode.then((v) {
       if (!mounted) return;
       setState(() => _isAdmin = v);
