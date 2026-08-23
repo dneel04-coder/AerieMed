@@ -161,14 +161,48 @@ class _RosterScreenState extends State<RosterScreen> {
     }
   }
 
+  /// Removes a device from tac_users entirely (not just "not added to this
+  /// incident yet") -- for stale/unwanted online entries that should stop
+  /// showing up here, since there's nothing else to "remove" them from.
+  Future<void> _removeOnlineUser(TacUser user) async {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    try {
+      await client.from('tac_users').delete().eq('id', user.id).eq('mission_code', user.missionCode);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not remove: $e')));
+      }
+    }
+  }
+
   Future<void> _assignToIncident(_DirectoryUser user) async {
-    final incident = widget.incident;
-    if (incident == null) return;
+    final incidents = await IncidentService.instance.fetchIncidents(openOnly: true);
+    if (!mounted) return;
+    if (incidents.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('No open incidents to assign to.')));
+      return;
+    }
+    final incident = await showDialog<TacIncident>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text('Assign ${user.display} to Incident'),
+        children: incidents
+            .map((i) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, i),
+                  child: Text('${i.name.isEmpty ? i.missionCode : i.name} (${i.missionCode})'),
+                ))
+            .toList(),
+      ),
+    );
+    if (incident == null || !mounted) return;
     try {
       await IncidentService.instance.addMember(incident.id, userId: user.userId, callsign: user.display);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Assigned ${user.display} — they\'ll get a prompt to accept in the app.')));
+            content: Text('Assigned ${user.display} to ${incident.name.isEmpty ? incident.missionCode : incident.name} — they\'ll get a prompt to accept in the app.')));
       }
       _load();
     } catch (e) {
@@ -422,7 +456,6 @@ class _RosterScreenState extends State<RosterScreen> {
 
   Widget _buildAllUsers() {
     final onlineById = {for (final u in _allOnline) u.id: u};
-    final incident = widget.incident;
     final query = _searchCtrl.text.trim().toLowerCase();
     final filtered = query.isEmpty
         ? _directory
@@ -454,12 +487,10 @@ class _RosterScreenState extends State<RosterScreen> {
                 ? 'Online — mission ${loc.missionCode.isEmpty ? '(none)' : loc.missionCode}'
                 : 'Offline — no current location',
             directoryUser: u,
-            trailingAction: incident == null
-                ? null
-                : FilledButton.tonal(
-                    onPressed: () => _assignToIncident(u),
-                    child: const Text('Assign'),
-                  ),
+            trailingAction: FilledButton.tonal(
+              onPressed: () => _assignToIncident(u),
+              child: const Text('Assign'),
+            ),
           );
         }),
         if (_directory.isEmpty)
@@ -511,10 +542,17 @@ class _RosterScreenState extends State<RosterScreen> {
                   leading: const Icon(Icons.circle, size: 12, color: Colors.green),
                   title: Text(u.callsign),
                   subtitle: Text('Battery: ${u.batteryLevel ?? '—'}% • ${u.status}'),
-                  trailing: FilledButton.tonal(
-                    onPressed: () => _addOnlineUser(u),
-                    child: const Text('Add'),
-                  ),
+                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                    FilledButton.tonal(
+                      onPressed: () => _addOnlineUser(u),
+                      child: const Text('Add'),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.remove_circle_outline),
+                      tooltip: 'Remove',
+                      onPressed: () => _removeOnlineUser(u),
+                    ),
+                  ]),
                 ),
               )),
         ],

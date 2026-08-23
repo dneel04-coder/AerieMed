@@ -5,6 +5,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../protocol_admin.dart' show SupabaseService;
+import '../wildfire_overlay.dart';
 import '../tac_map.dart'
     show
         TacUser,
@@ -18,6 +19,7 @@ import '../tac_map.dart'
         kZoneTypes,
         kLocationStaleAfter,
         kLocationRemoveAfter,
+        TacBaseLayer,
         insertTacMarker,
         insertTacZone,
         waypointRoutePoints,
@@ -32,8 +34,6 @@ import '../tac_map.dart'
         parseUsng;
 import '../incident_service.dart';
 import '../routing_service.dart';
-
-const _kOsmTileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
 // A device publishes every ~10s while sharing location, but background-
 // tracked devices can go quiet for a few minutes under OS battery throttling
@@ -77,6 +77,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   // Marker/zone placement (new — this screen was view-only before)
   TacMarkerType? _placingType;
   bool _placingZone = false;
+  TacBaseLayer _baseLayer = TacBaseLayer.osm;
+  IncidentOverlay? _incidentOverlay;
+  bool _fireMapAsBase = false;
   Set<TacMarkerType> _hiddenMarkerTypes = {};
   Set<String> _hiddenZoneTypes = {};
 
@@ -543,6 +546,64 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     if (ok != true) return;
     final wpLabel = label?.isNotEmpty == true ? label! : 'WP';
     await _placeMarkerAtPointDesktop(pos, TacMarkerType.waypoint, label: wpLabel);
+  }
+
+  Future<void> _loadWildfireOverlay(String url, String name, {bool asBase = false}) async {
+    final snack = ScaffoldMessenger.of(context);
+    snack.showSnackBar(SnackBar(
+        content: Text('Downloading $name…'),
+        duration: const Duration(seconds: 30)));
+    try {
+      final overlay = await loadWildfireOverlay(url, name);
+      if (mounted) {
+        snack.hideCurrentSnackBar();
+        setState(() {
+          _incidentOverlay = overlay;
+          if (asBase) _fireMapAsBase = true;
+        });
+        _mapCtrl.fitCamera(
+            CameraFit.bounds(bounds: overlay.bounds, padding: const EdgeInsets.all(16)));
+        snack.showSnackBar(SnackBar(
+            content: Text('Loaded: $name'),
+            duration: const Duration(seconds: 3)));
+      }
+    } catch (e) {
+      if (mounted) {
+        snack.hideCurrentSnackBar();
+        snack.showSnackBar(SnackBar(
+            content: Text('Failed to load map: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4)));
+      }
+    }
+  }
+
+  void _showWildfireBrowser() {
+    showWildfireBrowserDialog(context, onLoad: (url, name, {bool asBase = false}) {
+      Navigator.pop(context);
+      _loadWildfireOverlay(url, name, asBase: asBase);
+    });
+  }
+
+  void _showBaseLayerPicker() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const ListTile(title: Text('Base Map Layer', style: TextStyle(fontWeight: FontWeight.bold))),
+          ...TacBaseLayer.values.map((layer) => ListTile(
+                title: Text(layer.label),
+                leading: Icon(_baseLayer == layer
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked),
+                onTap: () {
+                  setState(() => _baseLayer = layer);
+                  Navigator.pop(context);
+                },
+              )),
+        ]),
+      ),
+    );
   }
 
   /// Right-click anywhere on the map to place a marker at that exact spot,
@@ -1042,7 +1103,38 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 },
               ),
               children: [
-                TileLayer(urlTemplate: _kOsmTileUrl, userAgentPackageName: 'com.peninsulathreat.resqruck'),
+                Opacity(
+                  opacity: (_fireMapAsBase && _incidentOverlay?.imageBytes != null) ? 0.0 : 1.0,
+                  child: TileLayer(
+                    urlTemplate: _baseLayer.urlTemplate,
+                    subdomains: _baseLayer == TacBaseLayer.osm ? const ['a', 'b', 'c'] : const [],
+                    userAgentPackageName: 'com.peninsulathreat.resqruck',
+                  ),
+                ),
+                if (_incidentOverlay?.imageBytes != null)
+                  OverlayImageLayer(overlayImages: [
+                    // RotatedOverlayImage (not OverlayImage) so filterQuality
+                    // can be set -- see the matching mobile comment in
+                    // tac_map.dart for why plain OverlayImage looks
+                    // blocky/blurry once zoomed in.
+                    RotatedOverlayImage(
+                      topLeftCorner: _incidentOverlay!.bounds.northWest,
+                      bottomLeftCorner: _incidentOverlay!.bounds.southWest,
+                      bottomRightCorner: _incidentOverlay!.bounds.southEast,
+                      imageProvider: MemoryImage(_incidentOverlay!.imageBytes!),
+                      opacity: _fireMapAsBase ? 1.0 : 0.7,
+                      filterQuality: FilterQuality.high,
+                    ),
+                  ]),
+                if (_incidentOverlay != null && _incidentOverlay!.polygons.isNotEmpty)
+                  PolygonLayer(polygons: _incidentOverlay!.polygons
+                      .map((pts) => Polygon(
+                            points: pts,
+                            color: Colors.red.withValues(alpha: 0.20),
+                            borderColor: Colors.red,
+                            borderStrokeWidth: 2,
+                          ))
+                      .toList()),
                 PolylineLayer(polylines: polylines),
                 CircleLayer(
                   circles: visibleZones
@@ -1144,6 +1236,62 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 child: const Icon(Icons.center_focus_strong),
               ),
             ),
+            Positioned(
+              right: 12,
+              top: 60,
+              child: FloatingActionButton.small(
+                heroTag: 'base_layer',
+                onPressed: _showBaseLayerPicker,
+                tooltip: 'Base map layer',
+                child: const Icon(Icons.layers),
+              ),
+            ),
+            Positioned(
+              right: 12,
+              top: 108,
+              child: FloatingActionButton.small(
+                heroTag: 'wildfire_overlay',
+                onPressed: _showWildfireBrowser,
+                tooltip: 'Wildfire incident maps',
+                backgroundColor: _incidentOverlay != null ? Colors.deepOrange : null,
+                child: Icon(Icons.local_fire_department,
+                    color: _incidentOverlay != null ? Colors.white : null),
+              ),
+            ),
+            if (_incidentOverlay != null)
+              Positioned(
+                left: 12,
+                top: 12,
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.local_fire_department, color: Colors.deepOrange, size: 18),
+                      const SizedBox(width: 6),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 160),
+                        child: Text(_incidentOverlay!.name,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ),
+                      IconButton(
+                        icon: Icon(_fireMapAsBase ? Icons.layers : Icons.layers_outlined, size: 18),
+                        tooltip: _fireMapAsBase ? 'Show as overlay' : 'Use as basemap',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () => setState(() => _fireMapAsBase = !_fireMapAsBase),
+                      ),
+                      const SizedBox(width: 4),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        tooltip: 'Clear',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () => setState(() { _incidentOverlay = null; _fireMapAsBase = false; }),
+                      ),
+                    ]),
+                  ),
+                ),
+              ),
             if (_routing)
               const Positioned(
                 left: 12, bottom: 12,

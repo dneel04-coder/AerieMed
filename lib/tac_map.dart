@@ -1,21 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
-import 'package:path_provider/path_provider.dart';
 import 'package:battery_plus/battery_plus.dart';
-import 'dart:ui' as ui;
-import 'package:archive/archive.dart';
-import 'package:image/image.dart' as img;
-import 'package:pdfrx/pdfrx.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/io_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'protocol_admin.dart' show SupabaseService;
@@ -28,18 +18,10 @@ import 'sun_weather.dart';
 import 'user_profile.dart';
 import 'routing_service.dart';
 import 'package:mgrs_dart/mgrs_dart.dart';
-
-// wildfire.gov uses a government CA absent from Dart's trust store.
-// SecurityContext(withTrustedRoots:false) + badCertificateCallback bypass
-// both cert-chain failures and the HandshakeException that occurs when the
-// server drops a TLS connection before the certificate is even presented.
-http.Client _wildfireClient() => IOClient(
-      HttpClient(context: SecurityContext(withTrustedRoots: false))
-        ..badCertificateCallback = (_, __, ___) => true,
-    );
+import 'wildfire_overlay.dart';
 
 
-enum _BaseLayer {
+enum TacBaseLayer {
   osm,
   usgsTopo,
   usgsImagery,
@@ -63,19 +45,6 @@ enum _BaseLayer {
       };
 }
 
-
-class _IncidentOverlay {
-  final String name;
-  final Uint8List? imageBytes;       // null for polygon-only KMZ
-  final LatLngBounds bounds;
-  final List<List<LatLng>> polygons; // fire perimeter polygons (may be empty)
-  const _IncidentOverlay({
-    required this.name,
-    this.imageBytes,
-    required this.bounds,
-    this.polygons = const [],
-  });
-}
 
 const _kSupabaseUrl = 'tac_supabase_url';
 const _kSupabaseKey = 'tac_supabase_anon_key';
@@ -1900,8 +1869,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   bool _mapReady = false;
   LatLng? _myLocation;
   TacMarkerType? _placingType;
-  _BaseLayer _baseLayer = _BaseLayer.osm;
-  _IncidentOverlay? _incidentOverlay;
+  TacBaseLayer _baseLayer = TacBaseLayer.osm;
+  IncidentOverlay? _incidentOverlay;
   bool _fireMapAsBase = false; // true = fire map replaces tile layer
   bool _markerTableWarned = false;
   bool _sharingLocation = true;
@@ -3714,7 +3683,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 opacity: (_fireMapAsBase && _incidentOverlay?.imageBytes != null) ? 0.0 : 1.0,
                 child: TileLayer(
                   urlTemplate: _baseLayer.urlTemplate,
-                  subdomains: _baseLayer == _BaseLayer.osm
+                  subdomains: _baseLayer == TacBaseLayer.osm
                       ? _kBaseTileSubdomains : const <String>[],
                   userAgentPackageName: 'com.resqruck.app',
                   tileProvider: _CachedTileProvider(),
@@ -3722,10 +3691,20 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               ),
               if (_incidentOverlay?.imageBytes != null)
                 OverlayImageLayer(overlayImages: [
-                  OverlayImage(
-                    bounds: _incidentOverlay!.bounds,
+                  // RotatedOverlayImage (not OverlayImage) so filterQuality
+                  // can be set -- plain OverlayImage always renders with
+                  // Flutter's default low-quality bilinear filtering, which
+                  // looks blocky/blurry once zoomed in past the source
+                  // image's native resolution. Corners set to the bounds'
+                  // NW/SW/SE produce an unrotated rectangle identical to
+                  // what OverlayImage would draw.
+                  RotatedOverlayImage(
+                    topLeftCorner: _incidentOverlay!.bounds.northWest,
+                    bottomLeftCorner: _incidentOverlay!.bounds.southWest,
+                    bottomRightCorner: _incidentOverlay!.bounds.southEast,
                     imageProvider: MemoryImage(_incidentOverlay!.imageBytes!),
                     opacity: _fireMapAsBase ? 1.0 : 0.7,
+                    filterQuality: FilterQuality.high,
                   ),
                 ]),
               if (_incidentOverlay != null &&
@@ -4526,7 +4505,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             const ListTile(
               title: Text('Base Map Layer', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
-            ..._BaseLayer.values.map((layer) => ListTile(
+            ...TacBaseLayer.values.map((layer) => ListTile(
                   title: Text(layer.label),
                   leading: Icon(
                     _baseLayer == layer
@@ -4545,22 +4524,10 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   }
 
   void _showIncidentBrowser() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.6,
-        maxChildSize: 0.9,
-        builder: (_, ctrl) => _IncidentBrowser(
-          scrollController: ctrl,
-          onLoad: (url, name, {bool asBase = false}) {
-            Navigator.pop(context);
-            _loadKmz(url, name, asBase: asBase);
-          },
-        ),
-      ),
-    );
+    showWildfireBrowserSheet(context, onLoad: (url, name, {bool asBase = false}) {
+      Navigator.pop(context);
+      _loadKmz(url, name, asBase: asBase);
+    });
   }
 
   Future<void> _loadKmz(String url, String name, {bool asBase = false}) async {
@@ -4575,171 +4542,15 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           duration: const Duration(seconds: 30)));
     }
     try {
-      final Uint8List bodyBytes;
-      if (isLocal) {
-        final path = url.startsWith('file://') ? Uri.parse(url).toFilePath() : url;
-        bodyBytes = await File(path).readAsBytes();
-      } else {
-        final client = _wildfireClient();
-        final resp = await client.get(Uri.parse(url));
-        client.close();
-        if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
-        bodyBytes = resp.bodyBytes;
-      }
-
-      // KML files are plain XML — skip the zip decoder
-      String? kmlContent;
-      Uint8List? imgBytes;
-      List<String> _archiveFiles = []; // for debug messaging
-
-      final lowerUrl = url.toLowerCase();
-      // Strip double-extension saved by downloader (e.g. file.kmz.kmz → treat as kmz)
-      final effectiveExt = lowerUrl.endsWith('.kml') && !lowerUrl.endsWith('.kmz.kml')
-          ? '.kml'
-          : '.kmz';
-
-      if (effectiveExt == '.kml') {
-        kmlContent = String.fromCharCodes(bodyBytes);
-      } else {
-        final archive = ZipDecoder().decodeBytes(bodyBytes);
-        _archiveFiles = archive.files.where((f) => f.isFile).map((f) => f.name).toList();
-
-        // Pass 1: find KML only.
-        for (final file in archive.files) {
-          if (!file.isFile) continue;
-          if (file.name.toLowerCase().endsWith('.kml') && kmlContent == null) {
-            kmlContent = String.fromCharCodes(file.content);
-          }
-        }
-
-        if (kmlContent != null) {
-          // Read the image name the KML actually references in its GroundOverlay.
-          // This is the ONLY reliable source — picking the first image in the ZIP
-          // can yield a thumbnail/legend instead of the overlay.
-          final groundMatch = RegExp(
-              r'<GroundOverlay[\s\S]*?<Icon[\s\S]*?<href>\s*(.*?)\s*</href>',
-              caseSensitive: false).firstMatch(kmlContent);
-          final overlayHref = groundMatch?.group(1)?.trim();
-
-          // Pass 2: find the overlay image by href, then fall back to first
-          // supported-format image if href lookup fails.
-          Uint8List? firstImg;
-          for (final file in archive.files) {
-            if (!file.isFile) continue;
-            final fn = file.name;
-            final lc = fn.toLowerCase();
-            final isSupportedImg = lc.endsWith('.png') || lc.endsWith('.jpg') ||
-                lc.endsWith('.jpeg') || lc.endsWith('.gif') || lc.endsWith('.webp');
-
-            if (overlayHref != null) {
-              // Targeted lookup: exact path, case-insensitive path, or basename match.
-              final hrefLc = overlayHref.toLowerCase();
-              if (fn == overlayHref ||
-                  lc == hrefLc ||
-                  fn.split('/').last.toLowerCase() == hrefLc.split('/').last.toLowerCase()) {
-                imgBytes = Uint8List.fromList(file.content);
-                break;
-              }
-            }
-            // Keep a reference to the first supported image as a fallback.
-            if (isSupportedImg && firstImg == null) {
-              firstImg = Uint8List.fromList(file.content);
-            }
-          }
-          // If the href-named file wasn't found (or no href), use first image.
-          imgBytes ??= firstImg;
-        }
-
-        // Validate image format via magic bytes. If unsupported by Flutter's
-        // native decoder (e.g. TIFF from NIFC fire maps), transcode to PNG
-        // via the image package so the overlay always renders.
-        if (imgBytes != null && imgBytes.isNotEmpty) {
-          final isPng  = imgBytes.length > 3 &&
-              imgBytes[0] == 0x89 && imgBytes[1] == 0x50 &&
-              imgBytes[2] == 0x4E && imgBytes[3] == 0x47;
-          final isJpeg = imgBytes.length > 2 &&
-              imgBytes[0] == 0xFF && imgBytes[1] == 0xD8 && imgBytes[2] == 0xFF;
-          final isGif  = imgBytes.length > 2 &&
-              imgBytes[0] == 0x47 && imgBytes[1] == 0x49 && imgBytes[2] == 0x46;
-          final isWebp = imgBytes.length > 11 &&
-              imgBytes[0] == 0x52 && imgBytes[1] == 0x49 &&
-              imgBytes[8] == 0x57 && imgBytes[9] == 0x45;
-          if (!isPng && !isJpeg && !isGif && !isWebp) {
-            // Transcode unsupported formats (TIFF, BMP, etc.) to PNG.
-            try {
-              final decoded = img.decodeImage(imgBytes);
-              imgBytes = decoded != null
-                  ? Uint8List.fromList(img.encodePng(decoded))
-                  : null;
-            } catch (_) {
-              imgBytes = null;
-            }
-          }
-        }
-      }
-
-      if (kmlContent == null) {
-        throw Exception('No KML found in archive. Files: ${_archiveFiles.join(', ')}');
-      }
-
-      final northM = RegExp(r'<north>\s*([\d.\-]+)\s*</north>').firstMatch(kmlContent);
-      final southM = RegExp(r'<south>\s*([\d.\-]+)\s*</south>').firstMatch(kmlContent);
-      final eastM  = RegExp(r'<east>\s*([\d.\-]+)\s*</east>').firstMatch(kmlContent);
-      final westM  = RegExp(r'<west>\s*([\d.\-]+)\s*</west>').firstMatch(kmlContent);
-
-      final north = double.tryParse(northM?.group(1) ?? '');
-      final south = double.tryParse(southM?.group(1) ?? '');
-      final east  = double.tryParse(eastM?.group(1)  ?? '');
-      final west  = double.tryParse(westM?.group(1)  ?? '');
-
-      LatLngBounds bounds;
-      List<List<LatLng>> polygons = [];
-
-      if (north != null && south != null && east != null && west != null) {
-        // Image overlay with explicit bounds
-        if (imgBytes == null) throw Exception(
-          'No overlay image found. Archive contents: ${_archiveFiles.join(', ')}');
-        bounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
-      } else {
-        // No LatLonBox — try to extract polygon perimeter from coordinates
-        final coordRe = RegExp(r'<coordinates>\s*([\s\S]*?)\s*</coordinates>');
-        final allPoints = <LatLng>[];
-        for (final m in coordRe.allMatches(kmlContent)) {
-          final ring = <LatLng>[];
-          for (final token in (m.group(1) ?? '').trim().split(RegExp(r'\s+'))) {
-            final parts = token.split(',');
-            if (parts.length >= 2) {
-              final lng = double.tryParse(parts[0]);
-              final lat = double.tryParse(parts[1]);
-              if (lat != null && lng != null) {
-                ring.add(LatLng(lat, lng));
-                allPoints.add(LatLng(lat, lng));
-              }
-            }
-          }
-          if (ring.length >= 3) polygons.add(ring);
-        }
-        if (allPoints.isEmpty) throw Exception('Could not parse map bounds from KML');
-        final lats = allPoints.map((p) => p.latitude);
-        final lngs = allPoints.map((p) => p.longitude);
-        bounds = LatLngBounds(
-          LatLng(lats.reduce(min), lngs.reduce(min)),
-          LatLng(lats.reduce(max), lngs.reduce(max)),
-        );
-      }
-
+      final overlay = await loadWildfireKmz(url, name);
       if (mounted) {
         snack.hideCurrentSnackBar();
         setState(() {
-          _incidentOverlay = _IncidentOverlay(
-              name: name,
-              imageBytes: imgBytes,
-              bounds: bounds,
-              polygons: polygons);
+          _incidentOverlay = overlay;
           if (asBase) _fireMapAsBase = true;
         });
         _mapCtrl.fitCamera(
-            CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(16)));
+            CameraFit.bounds(bounds: overlay.bounds, padding: const EdgeInsets.all(16)));
         snack.showSnackBar(SnackBar(
             content: Text('Loaded: $name'),
             duration: const Duration(seconds: 3)));
@@ -4755,50 +4566,6 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     }
   }
 
-  /// Extract geographic bounds from a GeoPDF's /GPTS array.
-  /// Returns null if no georeferencing data is found.
-  LatLngBounds? _parsePdfBounds(Uint8List pdfBytes) {
-    // Scan printable-ASCII portion of the PDF bytes for the /GPTS key.
-    // Binary sections are replaced with spaces so the regex can't cross them.
-    final sb = StringBuffer();
-    for (final b in pdfBytes) {
-      sb.writeCharCode((b >= 32 && b < 127) ? b : 32);
-    }
-    final str = sb.toString();
-
-    final gptsMatch =
-        RegExp(r'/GPTS\s*\[\s*([\d\s.\-]+)\s*\]').firstMatch(str);
-    if (gptsMatch == null) return null;
-
-    final nums = gptsMatch
-        .group(1)!
-        .trim()
-        .split(RegExp(r'\s+'))
-        .map(double.tryParse)
-        .whereType<double>()
-        .toList();
-
-    if (nums.length < 8) return null;
-
-    // GPTS pairs are (lat, lng) for each LPTS corner — grab all lats/lngs.
-    final lats = <double>[];
-    final lngs = <double>[];
-    for (var i = 0; i + 1 < nums.length; i += 2) {
-      lats.add(nums[i]);
-      lngs.add(nums[i + 1]);
-    }
-
-    final south = lats.reduce(min);
-    final north = lats.reduce(max);
-    final west  = lngs.reduce(min);
-    final east  = lngs.reduce(max);
-
-    if (south >= north || west >= east) return null;
-    if (south < -90 || north > 90 || west < -180 || east > 180) return null;
-
-    return LatLngBounds(LatLng(south, west), LatLng(north, east));
-  }
-
   Future<void> _loadPdf(String url, String name, {bool asBase = false}) async {
     final snack = ScaffoldMessenger.of(context);
     final isLocal = url.startsWith('/') || url.startsWith('file://');
@@ -4806,61 +4573,15 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         content: Text('${isLocal ? 'Loading' : 'Downloading'} $name…'),
         duration: const Duration(seconds: 60)));
     try {
-      final Uint8List pdfBytes;
-      if (isLocal) {
-        final path =
-            url.startsWith('file://') ? Uri.parse(url).toFilePath() : url;
-        pdfBytes = await File(path).readAsBytes();
-      } else {
-        final client = _wildfireClient();
-        final resp = await client.get(Uri.parse(url));
-        client.close();
-        if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
-        pdfBytes = resp.bodyBytes;
-      }
-
-      // Extract geographic bounds from the GeoPDF /GPTS viewport metadata.
-      final bounds = _parsePdfBounds(pdfBytes);
-      if (bounds == null) {
-        throw Exception(
-            'No geographic coordinates found.\n'
-            'Only georeferenced (GeoPDF) files are supported.');
-      }
-
-      // Render first page to a raster image capped at 2048px on longest side.
-      final doc = await PdfDocument.openData(pdfBytes);
-      final page = doc.pages[0];
-      const maxPx = 2048.0;
-      final scale = maxPx / max(page.width, page.height);
-      final pdfImage = await page.render(
-          fullWidth: page.width * scale, fullHeight: page.height * scale);
-      if (pdfImage == null) {
-        doc.dispose();
-        throw Exception('Failed to render PDF page.');
-      }
-
-      // BGRA pixels → dart:ui Image → PNG bytes
-      final uiImage = await pdfImage.createImage();
-      pdfImage.dispose();
-      doc.dispose();
-      final byteData =
-          await uiImage.toByteData(format: ui.ImageByteFormat.png);
-      uiImage.dispose();
-      if (byteData == null) throw Exception('Failed to encode PDF as PNG.');
-      final pngBytes = byteData.buffer.asUint8List();
-
+      final overlay = await loadWildfirePdf(url, name);
       if (mounted) {
         snack.hideCurrentSnackBar();
         setState(() {
-          _incidentOverlay = _IncidentOverlay(
-              name: name,
-              imageBytes: pngBytes,
-              bounds: bounds,
-              polygons: const []);
+          _incidentOverlay = overlay;
           if (asBase) _fireMapAsBase = true;
         });
         _mapCtrl.fitCamera(
-            CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(16)));
+            CameraFit.bounds(bounds: overlay.bounds, padding: const EdgeInsets.all(16)));
         snack.showSnackBar(SnackBar(
             content: Text('Loaded: $name'),
             duration: const Duration(seconds: 3)));
@@ -5029,326 +4750,6 @@ class _TeamPanelState extends State<_TeamPanel> {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _IncidentEntry {
-  final String name;
-  final String url;
-  final bool isDirectory;
-  final bool isPdf;
-  final bool isKml;
-  const _IncidentEntry({
-    required this.name,
-    required this.url,
-    required this.isDirectory,
-    this.isPdf = false,
-    this.isKml = false,
-  });
-  bool get isLoadable => !isDirectory; // KMZ, KML, and PDF (GeoPDF) can be overlaid
-}
-
-class _IncidentBrowser extends StatefulWidget {
-  final ScrollController scrollController;
-  final void Function(String url, String name, {bool asBase}) onLoad;
-
-  const _IncidentBrowser(
-      {required this.scrollController, required this.onLoad});
-
-  @override
-  State<_IncidentBrowser> createState() => _IncidentBrowserState();
-}
-
-class _IncidentBrowserState extends State<_IncidentBrowser> {
-  static const _rootUrl =
-      'https://ftp.wildfire.gov/public/incident_specific_maps/';
-  static const _prefsKey = 'fire_dl_paths';
-
-  List<_IncidentEntry>? _entries;
-  String? _error;
-  String _currentUrl = _rootUrl;
-  final List<String> _breadcrumbs = [_rootUrl];
-
-  /// url -> local file path for downloaded KMZes
-  Map<String, String> _dlPaths = {};
-  final Set<String> _downloading = {};
-
-  @override
-  void initState() {
-    super.initState();
-    _loadDownloads();
-    _fetchDirectory(_rootUrl);
-  }
-
-  Future<void> _loadDownloads() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_prefsKey);
-    if (raw != null) {
-      final map = Map<String, String>.from(jsonDecode(raw) as Map);
-      // Prune entries whose files were deleted
-      final valid = <String, String>{};
-      for (final e in map.entries) {
-        if (await File(e.value).exists()) valid[e.key] = e.value;
-      }
-      if (mounted) setState(() => _dlPaths = valid);
-    }
-  }
-
-  Future<void> _downloadKmz(_IncidentEntry e) async {
-    if (_downloading.contains(e.url)) return;
-    setState(() => _downloading.add(e.url));
-    try {
-      final client = _wildfireClient();
-      final resp = await client.get(Uri.parse(e.url));
-      client.close();
-      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
-
-      final dir = await getApplicationDocumentsDirectory();
-      final mapsDir = Directory('${dir.path}/fire_maps');
-      await mapsDir.create(recursive: true);
-
-      // e.name already includes extension (e.g. "Fire_Map.kmz") — don't append another
-      final safe = e.name.replaceAll(RegExp(r'[^a-zA-Z0-9._\-]'), '_');
-      final file = File('${mapsDir.path}/$safe');
-      await file.writeAsBytes(resp.bodyBytes);
-
-      final prefs = await SharedPreferences.getInstance();
-      final existing = prefs.getString(_prefsKey);
-      final map = existing != null
-          ? Map<String, String>.from(jsonDecode(existing) as Map)
-          : <String, String>{};
-      map[e.url] = file.path;
-      await prefs.setString(_prefsKey, jsonEncode(map));
-
-      if (mounted) setState(() => _dlPaths[e.url] = file.path);
-    } catch (ex) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Download failed: $ex'),
-            backgroundColor: Colors.red));
-      }
-    } finally {
-      if (mounted) setState(() => _downloading.remove(e.url));
-    }
-  }
-
-  Future<void> _fetchDirectory(String url) async {
-    if (mounted) setState(() { _entries = null; _error = null; });
-    try {
-      final client = _wildfireClient();
-      final resp = await client.get(Uri.parse(url));
-      client.close();
-      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
-      final parsed = _parseApacheIndex(resp.body, url);
-      if (mounted) setState(() { _entries = parsed; _currentUrl = url; });
-    } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    }
-  }
-
-  List<_IncidentEntry> _parseApacheIndex(String html, String baseUrl) {
-    final entries = <_IncidentEntry>[];
-    final base = baseUrl.endsWith('/') ? baseUrl : '$baseUrl/';
-    final pattern = RegExp(r'href="([^"?#][^"]*?)"', caseSensitive: false);
-    for (final m in pattern.allMatches(html)) {
-      final href = m.group(1)!;
-      // Skip parent dirs, absolute paths, absolute URLs, and empty
-      if (href.isEmpty) continue;
-      if (href.startsWith('..') || href.startsWith('/') || href.startsWith('http')) continue;
-      final isDir = href.endsWith('/');
-      final lower = href.toLowerCase();
-      final isKmz = lower.endsWith('.kmz');
-      final isKml = lower.endsWith('.kml');
-      final isPdf = lower.endsWith('.pdf');
-      if (!isDir && !isKmz && !isKml && !isPdf) continue;
-      entries.add(_IncidentEntry(
-        name: Uri.decodeComponent(href.replaceAll('/', '')),
-        url: '$base$href',
-        isDirectory: isDir,
-        isKml: isKml,
-        isPdf: isPdf,
-      ));
-    }
-    return entries;
-  }
-
-  Future<void> _clearDownloads() async {
-    for (final path in _dlPaths.values) {
-      try { await File(path).delete(); } catch (_) {}
-    }
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_prefsKey);
-    if (mounted) setState(() => _dlPaths.clear());
-  }
-
-  void _navigate(String url) {
-    _breadcrumbs.add(url);
-    _fetchDirectory(url);
-  }
-
-  void _back() {
-    if (_breadcrumbs.length > 1) {
-      _breadcrumbs.removeLast();
-      _fetchDirectory(_breadcrumbs.last);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final subtitle = _currentUrl.length > _rootUrl.length
-        ? _currentUrl.substring(_rootUrl.length)
-        : '';
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 10, 8, 0),
-          child: Row(
-            children: [
-              if (_breadcrumbs.length > 1)
-                IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: _back,
-                  constraints: const BoxConstraints(),
-                  padding: EdgeInsets.zero,
-                ),
-              const SizedBox(width: 4),
-              const Expanded(
-                child: Text('Wildfire Incident Maps',
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              ),
-              if (_dlPaths.isNotEmpty)
-                IconButton(
-                  icon: const Icon(Icons.delete_sweep),
-                  tooltip: 'Clear all downloads',
-                  onPressed: _clearDownloads,
-                ),
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                onPressed: () => _fetchDirectory(_currentUrl),
-              ),
-            ],
-          ),
-        ),
-        if (subtitle.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(subtitle,
-                  style: const TextStyle(fontSize: 11, color: Colors.grey),
-                  overflow: TextOverflow.ellipsis),
-            ),
-          ),
-        const Divider(height: 8),
-        Expanded(
-          child: _error != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text('Error: $_error',
-                        style: const TextStyle(color: Colors.red)),
-                  ),
-                )
-              : _entries == null
-                  ? const Center(child: CircularProgressIndicator())
-                  : _entries!.isEmpty
-                      ? const Center(
-                          child: Text('No maps or subdirectories found.'))
-                      : ListView.builder(
-                          controller: widget.scrollController,
-                          itemCount: _entries!.length,
-                          itemBuilder: (_, i) {
-                            final e = _entries![i];
-                            final isDownloaded = _dlPaths.containsKey(e.url);
-                            final isDownloading = _downloading.contains(e.url);
-
-                            // Leading icon
-                            final leadIcon = e.isDirectory
-                                ? const Icon(Icons.folder, color: Colors.amber)
-                                : e.isPdf
-                                    ? Icon(Icons.picture_as_pdf,
-                                        color: isDownloaded ? Colors.red : Colors.red.shade300)
-                                    : Icon(Icons.map,
-                                        color: isDownloaded ? Colors.green : Colors.grey);
-
-                            // Download widget (shared for all non-directory entries)
-                            Widget dlWidget;
-                            if (isDownloaded) {
-                              dlWidget = const Tooltip(
-                                  message: 'Downloaded',
-                                  child: Icon(Icons.check_circle, color: Colors.green, size: 20));
-                            } else if (isDownloading) {
-                              dlWidget = const SizedBox(
-                                  width: 18, height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2));
-                            } else {
-                              dlWidget = IconButton(
-                                icon: const Icon(Icons.download, size: 20),
-                                tooltip: 'Download for offline use',
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                onPressed: () => _downloadKmz(e),
-                              );
-                            }
-
-                            return ListTile(
-                              dense: true,
-                              leading: leadIcon,
-                              title: Text(e.name,
-                                  style: const TextStyle(fontSize: 13)),
-                              subtitle: e.isPdf
-                                  ? const Text('GeoPDF — Load/Base to overlay on map',
-                                      style: TextStyle(fontSize: 10, color: Colors.grey))
-                                  : null,
-                              trailing: e.isDirectory
-                                  ? const Icon(Icons.chevron_right)
-                                  : Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        dlWidget,
-                                        if (e.isLoadable) ...[
-                                          const SizedBox(width: 6),
-                                          FilledButton.tonal(
-                                            onPressed: () {
-                                              final local = _dlPaths[e.url];
-                                              widget.onLoad(local ?? e.url, e.name);
-                                            },
-                                            style: FilledButton.styleFrom(
-                                              padding: const EdgeInsets.symmetric(horizontal: 10),
-                                              minimumSize: const Size(44, 28),
-                                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                            ),
-                                            child: const Text('Load',
-                                                style: TextStyle(fontSize: 12)),
-                                          ),
-                                          const SizedBox(width: 4),
-                                          OutlinedButton(
-                                            onPressed: () {
-                                              final local = _dlPaths[e.url];
-                                              widget.onLoad(local ?? e.url, e.name,
-                                                  asBase: true);
-                                            },
-                                            style: OutlinedButton.styleFrom(
-                                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                                              minimumSize: const Size(44, 28),
-                                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                              foregroundColor: Colors.deepOrange,
-                                              side: const BorderSide(color: Colors.deepOrange),
-                                            ),
-                                            child: const Text('Base',
-                                                style: TextStyle(fontSize: 12)),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                              onTap: e.isDirectory ? () => _navigate(e.url) : null,
-                            );
-                          },
-                        ),
-        ),
-      ],
     );
   }
 }
