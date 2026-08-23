@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -544,6 +545,40 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     await _placeMarkerAtPointDesktop(pos, TacMarkerType.waypoint, label: wpLabel);
   }
 
+  /// Right-click anywhere on the map to place a marker at that exact spot,
+  /// without first selecting a type from the toolbar -- the desktop
+  /// equivalent of the mobile field app's long-press-to-place gesture.
+  Future<void> _onMapRightClick(Offset localPosition) async {
+    if (widget.incident == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Select an incident to place markers')));
+      return;
+    }
+    final point = _mapCtrl.camera.pointToLatLng(Point(localPosition.dx, localPosition.dy));
+    final type = await showDialog<TacMarkerType>(
+      context: context,
+      builder: (_) => SimpleDialog(
+        title: const Text('Add Marker Here'),
+        children: TacMarkerType.values
+            .map((t) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(context, t),
+                  child: Row(children: [
+                    Icon(t.icon, color: t.color, size: 18),
+                    const SizedBox(width: 10),
+                    Text(t.label),
+                  ]),
+                ))
+            .toList(),
+      ),
+    );
+    if (type == null || !mounted) return;
+    if (type == TacMarkerType.waypoint) {
+      await _placeWaypointDesktop(point);
+    } else {
+      await _placeMarkerAtPointDesktop(point, type);
+    }
+  }
+
   /// Place a marker without needing to click the map — enter decimal
   /// lat/lng or a USNG/MGRS grid reference directly.
   Future<void> _showAddByCoordinatesDialog() async {
@@ -991,7 +1026,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       children: [
         Expanded(
           child: Stack(children: [
-            FlutterMap(
+            GestureDetector(
+              onSecondaryTapUp: (details) => _onMapRightClick(details.localPosition),
+              child: FlutterMap(
               mapController: _mapCtrl,
               // Fixed initial camera only — real positioning is done via _mapCtrl
               // (see _fitToMarkers) so periodic data refreshes don't reset pan/zoom.
@@ -1095,6 +1132,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       )),
                 ]),
               ],
+            ),
             ),
             Positioned(
               right: 12,

@@ -14,7 +14,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -84,7 +83,6 @@ const _kCallsign = 'tac_callsign';
 const _kMissionCode = 'tac_mission_code';
 const _kIsAdmin = 'tac_is_admin';
 const _kUserId = 'tac_user_id';
-const _kBackgroundTracking = 'tac_background_tracking_enabled';
 
 /// Below this age, a personnel marker shows at full color; past it, faded
 /// (but still shown) — background-tracked devices can legitimately go quiet
@@ -1907,7 +1905,6 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   bool _fireMapAsBase = false; // true = fire map replaces tile layer
   bool _markerTableWarned = false;
   bool _sharingLocation = true;
-  bool _backgroundTrackingEnabled = false;
   final Set<String> _shownInviteIds = {};
   String? _filterMission; // null = all missions visible
   bool _hasMission = false; // true once callsign + missionCode are set
@@ -2023,7 +2020,6 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     _callsign = prefs.getString(_kCallsign) ?? '';
     _missionCode = prefs.getString(_kMissionCode) ?? '';
     _isAdmin = prefs.getBool(_kIsAdmin) ?? false;
-    _backgroundTrackingEnabled = prefs.getBool(_kBackgroundTracking) ?? false;
     _hasMission = _callsign.isNotEmpty && _missionCode.isNotEmpty;
 
     // Clean up own stale row
@@ -2349,136 +2345,16 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
     // Continuous stream — fires on movement ≥5 m so _myLocation stays current
     // without calling getCurrentPosition on every publish tick (eliminates iOS delay).
-    _rebuildPositionStream();
-  }
-
-  // Background tracking only takes effect if the OS permission is actually
-  // "Always" -- with only "When In Use" granted, AndroidSettings'
-  // foregroundNotificationConfig / AppleSettings.allowBackgroundLocationUpdates
-  // are harmless no-ops and the stream behaves exactly as it does today
-  // (foreground-only), so it's safe to always build platform settings from
-  // this single toggle rather than branching on permission state too.
-  LocationSettings _locationSettingsFor(bool background) {
-    if (!background) {
-      return const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
-    }
-    if (Platform.isAndroid) {
-      return AndroidSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: 'ResQruck — Location sharing active',
-          notificationText: 'Your position is visible to your command team.',
-          enableWakeLock: true,
-        ),
-      );
-    }
-    if (Platform.isIOS) {
-      return AppleSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
-        pauseLocationUpdatesAutomatically: false,
-        showBackgroundLocationIndicator: true,
-        allowBackgroundLocationUpdates: true,
-      );
-    }
-    return const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
-  }
-
-  void _rebuildPositionStream() {
     _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream(
-        locationSettings: _locationSettingsFor(_backgroundTrackingEnabled)).listen((pos) {
+        locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 5,
+        )).listen((pos) {
       if (!mounted) return;
       setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
       if (_callsign.isNotEmpty) _applyOwnPosition(pos.latitude, pos.longitude);
     });
-  }
-
-  /// Requests OS-level "Always" location permission, needed for
-  /// _backgroundTrackingEnabled to actually take effect. Returns whether it
-  /// was granted; on failure, shows platform-specific guidance since neither
-  /// OS reliably grants this from a single in-app system dialog.
-  Future<bool> _requestAlwaysLocationPermission() async {
-    if (Platform.isIOS) {
-      final perm = await Geolocator.requestPermission();
-      if (perm == LocationPermission.always) return true;
-      if (!mounted) return false;
-      await showDialog<void>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Enable "Always" in Settings'),
-          content: const Text(
-              'Open Settings > ResQruck > Location and choose "Always" to '
-              'finish enabling background sharing.'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () { Navigator.pop(context); Geolocator.openAppSettings(); },
-              child: const Text('Open Settings'),
-            ),
-          ],
-        ),
-      );
-      return false;
-    }
-    if (Platform.isAndroid) {
-      var status = await Permission.locationAlways.status;
-      if (status.isGranted) return true;
-      status = await Permission.locationAlways.request();
-      if (status.isGranted) return true;
-      if (!mounted) return false;
-      await showDialog<void>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Enable Background Location'),
-          content: const Text(
-              'Android requires this be turned on from Settings. Tap below, '
-              'then choose "Allow all the time" under Location.'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () { Navigator.pop(context); Geolocator.openAppSettings(); },
-              child: const Text('Open Settings'),
-            ),
-          ],
-        ),
-      );
-      return false;
-    }
-    return false;
-  }
-
-  Future<void> _persistBackgroundTracking(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kBackgroundTracking, enabled);
-    if (mounted) setState(() => _backgroundTrackingEnabled = enabled);
-    _rebuildPositionStream();
-  }
-
-  Future<void> _setBackgroundTracking(bool enabled) async {
-    if (!enabled) {
-      await _persistBackgroundTracking(false);
-      return;
-    }
-    final proceed = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Share Location in Background?'),
-        content: const Text(
-            'ResQruck will keep sharing your position with your command '
-            'team even when your phone is locked or the app is closed. You '
-            'can turn this off at any time.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not Now')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Continue')),
-        ],
-      ),
-    );
-    if (proceed != true || !mounted) return;
-    final granted = await _requestAlwaysLocationPermission();
-    if (!mounted || !granted) return;
-    await _persistBackgroundTracking(true);
   }
 
   // Immediately populate _users with our own entry so the callsign marker
@@ -3233,6 +3109,35 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     await _placeMarkerAtPoint(point, type, label: label);
   }
 
+  /// Press-and-hold anywhere on the map to place a marker at that exact
+  /// spot, without first selecting a type from the toolbar/team panel. Only
+  /// fires when no other placement mode is already active -- the marker/
+  /// zone placement overlays (Positioned.fill, painted on top of FlutterMap)
+  /// intercept the gesture first when one of those is open.
+  Future<void> _onMapLongPress(LatLng point) async {
+    final type = await showModalBottomSheet<TacMarkerType>(
+      context: context,
+      builder: (_) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: TacMarkerType.values
+              .map((t) => ListTile(
+                    leading: Icon(t.icon, color: t.color),
+                    title: Text(t.label),
+                    onTap: () => Navigator.pop(context, t),
+                  ))
+              .toList(),
+        ),
+      ),
+    );
+    if (type == null || !mounted) return;
+    if (type == TacMarkerType.waypoint) {
+      await _placeWaypoint(point);
+    } else {
+      await _placeMarkerAtPoint(point, type);
+    }
+  }
+
   Future<void> _leaveMission() async {
     _locationTimer?.cancel();
     _refreshTimer?.cancel();
@@ -3796,9 +3701,12 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 if (_myLocation != null) _mapCtrl.move(_myLocation!, 14);
               },
               onPositionChanged: (_, __) => setState(() {}),
-              // Marker/zone placement is handled by the opaque overlays below
+              // Marker/zone placement (tap-to-place after picking a type from
+              // the toolbar) is handled by the opaque overlays below
               // (Positioned.fill, painted on top of FlutterMap in the Stack),
-              // which intercept the tap before it would ever reach here.
+              // which intercept the tap before it would ever reach here --
+              // long-press below only fires when neither overlay is active.
+              onLongPress: (_, point) => _onMapLongPress(point),
             ),
             children: [
               Opacity(
@@ -4358,11 +4266,6 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         if (_isAdmin)
           const PopupMenuItem(value: 'add_zone',  child: Text('Add Zone')),
         const PopupMenuItem(value: 'add_by_coords', child: Text('Add Marker by Coordinates')),
-        CheckedPopupMenuItem<String>(
-          value: 'background_location',
-          checked: _backgroundTrackingEnabled,
-          child: const Text('Share Location in Background'),
-        ),
         const PopupMenuItem(value: 'settings',    child: Text('Supabase Settings')),
         if (_incidentOverlay?.imageBytes != null)
           PopupMenuItem(
@@ -4390,7 +4293,6 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
         if (v == 'clear_routes')      _clearRoutes();
         if (v == 'add_zone')          _startZonePlacement();
         if (v == 'add_by_coords')     _showAddByCoordinatesDialog();
-        if (v == 'background_location') _setBackgroundTracking(!_backgroundTrackingEnabled);
         if (v == 'toggle_basemap')    setState(() => _fireMapAsBase = !_fireMapAsBase);
         if (v == 'clear_overlay')     setState(() { _incidentOverlay = null; _fireMapAsBase = false; });
         if (v.startsWith('clear_marker_')) {

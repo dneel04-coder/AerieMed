@@ -34,13 +34,12 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>ResQruck uses your location to record the scene location in patient reports and on the map.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>If you turn on background location sharing, ResQruck keeps sharing your position with your incident command team even when your phone is locked or the app is closed, so commanders can track field personnel safety in real time during active missions.</string>
+	<string>ResQruck uses your location to record the scene location in patient reports and on the map.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
-		<string>location</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
