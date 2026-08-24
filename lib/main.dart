@@ -27,6 +27,7 @@ import 'protocol_admin.dart';
 import 'backcountry_guide.dart';
 import 'rems_checklist.dart';
 import 'push_notification_service.dart';
+import 'ics206wf_form.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -553,6 +554,7 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
       _MedCardData(Icons.checklist_outlined, 'Procedures',   const Color(0xFF2E7D32), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProcedureListScreen())))),
       _MedCardData(Icons.emergency,          'MCI Triage',   const Color(0xFFE65100), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const MciTriageScreen())))),
       _MedCardData(Icons.assignment_outlined,'Patient Report',const Color(0xFF00695C), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const PatientReportListScreen())))),
+      _MedCardData(Icons.campaign_outlined,  '8-Line/206WF', const Color(0xFFB71C1C), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const Ics206WfFormScreen())))),
       _MedCardData(Icons.terrain,            'Field Guide',  const Color(0xFF4E6B3A), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const BackcountryGuideScreen())))),
       _MedCardData(Icons.checklist_rtl,      'Pre-Deploy\nChecklist', const Color(0xFF0277BD), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const RemsChecklistScreen())))),
     ];

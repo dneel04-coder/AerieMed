@@ -12,3 +12,9 @@ verify_jwt = false
 
 [functions.notify-access-decision]
 verify_jwt = false
+
+[functions.send-form-email]
+# Called directly by the Flutter app, not by a Postgres trigger -- deliberately
+# left at the default verify_jwt = true. The Supabase client auto-attaches the
+# anon key (a valid JWT) on functions.invoke(), so this still blocks arbitrary
+# internet requests without needing a separate shared secret.

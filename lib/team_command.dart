@@ -9,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService, TeamProtocolsScreen, showReadAcknowledgment, AdminAlertService;
 import 'user_profile.dart' show LoginScreen;
+import 'crew_swap_form.dart' show CrewSwapFormScreen;
 
 enum _CertExpiry { green, yellow, red }
 
@@ -761,7 +762,7 @@ class _TeamCommandTabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 6,
+      length: 7,
       initialIndex: initialTab,
       child: Scaffold(
         appBar: AppBar(
@@ -776,6 +777,7 @@ class _TeamCommandTabs extends StatelessWidget {
               Tab(icon: Icon(Icons.handshake_outlined, size: 20), text: 'Handoff'),
               Tab(icon: Icon(Icons.assignment_outlined, size: 20), text: 'Orders'),
               Tab(icon: Icon(Icons.calendar_month_outlined, size: 20), text: 'Availability'),
+              Tab(icon: Icon(Icons.swap_horiz, size: 20), text: 'Crew Swap'),
             ],
           ),
         ),
@@ -786,6 +788,7 @@ class _TeamCommandTabs extends StatelessWidget {
           const _HandoffTab(),
           _DeploymentOrdersTab(),
           _AvailabilityTab(),
+          const _CrewSwapTab(),
         ]),
       ),
     );
@@ -2807,6 +2810,29 @@ class _TaskFormSheetState extends State<_TaskFormSheet> {
         ]),
       ),
     );
+  }
+}
+
+
+// ── Crew Swap tab ────────────────────────────────────────────────────────────
+// Embeds the form directly (not a push-to-screen flow) and keeps its state
+// alive across tab switches, matching _HandoffTab/_TasksTab -- this form is
+// used often and needs to stay one tap away with nothing lost mid-fill.
+
+class _CrewSwapTab extends StatefulWidget {
+  const _CrewSwapTab();
+  @override
+  State<_CrewSwapTab> createState() => _CrewSwapTabState();
+}
+
+class _CrewSwapTabState extends State<_CrewSwapTab> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return const CrewSwapFormScreen();
   }
 }
 
