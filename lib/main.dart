@@ -563,7 +563,7 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
       appBar: AppBar(
         backgroundColor: kMedRed,
         foregroundColor: Colors.white,
-        title: const Text('ResQruck Med',
+        title: const Text('Res-Q-Ruck',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         actions: [
           IconButton(

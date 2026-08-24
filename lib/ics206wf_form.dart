@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 import 'ics206wf_pdf.dart';
@@ -176,18 +177,43 @@ class _Ics206WfFormScreenState extends State<Ics206WfFormScreen> {
   }
 
   Future<void> _preview() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final bytes = await buildIcs206WfPdf(_compile());
     if (!mounted) return;
     await Printing.layoutPdf(onLayout: (_) async => bytes);
   }
 
   Future<void> _share() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final bytes = await buildIcs206WfPdf(_compile());
     if (!mounted) return;
     await Printing.sharePdf(bytes: bytes, filename: '${_filename()}.pdf');
   }
 
+  Future<void> _download() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    final bytes = await buildIcs206WfPdf(_compile());
+    if (!mounted) return;
+    try {
+      final savePath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save 8-Line/206WF PDF',
+        fileName: '${_filename()}.pdf',
+        bytes: bytes,
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+      );
+      if (!mounted || savePath == null) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $savePath')));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not save: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
   Future<void> _email() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final bytes = await buildIcs206WfPdf(_compile());
     if (!mounted) return;
     await showEmailFormDialog(
@@ -200,7 +226,16 @@ class _Ics206WfFormScreenState extends State<Ics206WfFormScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    // Popping this route (back button or iOS edge-swipe) doesn't automatically
+    // dismiss the on-screen keyboard if a TextField still has focus -- on iOS
+    // specifically this can leave the keyboard visibly stuck over whatever
+    // screen comes next. Explicitly unfocus whenever a pop is about to happen,
+    // regardless of how it was triggered.
+    return PopScope(
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) FocusManager.instance.primaryFocus?.unfocus();
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: const Text('8-Line/206WF Medical Report'),
         actions: [
@@ -312,34 +347,47 @@ class _Ics206WfFormScreenState extends State<Ics206WfFormScreen> {
           top: false,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _preview,
-                  icon: const Icon(Icons.visibility_outlined),
-                  label: const Text('Preview'),
+            child: Column(children: [
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _preview,
+                    icon: const Icon(Icons.visibility_outlined),
+                    label: const Text('Preview'),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _share,
-                  icon: const Icon(Icons.share_outlined),
-                  label: const Text('Share'),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _download,
+                    icon: const Icon(Icons.download_outlined),
+                    label: const Text('Download'),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: _email,
-                  icon: const Icon(Icons.email_outlined),
-                  label: const Text('Email'),
+              ]),
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _share,
+                    icon: const Icon(Icons.share_outlined),
+                    label: const Text('Share'),
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _email,
+                    icon: const Icon(Icons.email_outlined),
+                    label: const Text('Email'),
+                  ),
+                ),
+              ]),
             ]),
           ),
         ),
       ]),
+      ),
     );
   }
 

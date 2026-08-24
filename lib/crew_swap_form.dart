@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -209,6 +210,7 @@ class _CrewSwapFormScreenState extends State<CrewSwapFormScreen> {
   }
 
   Future<void> _preview() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     await _saveStickyFields();
     final bytes = await buildCrewSwapPdf(_compile());
     if (!mounted) return;
@@ -216,13 +218,38 @@ class _CrewSwapFormScreenState extends State<CrewSwapFormScreen> {
   }
 
   Future<void> _share() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     await _saveStickyFields();
     final bytes = await buildCrewSwapPdf(_compile());
     if (!mounted) return;
     await Printing.sharePdf(bytes: bytes, filename: '${_filename()}.pdf');
   }
 
+  Future<void> _download() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await _saveStickyFields();
+    final bytes = await buildCrewSwapPdf(_compile());
+    if (!mounted) return;
+    try {
+      final savePath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save Crew Swap PDF',
+        fileName: '${_filename()}.pdf',
+        bytes: bytes,
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+      );
+      if (!mounted || savePath == null) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $savePath')));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not save: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
   Future<void> _email() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     await _saveStickyFields();
     final bytes = await buildCrewSwapPdf(_compile());
     if (!mounted) return;
@@ -282,30 +309,42 @@ class _CrewSwapFormScreenState extends State<CrewSwapFormScreen> {
         top: false,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _preview,
-                icon: const Icon(Icons.visibility_outlined),
-                label: const Text('Preview'),
+          child: Column(children: [
+            Row(children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _preview,
+                  icon: const Icon(Icons.visibility_outlined),
+                  label: const Text('Preview'),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _share,
-                icon: const Icon(Icons.share_outlined),
-                label: const Text('Share'),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _download,
+                  icon: const Icon(Icons.download_outlined),
+                  label: const Text('Download'),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: _email,
-                icon: const Icon(Icons.email_outlined),
-                label: const Text('Email'),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _share,
+                  icon: const Icon(Icons.share_outlined),
+                  label: const Text('Share'),
+                ),
               ),
-            ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _email,
+                  icon: const Icon(Icons.email_outlined),
+                  label: const Text('Email'),
+                ),
+              ),
+            ]),
           ]),
         ),
       ),

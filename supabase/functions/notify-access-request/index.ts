@@ -25,7 +25,7 @@ Deno.serve(async (req) => {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from: "ResQruck <onboarding@resend.dev>",
+      from: "ResQruck <douglas.neel@peninsulathreat.com>",
       to: "allamerican82consulting@gmail.com",
       subject: `New Access Request: ${reqRow.name}`,
       text: `Name: ${reqRow.name}\nCallsign: ${reqRow.callsign || "—"}\nCompany: ${reqRow.company || "—"}\nEmail: ${reqRow.email || "—"}\n\nApprove or deny from the Command Console or the mobile app's Admin Panel.`,
