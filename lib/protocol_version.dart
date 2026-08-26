@@ -20,6 +20,34 @@ class VersionEntry {
 const String kCurrentVersion = '1.3.0';
 const String kReleaseDate = '2026-05-26';
 
+/// Apple Guideline 1.4.1 requires citations for medical/dosing content,
+/// easy for the user to find -- shown as a persistent banner on every
+/// screen presenting protocol, drug, or dosing recommendations.
+const String kMedicalSourceCitation =
+    'Medical content sourced from: Aerie Backcountry Medicine COG (Course of Guidelines), Revised 3/20/2025.';
+
+class MedicalCitationBanner extends StatelessWidget {
+  const MedicalCitationBanner({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final outline = Theme.of(context).colorScheme.outline;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Row(children: [
+        Icon(Icons.menu_book_outlined, size: 13, color: outline),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(kMedicalSourceCitation,
+              style: TextStyle(fontSize: 10, color: outline)),
+        ),
+      ]),
+    );
+  }
+}
+
 const List<VersionEntry> kVersionHistory = [
   VersionEntry(
     version: '1.3.0',

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'protocol_version.dart' show MedicalCitationBanner;
 
 
 class DoseFormula {
@@ -261,6 +262,7 @@ class _DosingCalculatorScreenState extends State<DosingCalculatorScreen> {
     final broslowEst = heightRaw != null && heightRaw > 0 ? _broslow(heightRaw) : null;
     return Column(
         children: [
+          const MedicalCitationBanner(),
           // Weight input panel
           Container(
             color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.4),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'protocol_version.dart' show MedicalCitationBanner;
 
 
 class DrugDose {
@@ -299,6 +300,7 @@ class _DrugReferenceScreenState extends State<DrugReferenceScreen> {
 
   Widget _buildBody() {
     return Column(children: [
+      const MedicalCitationBanner(),
       Padding(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
         child: TextField(

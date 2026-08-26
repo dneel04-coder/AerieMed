@@ -710,6 +710,23 @@ class DrugDosingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Apple Guideline 1.4.2: a live per-patient dosing calculator requires
+    // the app be submitted by a medication manufacturer or a recognized
+    // institution (hospital, pharmacy, university). The static drug
+    // reference table doesn't compute a per-patient dose, so it's kept --
+    // only the weight-based calculator tab is removed on iOS. Android is
+    // unaffected.
+    if (Platform.isIOS) {
+      return Scaffold(
+        appBar: AppBar(
+          backgroundColor: kMedRed,
+          foregroundColor: Colors.white,
+          title: const Text('Drug Reference',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        ),
+        body: const DrugReferenceScreen(embedded: true),
+      );
+    }
     return DefaultTabController(
       length: 2,
       child: Scaffold(

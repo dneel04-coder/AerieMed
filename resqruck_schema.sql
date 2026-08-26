@@ -419,6 +419,13 @@ begin
   -- toward an incident, before any incident_members row exists for them.
   alter table if exists user_profiles add column if not exists deployment_status text default 'Standby';
 
+  -- protocols: optional targeting, same shape as deployment_orders'
+  -- target_user_ids above (NULL = broadcast to everyone, unchanged default).
+  -- target_team_id additionally lets a medical director push to everyone on
+  -- a given team without listing each member individually.
+  alter table if exists protocols add column if not exists target_user_ids text[];
+  alter table if exists protocols add column if not exists target_team_id uuid references teams(id);
+
   -- assets: persistent, org-wide resource registry (vehicles, equipment,
   -- caches). Not mission-scoped — where an asset currently is / who has it
   -- lives in asset_assignments below, so its history isn't lost when it moves.

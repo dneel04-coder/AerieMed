@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'protocol_version.dart' show MedicalCitationBanner;
 import 'protocol_admin.dart' show SupabaseService;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -992,6 +993,8 @@ class _ResQruckAssistantSheetState extends State<ResQruckAssistantSheet> {
             ),
           ]),
         ),
+
+        const MedicalCitationBanner(),
 
         // ── Quick replies ────────────────────────────────────────────────────
         SizedBox(

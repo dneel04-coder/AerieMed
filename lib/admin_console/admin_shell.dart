@@ -7,6 +7,7 @@ import 'live_map_screen.dart';
 import 'deployment_orders_console_screen.dart';
 import 'reports_console_screen.dart';
 import 'access_requests_screen.dart';
+import 'protocols_console_screen.dart';
 import 'settings_screen.dart';
 
 /// Carries the admin's currently-selected incident to every console screen.
@@ -46,6 +47,7 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
     NavigationRailDestination(icon: Icon(Icons.upload_file_outlined), selectedIcon: Icon(Icons.upload_file), label: Text('Deployment Orders')),
     NavigationRailDestination(icon: Icon(Icons.assignment_outlined), selectedIcon: Icon(Icons.assignment), label: Text('Reports')),
     NavigationRailDestination(icon: Icon(Icons.how_to_reg_outlined), selectedIcon: Icon(Icons.how_to_reg), label: Text('Access Requests')),
+    NavigationRailDestination(icon: Icon(Icons.menu_book_outlined), selectedIcon: Icon(Icons.menu_book), label: Text('Protocols')),
     NavigationRailDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: Text('Settings')),
   ];
 
@@ -84,6 +86,7 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
                         DeploymentOrdersConsoleScreen(incident: _activeIncident.incident),
                         ReportsConsoleScreen(incident: _activeIncident.incident),
                         const AccessRequestsScreen(),
+                        const ProtocolsConsoleScreen(),
                         SettingsScreen(onSignOut: widget.onSignOut),
                       ],
                     ),

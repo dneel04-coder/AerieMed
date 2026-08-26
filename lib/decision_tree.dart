@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'protocol_version.dart' show MedicalCitationBanner;
 
 
 enum NodeType { question, action, terminal }
@@ -518,30 +519,35 @@ class DecisionTreeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Decision Trees')),
-      body: ListView.separated(
-        padding: const EdgeInsets.all(16),
-        itemCount: kDecisionTrees.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 12),
-        itemBuilder: (context, index) {
-          final tree = kDecisionTrees[index];
-          return Card(
-            elevation: 2,
-            child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor: tree.color.withValues(alpha: 0.15),
-                child: Icon(tree.icon, color: tree.color),
-              ),
-              title: Text(tree.title, style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text(tree.subtitle),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => TreeRunnerScreen(tree: tree)),
-              ),
-            ),
-          );
-        },
-      ),
+      body: Column(children: [
+        const MedicalCitationBanner(),
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemCount: kDecisionTrees.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 12),
+            itemBuilder: (context, index) {
+              final tree = kDecisionTrees[index];
+              return Card(
+                elevation: 2,
+                child: ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: tree.color.withValues(alpha: 0.15),
+                    child: Icon(tree.icon, color: tree.color),
+                  ),
+                  title: Text(tree.title, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text(tree.subtitle),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => TreeRunnerScreen(tree: tree)),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ]),
     );
   }
 }

@@ -88,6 +88,12 @@ class ProtocolEntry {
   final DateTime updatedAt;
   final String updatedBy;
   final String notes;
+  // Null = broadcast to everyone (existing/default behavior, unchanged).
+  // Non-null targetUserIds = only these user_ids should see this protocol.
+  // Non-null targetTeamId = only users on that team should see it. Both may
+  // be set independently; a user sees the protocol if either matches.
+  final List<String>? targetUserIds;
+  final String? targetTeamId;
 
   const ProtocolEntry({
     required this.id,
@@ -98,6 +104,8 @@ class ProtocolEntry {
     required this.updatedAt,
     required this.updatedBy,
     required this.notes,
+    this.targetUserIds,
+    this.targetTeamId,
   });
 
   factory ProtocolEntry.fromMap(Map<String, dynamic> m) => ProtocolEntry(
@@ -109,6 +117,8 @@ class ProtocolEntry {
         updatedAt: DateTime.tryParse(m['updated_at'] as String? ?? '') ?? DateTime.now(),
         updatedBy: m['updated_by'] as String? ?? '',
         notes: m['notes'] as String? ?? '',
+        targetUserIds: (m['target_user_ids'] as List?)?.cast<String>(),
+        targetTeamId: m['target_team_id'] as String?,
       );
 
   String get localCacheName => '${id}_v$version.pdf';
@@ -179,9 +189,7 @@ class ProtocolSyncService {
     if (client == null) return [];
     try {
       final userId = await _userId();
-      final protocols = (await client.from('protocols').select().eq('is_active', true) as List)
-          .map((r) => ProtocolEntry.fromMap(r as Map<String, dynamic>))
-          .toList();
+      final protocols = await myVisibleProtocols();
       final ackedIds = (await client
               .from('protocol_acknowledgments')
               .select('protocol_id')
@@ -204,6 +212,32 @@ class ProtocolSyncService {
     } catch (_) {
       return [];
     }
+  }
+
+  /// Active protocols visible to this device: untargeted (broadcast, the
+  /// existing default) plus anything targeted at this user_id or this
+  /// user's team_id specifically -- same client-side-filter shape already
+  /// used for deployment_orders' targetUserIds.
+  Future<List<ProtocolEntry>> myVisibleProtocols() async {
+    final all = await activeProtocols();
+    final client = await _client();
+    if (client == null) return all;
+    final userId = await _userId();
+    String? myTeamId;
+    try {
+      final row = await client
+          .from('user_profiles')
+          .select('team_id')
+          .eq('user_id', userId)
+          .maybeSingle();
+      myTeamId = row?['team_id'] as String?;
+    } catch (_) {}
+    return all.where((p) {
+      if (p.targetUserIds == null && p.targetTeamId == null) return true;
+      if (p.targetUserIds?.contains(userId) == true) return true;
+      if (myTeamId != null && p.targetTeamId == myTeamId) return true;
+      return false;
+    }).toList();
   }
 
   Future<List<ProtocolEntry>> allProtocols() async {
@@ -271,6 +305,8 @@ class ProtocolSyncService {
     required Uint8List bytes,
     required String uploadedBy,
     String? existingId,
+    List<String>? targetUserIds,
+    String? targetTeamId,
   }) async {
     final client = await _client();
     if (client == null) throw Exception('Supabase not configured');
@@ -291,6 +327,8 @@ class ProtocolSyncService {
         'updated_by': uploadedBy,
         'notes': notes,
         'is_active': true,
+        'target_user_ids': targetUserIds,
+        'target_team_id': targetTeamId,
       }).eq('id', existingId);
       // Invalidate acknowledgments so users must re-acknowledge this version
       await client.from('protocol_acknowledgments').delete().eq('protocol_id', existingId);
@@ -304,6 +342,8 @@ class ProtocolSyncService {
         'updated_at': DateTime.now().toIso8601String(),
         'updated_by': uploadedBy,
         'notes': notes,
+        'target_user_ids': targetUserIds,
+        'target_team_id': targetTeamId,
       });
     }
   }
@@ -768,7 +808,7 @@ class _TeamProtocolsScreenState extends State<TeamProtocolsScreen> {
       setState(() { _loading = false; _notConfigured = true; });
       return;
     }
-    final protocols = await ProtocolSyncService.instance.activeProtocols();
+    final protocols = await ProtocolSyncService.instance.myVisibleProtocols();
     final pending = await ProtocolSyncService.instance.pendingProtocols();
     final pendingIds = pending.map((p) => p.id).toSet();
     setState(() {
@@ -2933,6 +2973,13 @@ begin
   -- membership: people can be on standby with assets pre-staged, or moving
   -- toward an incident, before any incident_members row exists for them.
   alter table if exists user_profiles add column if not exists deployment_status text default 'Standby';
+
+  -- protocols: optional targeting, same shape as deployment_orders'
+  -- target_user_ids above (NULL = broadcast to everyone, unchanged default).
+  -- target_team_id additionally lets a medical director push to everyone on
+  -- a given team without listing each member individually.
+  alter table if exists protocols add column if not exists target_user_ids text[];
+  alter table if exists protocols add column if not exists target_team_id uuid references teams(id);
 
   -- assets: persistent, org-wide resource registry (vehicles, equipment,
   -- caches). Not mission-scoped — where an asset currently is / who has it
