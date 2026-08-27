@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
@@ -109,7 +110,10 @@ enum TacMarkerType {
   extractionEnd,
   waypoint,
   obstacle,
-  rallyPoint;
+  rallyPoint,
+  engine,
+  handcrew,
+  dropPoint;
 
   String get label => switch (this) {
         patient        => 'Patient',
@@ -118,6 +122,9 @@ enum TacMarkerType {
         waypoint       => 'Waypoint',
         obstacle       => 'Obstacle',
         rallyPoint     => 'Rally Point',
+        engine         => 'Engine',
+        handcrew       => 'Handcrew',
+        dropPoint      => 'Drop Point',
       };
 
   Color get color => switch (this) {
@@ -127,6 +134,9 @@ enum TacMarkerType {
         waypoint       => const Color(0xFF9C27B0),
         obstacle       => Colors.amber.shade700,
         rallyPoint     => Colors.blueAccent,
+        engine         => Colors.deepOrange.shade700,
+        handcrew       => Colors.brown,
+        dropPoint      => Colors.teal,
       };
 
   IconData get icon => switch (this) {
@@ -136,6 +146,9 @@ enum TacMarkerType {
         waypoint       => Icons.place,
         obstacle       => Icons.warning_amber_rounded,
         rallyPoint     => Icons.groups,
+        engine         => Icons.fire_truck,
+        handcrew       => Icons.hiking,
+        dropPoint      => Icons.flight_land,
       };
 
   // Types that render a persistent label pill above the pin (see
@@ -231,6 +244,7 @@ Future<void> showPersonnelInfoSheet(
   Color? teamColor,
   String? deploymentStatus,
   String assignedBy = '',
+  VoidCallback? onNavigate,
 }) {
   return showModalBottomSheet(
     context: context,
@@ -244,6 +258,7 @@ Future<void> showPersonnelInfoSheet(
       teamColor: teamColor,
       deploymentStatus: deploymentStatus,
       assignedBy: assignedBy,
+      onNavigate: onNavigate,
     ),
   );
 }
@@ -256,6 +271,7 @@ class _PersonnelInfoSheet extends StatefulWidget {
   final Color? teamColor;
   final String? deploymentStatus;
   final String assignedBy;
+  final VoidCallback? onNavigate;
 
   const _PersonnelInfoSheet({
     required this.userId,
@@ -265,6 +281,7 @@ class _PersonnelInfoSheet extends StatefulWidget {
     this.teamColor,
     this.deploymentStatus,
     this.assignedBy = '',
+    this.onNavigate,
   });
 
   @override
@@ -384,14 +401,25 @@ class _PersonnelInfoSheetState extends State<_PersonnelInfoSheet> {
                   subtitle: Text(r.asset?.type ?? ''),
                 )),
           const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: _openPicker,
-              icon: const Icon(Icons.add),
-              label: const Text('Assign Asset'),
+          Row(children: [
+            if (widget.onNavigate != null) ...[
+              Expanded(
+                child: FilledButton.icon(
+                  icon: const Icon(Icons.navigation),
+                  label: const Text('Navigate Here'),
+                  onPressed: () { Navigator.pop(context); widget.onNavigate!(); },
+                ),
+              ),
+              const SizedBox(width: 10),
+            ],
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _openPicker,
+                icon: const Icon(Icons.add),
+                label: const Text('Assign Asset'),
+              ),
             ),
-          ),
+          ]),
         ]),
       ),
     );
@@ -722,6 +750,17 @@ Future<TacMarker> insertTacMarker(
     'placed_by': placedBy,
   }).select().single();
   return TacMarker.fromMap(row);
+}
+
+/// Repositions an existing marker (e.g. after a drag-to-move on the map)
+/// without touching its type/label/history.
+Future<void> updateTacMarkerPosition(
+  SupabaseClient client, {
+  required String id,
+  required double lat,
+  required double lng,
+}) async {
+  await client.from('tac_markers').update({'lat': lat, 'lng': lng}).eq('id', id);
 }
 
 Future<TacZone> insertTacZone(
@@ -3084,18 +3123,32 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   /// zone placement overlays (Positioned.fill, painted on top of FlutterMap)
   /// intercept the gesture first when one of those is open.
   Future<void> _onMapLongPress(LatLng point) async {
+    final coordText = '${point.latitude.toStringAsFixed(6)}, ${point.longitude.toStringAsFixed(6)}';
     final type = await showModalBottomSheet<TacMarkerType>(
       context: context,
-      builder: (_) => SafeArea(
+      builder: (sheetCtx) => SafeArea(
         child: ListView(
           shrinkWrap: true,
-          children: TacMarkerType.values
-              .map((t) => ListTile(
-                    leading: Icon(t.icon, color: t.color),
-                    title: Text(t.label),
-                    onTap: () => Navigator.pop(context, t),
-                  ))
-              .toList(),
+          children: [
+            ListTile(
+              leading: const Icon(Icons.pin_drop_outlined),
+              title: Text(coordText, style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+              subtitle: const Text('Tap to copy this location'),
+              trailing: const Icon(Icons.copy, size: 18),
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: coordText));
+                ScaffoldMessenger.of(sheetCtx).showSnackBar(
+                    const SnackBar(content: Text('Location copied'), duration: Duration(seconds: 1)));
+              },
+            ),
+            const Divider(height: 1),
+            ...TacMarkerType.values
+                .map((t) => ListTile(
+                      leading: Icon(t.icon, color: t.color),
+                      title: Text(t.label),
+                      onTap: () => Navigator.pop(sheetCtx, t),
+                    )),
+          ],
         ),
       ),
     );
@@ -3280,6 +3333,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             teamColor: teamColor,
             deploymentStatus: _deploymentStatusByUser[user.id],
             assignedBy: _callsign,
+            onNavigate: isMe ? null : () => _navigateToPoint(LatLng(user.lat, user.lng), user.callsign),
           );
       markers.add(Marker(
         point: LatLng(user.lat, user.lng),
@@ -3466,18 +3520,21 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     return null;
   }
 
-  Future<void> _navigateToMarker(TacMarker m) async {
+  Future<void> _navigateToMarker(TacMarker m) =>
+      _navigateToPoint(LatLng(m.lat, m.lng), m.label.isNotEmpty ? m.label : m.type.label);
+
+  Future<void> _navigateToPoint(LatLng point, String label) async {
     if (_myLocation == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No GPS fix yet')));
       return;
     }
     setState(() => _isRouting = true);
     try {
-      final result = await OsrmRoutingService.route(_myLocation!, LatLng(m.lat, m.lng));
+      final result = await OsrmRoutingService.route(_myLocation!, point);
       if (mounted) {
         setState(() {
           _navRoute = result;
-          _navTargetLabel = m.label.isNotEmpty ? m.label : m.type.label;
+          _navTargetLabel = label;
           _isRouting = false;
         });
       }
@@ -3649,9 +3706,6 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             borderColor: z.color, borderStrokeWidth: 2.5))
         .toList();
 
-    final mapCenter = _mapReady
-        ? _mapCtrl.camera.center
-        : (_myLocation ?? const LatLng(37.0902, -95.7129));
     final zoom = _mapReady ? _mapCtrl.camera.zoom : 14.0;
 
     // ── ATAK full-screen layout: no AppBar, overlay panels ────────────────
@@ -4014,6 +4068,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   _myLocation != null ? cyan : Colors.white24,
                   () { if (_myLocation != null) _mapCtrl.move(_myLocation!, 14); }),
               const SizedBox(height: 6),
+              // North-up compass -- tap to reset rotation
+              _compassBtn(bg),
+              const SizedBox(height: 6),
               // Layer toggles
               _atakBtn(Icons.radar, bg,
                   _showTakLayer ? cyan : Colors.white24,
@@ -4176,18 +4233,38 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                     setState(() => _users.remove(id));
                   },
                 ),
-              // Coordinate bar
+              // Coordinate bar -- the user's own live GPS position, always
+              // visible so it can be relayed to dispatch at any time. Tap to
+              // copy. (Previously showed the map's pan center, which had no
+              // operational meaning.)
               Container(
                 color: bg.withValues(alpha: 0.9),
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 child: Row(children: [
-                  Icon(Icons.gps_not_fixed, size: 11, color: dim),
+                  Icon(Icons.my_location, size: 11, color: dim),
                   const SizedBox(width: 5),
-                  Text(
-                    '${mapCenter.latitude.toStringAsFixed(5)},  '
-                    '${mapCenter.longitude.toStringAsFixed(5)}',
-                    style: const TextStyle(color: Colors.white70, fontSize: 10,
-                        fontFamily: 'monospace')),
+                  Text('USER LOCATION',
+                      style: TextStyle(color: dim, fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: _myLocation == null
+                        ? null
+                        : () {
+                            Clipboard.setData(ClipboardData(
+                                text: '${_myLocation!.latitude.toStringAsFixed(5)}, '
+                                    '${_myLocation!.longitude.toStringAsFixed(5)}'));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Location copied'), duration: Duration(seconds: 1)));
+                          },
+                    child: Text(
+                      _myLocation == null
+                          ? 'Locating…'
+                          : '${_myLocation!.latitude.toStringAsFixed(5)},  '
+                              '${_myLocation!.longitude.toStringAsFixed(5)}',
+                      style: const TextStyle(color: Colors.white70, fontSize: 10,
+                          fontFamily: 'monospace'),
+                    ),
+                  ),
                   const Spacer(),
                   if (_myStatus != 'Active')
                     Container(
@@ -4221,6 +4298,29 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
           child: Icon(icon, color: fg, size: 17),
         ),
       );
+
+  /// North-up compass: the arrow rotates opposite the map's current bearing
+  /// so it always points to true north; tapping resets the map's rotation
+  /// (flutter_map's default two-finger-twist gesture has no other way back
+  /// to north-up).
+  Widget _compassBtn(Color bg) {
+    final rotation = _mapReady ? _mapCtrl.camera.rotation : 0.0;
+    final rotated = rotation.abs() > 0.5;
+    return GestureDetector(
+      onTap: () => _mapCtrl.rotate(0),
+      child: Container(
+        width: 36, height: 36,
+        decoration: BoxDecoration(
+            color: bg.withValues(alpha: 0.9),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: rotated ? Colors.amber : Colors.white10)),
+        child: Transform.rotate(
+          angle: -rotation * (pi / 180),
+          child: Icon(Icons.navigation, color: rotated ? Colors.amber : Colors.white54, size: 17),
+        ),
+      ),
+    );
+  }
 
   /// Overflow ⋮ popup menu — all secondary actions.
   Widget _atakPopup(Color bg, Color fg) {

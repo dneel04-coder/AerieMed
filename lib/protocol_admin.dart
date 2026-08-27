@@ -10,6 +10,7 @@ import 'package:pdfrx/pdfrx.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'patient_report.dart';
+import 'asset_service.dart' show AssetService, Team;
 
 
 class SupabaseService {
@@ -94,6 +95,10 @@ class ProtocolEntry {
   // be set independently; a user sees the protocol if either matches.
   final List<String>? targetUserIds;
   final String? targetTeamId;
+  // 'medical' feeds the home screen's "Protocols" card (medical-director
+  // authorized content); 'team' feeds "Team Protocols" (team-specific,
+  // non-medical directions).
+  final String category;
 
   const ProtocolEntry({
     required this.id,
@@ -106,6 +111,7 @@ class ProtocolEntry {
     required this.notes,
     this.targetUserIds,
     this.targetTeamId,
+    this.category = 'medical',
   });
 
   factory ProtocolEntry.fromMap(Map<String, dynamic> m) => ProtocolEntry(
@@ -119,6 +125,7 @@ class ProtocolEntry {
         notes: m['notes'] as String? ?? '',
         targetUserIds: (m['target_user_ids'] as List?)?.cast<String>(),
         targetTeamId: m['target_team_id'] as String?,
+        category: m['category'] as String? ?? 'medical',
       );
 
   String get localCacheName => '${id}_v$version.pdf';
@@ -184,12 +191,12 @@ class ProtocolSyncService {
         '${hex.substring(16, 20)}-${hex.substring(20)}';
   }
 
-  Future<List<ProtocolEntry>> pendingProtocols() async {
+  Future<List<ProtocolEntry>> pendingProtocols({String? category}) async {
     final client = await _client();
     if (client == null) return [];
     try {
       final userId = await _userId();
-      final protocols = await myVisibleProtocols();
+      final protocols = await myVisibleProtocols(category: category);
       final ackedIds = (await client
               .from('protocol_acknowledgments')
               .select('protocol_id')
@@ -202,11 +209,13 @@ class ProtocolSyncService {
     }
   }
 
-  Future<List<ProtocolEntry>> activeProtocols() async {
+  Future<List<ProtocolEntry>> activeProtocols({String? category}) async {
     final client = await _client();
     if (client == null) return [];
     try {
-      return (await client.from('protocols').select().eq('is_active', true).order('name') as List)
+      var query = client.from('protocols').select().eq('is_active', true);
+      if (category != null) query = query.eq('category', category);
+      return (await query.order('name') as List)
           .map((r) => ProtocolEntry.fromMap(r as Map<String, dynamic>))
           .toList();
     } catch (_) {
@@ -217,9 +226,10 @@ class ProtocolSyncService {
   /// Active protocols visible to this device: untargeted (broadcast, the
   /// existing default) plus anything targeted at this user_id or this
   /// user's team_id specifically -- same client-side-filter shape already
-  /// used for deployment_orders' targetUserIds.
-  Future<List<ProtocolEntry>> myVisibleProtocols() async {
-    final all = await activeProtocols();
+  /// used for deployment_orders' targetUserIds. Optionally scoped to just
+  /// 'medical' or 'team' protocols.
+  Future<List<ProtocolEntry>> myVisibleProtocols({String? category}) async {
+    final all = await activeProtocols(category: category);
     final client = await _client();
     if (client == null) return all;
     final userId = await _userId();
@@ -271,6 +281,30 @@ class ProtocolSyncService {
     }
   }
 
+  /// Deletes any locally-cached protocol PDF (under team_protocols/) that no
+  /// longer corresponds to a protocol this device can currently see -- the
+  /// device has no way to be reached remotely, so "delete from a user's
+  /// phone" is implemented as this device pruning its own stale cache the
+  /// next time it syncs (called from TeamProtocolsScreen's load and from
+  /// the app-startup check), rather than a push from the Console.
+  Future<void> pruneLocalProtocolCache() async {
+    try {
+      final visible = await myVisibleProtocols();
+      final keepNames = visible.map((p) => p.localCacheName).toSet();
+      final dir = Directory('${(await getApplicationDocumentsDirectory()).path}/team_protocols');
+      if (!await dir.exists()) return;
+      await for (final entity in dir.list()) {
+        if (entity is! File) continue;
+        final name = entity.uri.pathSegments.last;
+        if (!keepNames.contains(name)) {
+          try {
+            await entity.delete();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
   Future<void> acknowledgeProtocol(String protocolId) async {
     final client = await _client();
     if (client == null) return;
@@ -307,6 +341,7 @@ class ProtocolSyncService {
     String? existingId,
     List<String>? targetUserIds,
     String? targetTeamId,
+    String category = 'medical',
   }) async {
     final client = await _client();
     if (client == null) throw Exception('Supabase not configured');
@@ -329,6 +364,7 @@ class ProtocolSyncService {
         'is_active': true,
         'target_user_ids': targetUserIds,
         'target_team_id': targetTeamId,
+        'category': category,
       }).eq('id', existingId);
       // Invalidate acknowledgments so users must re-acknowledge this version
       await client.from('protocol_acknowledgments').delete().eq('protocol_id', existingId);
@@ -344,8 +380,25 @@ class ProtocolSyncService {
         'notes': notes,
         'target_user_ids': targetUserIds,
         'target_team_id': targetTeamId,
+        'category': category,
       });
     }
+  }
+
+  /// Changes who an already-pushed protocol is visible to, without
+  /// re-uploading the file, bumping its version, or invalidating existing
+  /// acknowledgments -- the document itself hasn't changed.
+  Future<void> updateProtocolTargeting(
+    String id, {
+    List<String>? targetUserIds,
+    String? targetTeamId,
+  }) async {
+    final client = await _client();
+    if (client == null) return;
+    await client.from('protocols').update({
+      'target_user_ids': targetUserIds,
+      'target_team_id': targetTeamId,
+    }).eq('id', id);
   }
 
   Future<void> toggleActive(String id, bool active) async {
@@ -360,6 +413,16 @@ class ProtocolSyncService {
       await client.storage.from('protocols').remove([entry.filePath]);
     } catch (_) {}
     await client.from('protocols').delete().eq('id', entry.id);
+  }
+
+  /// Deletes every protocol in the library. Field devices prune their own
+  /// stale local copies the next time they sync -- see pruneLocalProtocolCache.
+  Future<void> deleteAllProtocols({String? category}) async {
+    final all = await allProtocols();
+    for (final p in all) {
+      if (category != null && p.category != category) continue;
+      await deleteProtocol(p);
+    }
   }
 
   Future<List<Map<String, dynamic>>> adminGetReports() async {
@@ -808,14 +871,15 @@ class _TeamProtocolsScreenState extends State<TeamProtocolsScreen> {
       setState(() { _loading = false; _notConfigured = true; });
       return;
     }
-    final protocols = await ProtocolSyncService.instance.myVisibleProtocols();
-    final pending = await ProtocolSyncService.instance.pendingProtocols();
+    final protocols = await ProtocolSyncService.instance.myVisibleProtocols(category: 'team');
+    final pending = await ProtocolSyncService.instance.pendingProtocols(category: 'team');
     final pendingIds = pending.map((p) => p.id).toSet();
     setState(() {
       _protocols = protocols;
       _ackedIds = protocols.where((p) => !pendingIds.contains(p.id)).map((p) => p.id).toSet();
       _loading = false;
     });
+    ProtocolSyncService.instance.pruneLocalProtocolCache();
   }
 
   Future<void> _viewProtocol(ProtocolEntry entry) async {
@@ -1174,10 +1238,26 @@ class AdminProtocolScreen extends StatefulWidget {
   State<AdminProtocolScreen> createState() => _AdminProtocolScreenState();
 }
 
+enum _AdminProtocolScope { everyone, team, users }
+
+/// A user_profiles row, just enough to pick recipients -- mirrors the
+/// Command Console's protocols_console_screen.dart _RosterUser.
+class _AdminRosterUser {
+  final String userId;
+  final String display;
+  final String? teamId;
+  const _AdminRosterUser({required this.userId, required this.display, this.teamId});
+}
+
 class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
   List<ProtocolEntry> _protocols = [];
   Map<String, int> _ackCounts = {}; // protocolId → count
+  List<Team> _teams = [];
+  List<_AdminRosterUser> _roster = [];
   bool _loading = true;
+  String _categoryFilter = 'medical';
+
+  List<ProtocolEntry> get _filtered => _protocols.where((p) => p.category == _categoryFilter).toList();
 
   @override
   void initState() {
@@ -1191,8 +1271,10 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
   Future<void> _load() async {
     setState(() => _loading = true);
     final protocols = await ProtocolSyncService.instance.allProtocols();
+    final teams = await AssetService.instance.fetchTeams();
     // Load ack counts for all protocols in parallel.
     final counts = <String, int>{};
+    var roster = <_AdminRosterUser>[];
     if (SupabaseService.client != null) {
       try {
         final rows = await SupabaseService.client!
@@ -1203,10 +1285,28 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
           counts[pid] = (counts[pid] ?? 0) + 1;
         }
       } catch (_) {}
+      try {
+        final rows = await SupabaseService.client!.from('user_profiles').select() as List;
+        roster = rows
+            .map((r) {
+              final m = r as Map<String, dynamic>;
+              final callsign = m['callsign'] as String? ?? '';
+              final name = m['name'] as String? ?? '';
+              return _AdminRosterUser(
+                userId: m['user_id'] as String? ?? '',
+                display: callsign.isNotEmpty ? callsign : (name.isNotEmpty ? name : (m['user_id'] as String? ?? '')),
+                teamId: m['team_id'] as String?,
+              );
+            })
+            .where((u) => u.userId.isNotEmpty)
+            .toList();
+      } catch (_) {}
     }
     if (mounted) setState(() {
       _protocols = protocols;
       _ackCounts = counts;
+      _teams = teams;
+      _roster = roster;
       _loading = false;
     });
   }
@@ -1216,6 +1316,15 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
     final notesCtrl = TextEditingController();
     Uint8List? bytes;
     String? fileName;
+    var category = existing?.category ?? _categoryFilter;
+    var scope = existing?.targetTeamId != null
+        ? _AdminProtocolScope.team
+        : existing?.targetUserIds != null
+            ? _AdminProtocolScope.users
+            : _AdminProtocolScope.everyone;
+    Team? selectedTeam =
+        existing?.targetTeamId == null ? null : _teams.where((t) => t.id == existing!.targetTeamId).firstOrNull;
+    final selectedUsers = <String>{...?existing?.targetUserIds};
 
     await showModalBottomSheet(
       context: context,
@@ -1274,11 +1383,79 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
                         style: const TextStyle(fontSize: 12, color: Colors.green)),
                   ),
                 const SizedBox(height: 16),
+                const Text('Destination', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'medical', label: Text('Protocols'), icon: Icon(Icons.menu_book_outlined)),
+                    ButtonSegment(value: 'team', label: Text('Team Protocols'), icon: Icon(Icons.description_outlined)),
+                  ],
+                  selected: {category},
+                  onSelectionChanged: (s) => setSt(() => category = s.first),
+                ),
+                const SizedBox(height: 16),
+                const Text('Send to', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                SegmentedButton<_AdminProtocolScope>(
+                  segments: const [
+                    ButtonSegment(value: _AdminProtocolScope.everyone, label: Text('Everyone'), icon: Icon(Icons.public)),
+                    ButtonSegment(value: _AdminProtocolScope.team, label: Text('Team'), icon: Icon(Icons.groups)),
+                    ButtonSegment(value: _AdminProtocolScope.users, label: Text('Users'), icon: Icon(Icons.person_pin_circle_outlined)),
+                  ],
+                  selected: {scope},
+                  onSelectionChanged: (s) => setSt(() => scope = s.first),
+                ),
+                if (scope == _AdminProtocolScope.team) ...[
+                  const SizedBox(height: 12),
+                  if (_teams.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text('No teams yet — create one from Roster > Assign to Team.', style: TextStyle(color: Colors.grey[600])),
+                    )
+                  else
+                    DropdownButtonFormField<Team>(
+                      initialValue: selectedTeam,
+                      decoration: const InputDecoration(labelText: 'Team', border: OutlineInputBorder(), isDense: true),
+                      items: _teams.map((t) => DropdownMenuItem(value: t, child: Text(t.name))).toList(),
+                      onChanged: (v) => setSt(() => selectedTeam = v),
+                    ),
+                ],
+                if (scope == _AdminProtocolScope.users) ...[
+                  const SizedBox(height: 12),
+                  const Text('Recipients', style: TextStyle(fontWeight: FontWeight.bold)),
+                  if (_roster.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text('No users found yet.', style: TextStyle(color: Colors.grey[600])),
+                    ),
+                  SizedBox(
+                    height: 180,
+                    child: ListView(
+                      children: _roster.map((u) => CheckboxListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(u.display),
+                            value: selectedUsers.contains(u.userId),
+                            onChanged: (v) => setSt(() {
+                              if (v == true) {
+                                selectedUsers.add(u.userId);
+                              } else {
+                                selectedUsers.remove(u.userId);
+                              }
+                            }),
+                          )).toList(),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
                 _UploadButton(
                   existing: existing,
                   nameCtrl: nameCtrl,
                   notesCtrl: notesCtrl,
                   bytes: bytes,
+                  category: category,
+                  targetUserIds: scope == _AdminProtocolScope.users ? selectedUsers.toList() : null,
+                  targetTeamId: scope == _AdminProtocolScope.team ? selectedTeam?.id : null,
                   onSuccess: () {
                     Navigator.pop(ctx);
                     _load();
@@ -1350,6 +1527,135 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
     }
   }
 
+  Future<void> _confirmDeleteAll() async {
+    final destLabel = _categoryFilter == 'medical' ? 'Protocols' : 'Team Protocols';
+    final count = _filtered.length;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Delete All $destLabel?'),
+        content: Text('Permanently delete all $count protocol(s) under "$destLabel"? '
+            'This removes every file and all acknowledgment records, and clears them from any device that already downloaded them.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete All'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await ProtocolSyncService.instance.deleteAllProtocols(category: _categoryFilter);
+      _load();
+    }
+  }
+
+  Future<void> _confirmEditRecipients(ProtocolEntry p) async {
+    var scope = p.targetTeamId != null
+        ? _AdminProtocolScope.team
+        : p.targetUserIds != null
+            ? _AdminProtocolScope.users
+            : _AdminProtocolScope.everyone;
+    Team? selectedTeam = p.targetTeamId == null ? null : _teams.where((t) => t.id == p.targetTeamId).firstOrNull;
+    final selectedUsers = <String>{...?p.targetUserIds};
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('Edit Recipients — ${p.name}'),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                SegmentedButton<_AdminProtocolScope>(
+                  segments: const [
+                    ButtonSegment(value: _AdminProtocolScope.everyone, label: Text('Everyone'), icon: Icon(Icons.public)),
+                    ButtonSegment(value: _AdminProtocolScope.team, label: Text('Team'), icon: Icon(Icons.groups)),
+                    ButtonSegment(value: _AdminProtocolScope.users, label: Text('Users'), icon: Icon(Icons.person_pin_circle_outlined)),
+                  ],
+                  selected: {scope},
+                  onSelectionChanged: (s) => setDialogState(() => scope = s.first),
+                ),
+                if (scope == _AdminProtocolScope.team) ...[
+                  const SizedBox(height: 12),
+                  if (_teams.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text('No teams yet — create one from Roster > Assign to Team.', style: TextStyle(color: Colors.grey[600])),
+                    )
+                  else
+                    DropdownButtonFormField<Team>(
+                      initialValue: selectedTeam,
+                      decoration: const InputDecoration(labelText: 'Team', border: OutlineInputBorder(), isDense: true),
+                      items: _teams.map((t) => DropdownMenuItem(value: t, child: Text(t.name))).toList(),
+                      onChanged: (v) => setDialogState(() => selectedTeam = v),
+                    ),
+                ],
+                if (scope == _AdminProtocolScope.users) ...[
+                  const SizedBox(height: 12),
+                  const Text('Recipients', style: TextStyle(fontWeight: FontWeight.bold)),
+                  if (_roster.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text('No users found yet.', style: TextStyle(color: Colors.grey[600])),
+                    ),
+                  SizedBox(
+                    height: 220,
+                    child: ListView(
+                      children: _roster.map((u) => CheckboxListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(u.display),
+                            value: selectedUsers.contains(u.userId),
+                            onChanged: (v) => setDialogState(() {
+                              if (v == true) {
+                                selectedUsers.add(u.userId);
+                              } else {
+                                selectedUsers.remove(u.userId);
+                              }
+                            }),
+                          )).toList(),
+                    ),
+                  ),
+                ],
+              ]),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: (scope == _AdminProtocolScope.team && selectedTeam == null) ||
+                      (scope == _AdminProtocolScope.users && selectedUsers.isEmpty)
+                  ? null
+                  : () => Navigator.pop(ctx, true),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await ProtocolSyncService.instance.updateProtocolTargeting(
+        p.id,
+        targetUserIds: scope == _AdminProtocolScope.users ? selectedUsers.toList() : null,
+        targetTeamId: scope == _AdminProtocolScope.team ? selectedTeam?.id : null,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Updated recipients for "${p.name}"')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Update failed: $e')));
+      }
+    }
+    _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1358,6 +1664,12 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
         actions: [
           IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
           IconButton(icon: const Icon(Icons.code), tooltip: 'View SQL Schema', onPressed: _showSchema),
+          if (_filtered.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.delete_sweep_outlined),
+              tooltip: 'Delete All',
+              onPressed: _confirmDeleteAll,
+            ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -1365,27 +1677,42 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
         icon: const Icon(Icons.upload_file),
         label: const Text('Upload Protocol'),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _protocols.isEmpty
-              ? Center(
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    const Icon(Icons.description_outlined, size: 64, color: Colors.grey),
-                    const SizedBox(height: 16),
-                    const Text('No protocols uploaded yet'),
-                    const SizedBox(height: 8),
-                    FilledButton.icon(
-                      onPressed: () => _showUploadSheet(),
-                      icon: const Icon(Icons.upload_file),
-                      label: const Text('Upload First Protocol'),
+      body: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'medical', label: Text('Protocols'), icon: Icon(Icons.menu_book_outlined)),
+              ButtonSegment(value: 'team', label: Text('Team Protocols'), icon: Icon(Icons.description_outlined)),
+            ],
+            selected: {_categoryFilter},
+            onSelectionChanged: (s) => setState(() => _categoryFilter = s.first),
+          ),
+        ),
+        Expanded(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _filtered.isEmpty
+                  ? Center(
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.description_outlined, size: 64, color: Colors.grey),
+                        const SizedBox(height: 16),
+                        const Text('No protocols uploaded yet'),
+                        const SizedBox(height: 8),
+                        FilledButton.icon(
+                          onPressed: () => _showUploadSheet(),
+                          icon: const Icon(Icons.upload_file),
+                          label: const Text('Upload First Protocol'),
+                        ),
+                      ]),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
+                      itemCount: _filtered.length,
+                      itemBuilder: (_, i) => _buildCard(_filtered[i]),
                     ),
-                  ]),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
-                  itemCount: _protocols.length,
-                  itemBuilder: (_, i) => _buildCard(_protocols[i]),
-                ),
+        ),
+      ]),
     );
   }
 
@@ -1442,6 +1769,11 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
                 label: const Text('Acks'),
                 onPressed: () => _showAcks(entry),
               ),
+              TextButton.icon(
+                icon: const Icon(Icons.edit_outlined, size: 16),
+                label: const Text('Recipients'),
+                onPressed: () => _confirmEditRecipients(entry),
+              ),
               const Spacer(),
               IconButton(
                 icon: Icon(
@@ -1494,12 +1826,18 @@ class _UploadButton extends StatefulWidget {
   final TextEditingController nameCtrl;
   final TextEditingController notesCtrl;
   final Uint8List? bytes;
+  final String category;
+  final List<String>? targetUserIds;
+  final String? targetTeamId;
   final VoidCallback onSuccess;
   const _UploadButton({
     required this.existing,
     required this.nameCtrl,
     required this.notesCtrl,
     required this.bytes,
+    required this.category,
+    this.targetUserIds,
+    this.targetTeamId,
     required this.onSuccess,
   });
 
@@ -1524,6 +1862,9 @@ class _UploadButtonState extends State<_UploadButton> {
         bytes: widget.bytes!,
         uploadedBy: callsign,
         existingId: widget.existing?.id,
+        category: widget.category,
+        targetUserIds: widget.targetUserIds,
+        targetTeamId: widget.targetTeamId,
       );
       widget.onSuccess();
     } catch (e) {
@@ -2980,6 +3321,13 @@ begin
   -- a given team without listing each member individually.
   alter table if exists protocols add column if not exists target_user_ids text[];
   alter table if exists protocols add column if not exists target_team_id uuid references teams(id);
+
+  -- protocols: destination -- 'medical' feeds the home screen's "Protocols"
+  -- card (medical-director-authorized content), 'team' feeds "Team
+  -- Protocols" (team-specific, non-medical directions). Defaults to
+  -- 'medical' since every row created before this column existed was
+  -- medical content.
+  alter table if exists protocols add column if not exists category text not null default 'medical';
 
   -- assets: persistent, org-wide resource registry (vehicles, equipment,
   -- caches). Not mission-scoped — where an asset currently is / who has it

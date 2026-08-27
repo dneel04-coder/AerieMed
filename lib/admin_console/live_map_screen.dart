@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -21,6 +22,7 @@ import '../tac_map.dart'
         kLocationRemoveAfter,
         TacBaseLayer,
         insertTacMarker,
+        updateTacMarkerPosition,
         insertTacZone,
         waypointRoutePoints,
         firstMarkerOfType,
@@ -59,6 +61,7 @@ class LiveMapScreen extends StatefulWidget {
 
 class _LiveMapScreenState extends State<LiveMapScreen> {
   final _mapCtrl = MapController();
+  final _mapAreaKey = GlobalKey();
   final Map<String, TacUser> _users = {};
   final Map<String, TacZone> _zones = {};
   final Map<String, TacMarker> _markers = {};
@@ -606,30 +609,87 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     );
   }
 
+  /// Converts a drag-and-drop's global screen offset (from a Draggable's
+  /// pointerDragAnchorStrategy, so it lines up with the cursor) into a map
+  /// LatLng, using the map area's own RenderBox to go global -> local.
+  LatLng? _dropPointFromGlobalOffset(Offset globalOffset) {
+    final box = _mapAreaKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return null;
+    final local = box.globalToLocal(globalOffset);
+    return _mapCtrl.camera.pointToLatLng(Point(local.dx, local.dy));
+  }
+
+  /// Handles dropping either a marker-type chip (place a new marker) or an
+  /// existing TacMarker (drag-to-reposition) onto the map.
+  void _handleMapDrop(Object data, Offset globalOffset) {
+    final point = _dropPointFromGlobalOffset(globalOffset);
+    if (point == null) return;
+    if (data is TacMarker) {
+      setState(() => _markers[data.id] = TacMarker(
+            id: data.id, type: data.type, label: data.label,
+            lat: point.latitude, lng: point.longitude,
+            placedBy: data.placedBy, createdAt: data.createdAt, missionCode: data.missionCode,
+          ));
+      updateTacMarkerPosition(SupabaseService.client!, id: data.id, lat: point.latitude, lng: point.longitude)
+          .catchError((e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not move marker: $e')));
+        }
+      });
+    } else if (data is TacMarkerType) {
+      if (widget.incident == null) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Select an incident to place markers')));
+        return;
+      }
+      if (data == TacMarkerType.waypoint) {
+        _placeWaypointDesktop(point);
+      } else {
+        _placeMarkerAtPointDesktop(point, data);
+      }
+    }
+  }
+
   /// Right-click anywhere on the map to place a marker at that exact spot,
   /// without first selecting a type from the toolbar -- the desktop
   /// equivalent of the mobile field app's long-press-to-place gesture.
   Future<void> _onMapRightClick(Offset localPosition) async {
-    if (widget.incident == null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Select an incident to place markers')));
-      return;
-    }
     final point = _mapCtrl.camera.pointToLatLng(Point(localPosition.dx, localPosition.dy));
+    final coordText = '${point.latitude.toStringAsFixed(6)}, ${point.longitude.toStringAsFixed(6)}';
     final type = await showDialog<TacMarkerType>(
       context: context,
-      builder: (_) => SimpleDialog(
-        title: const Text('Add Marker Here'),
-        children: TacMarkerType.values
-            .map((t) => SimpleDialogOption(
-                  onPressed: () => Navigator.pop(context, t),
+      builder: (dialogCtx) => SimpleDialog(
+        title: const Text('Map Location'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: coordText));
+              ScaffoldMessenger.of(dialogCtx).showSnackBar(
+                  const SnackBar(content: Text('Location copied'), duration: Duration(seconds: 1)));
+            },
+            child: Row(children: [
+              const Icon(Icons.copy, size: 18),
+              const SizedBox(width: 10),
+              Text(coordText, style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+            ]),
+          ),
+          const Divider(),
+          if (widget.incident == null)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+              child: Text('Select an incident to place markers here.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+            )
+          else
+            ...TacMarkerType.values.map((t) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(dialogCtx, t),
                   child: Row(children: [
                     Icon(t.icon, color: t.color, size: 18),
                     const SizedBox(width: 10),
                     Text(t.label),
                   ]),
-                ))
-            .toList(),
+                )),
+        ],
       ),
     );
     if (type == null || !mounted) return;
@@ -1037,9 +1097,46 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           ],
         ]),
       ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+        child: Row(children: [
+          Text('Drag to place:', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+          const SizedBox(width: 8),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: TacMarkerType.values.map((t) => Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Draggable<TacMarkerType>(
+                        data: t,
+                        dragAnchorStrategy: pointerDragAnchorStrategy,
+                        feedback: Material(
+                          color: Colors.transparent,
+                          child: Icon(t.icon, color: t.color, size: 32),
+                        ),
+                        childWhenDragging: Opacity(opacity: 0.3, child: _markerPaletteChip(t)),
+                        child: _markerPaletteChip(t),
+                      ),
+                    )).toList(),
+              ),
+            ),
+          ),
+        ]),
+      ),
       Expanded(child: _buildBody()),
     ]);
   }
+
+  Widget _markerPaletteChip(TacMarkerType t) => Tooltip(
+        message: 'Drag onto the map to place a ${t.label}',
+        child: Chip(
+          avatar: Icon(t.icon, color: t.color, size: 16),
+          label: Text(t.label, style: const TextStyle(fontSize: 11)),
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      );
 
   Widget _buildBody() {
     if (_loading) return const Center(child: CircularProgressIndicator());
@@ -1086,8 +1183,12 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     return Row(
       children: [
         Expanded(
-          child: Stack(children: [
+          child: DragTarget<Object>(
+            onWillAcceptWithDetails: (details) => details.data is TacMarkerType || details.data is TacMarker,
+            onAcceptWithDetails: (details) => _handleMapDrop(details.data, details.offset),
+            builder: (context, candidateData, rejectedData) => Stack(children: [
             GestureDetector(
+              key: _mapAreaKey,
               onSecondaryTapUp: (details) => _onMapRightClick(details.localPosition),
               child: FlutterMap(
               mapController: _mapCtrl,
@@ -1169,36 +1270,49 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       )),
                   ...visibleMarkers.map((m) {
                     final stopIndex = _routeStops.indexWhere((s) => s.id == m.id);
+                    final markerIcon = Stack(clipBehavior: Clip.none, children: [
+                      m.type.showsLabelPill
+                          ? Column(mainAxisSize: MainAxisSize.min, children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                decoration: BoxDecoration(
+                                    color: m.type.color, borderRadius: BorderRadius.circular(4)),
+                                child: Text(m.label.isNotEmpty ? m.label : m.type.label,
+                                    style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                              ),
+                              Icon(m.type.icon, color: m.type.color, size: 22),
+                            ])
+                          : Icon(m.type.icon, color: m.type.color, size: 28),
+                      if (stopIndex != -1)
+                        Positioned(
+                          right: -2, top: -2,
+                          child: CircleAvatar(
+                            radius: 8, backgroundColor: Colors.amberAccent,
+                            child: Text('${stopIndex + 1}',
+                                style: const TextStyle(fontSize: 9, color: Colors.black, fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                    ]);
                     return Marker(
                       point: LatLng(m.lat, m.lng),
                       width: m.type.showsLabelPill ? 60 : 36,
                       height: m.type.showsLabelPill ? 44 : 36,
-                      child: GestureDetector(
-                        onTap: () => _onMarkerTapped(m),
-                        onLongPress: () => _confirmDeleteMarkerDesktop(m),
-                        child: Stack(clipBehavior: Clip.none, children: [
-                          m.type.showsLabelPill
-                              ? Column(mainAxisSize: MainAxisSize.min, children: [
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                                    decoration: BoxDecoration(
-                                        color: m.type.color, borderRadius: BorderRadius.circular(4)),
-                                    child: Text(m.label.isNotEmpty ? m.label : m.type.label,
-                                        style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
-                                  ),
-                                  Icon(m.type.icon, color: m.type.color, size: 22),
-                                ])
-                              : Icon(m.type.icon, color: m.type.color, size: 28),
-                          if (stopIndex != -1)
-                            Positioned(
-                              right: -2, top: -2,
-                              child: CircleAvatar(
-                                radius: 8, backgroundColor: Colors.amberAccent,
-                                child: Text('${stopIndex + 1}',
-                                    style: const TextStyle(fontSize: 9, color: Colors.black, fontWeight: FontWeight.bold)),
-                              ),
-                            ),
-                        ]),
+                      // Draggable so an admin can pick up an existing marker and
+                      // drop it at a new spot (see DragTarget on the map above),
+                      // rather than only being able to delete + re-place it.
+                      child: Draggable<TacMarker>(
+                        data: m,
+                        dragAnchorStrategy: pointerDragAnchorStrategy,
+                        feedback: Material(
+                          color: Colors.transparent,
+                          child: Icon(m.type.icon, color: m.type.color, size: 32),
+                        ),
+                        childWhenDragging: Opacity(opacity: 0.3, child: markerIcon),
+                        child: GestureDetector(
+                          onTap: () => _onMarkerTapped(m),
+                          onLongPress: () => _confirmDeleteMarkerDesktop(m),
+                          child: markerIcon,
+                        ),
                       ),
                     );
                   }),
@@ -1395,6 +1509,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 ),
               ),
           ]),
+          ),
         ),
         SizedBox(
           width: 260,

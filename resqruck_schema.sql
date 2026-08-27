@@ -426,6 +426,13 @@ begin
   alter table if exists protocols add column if not exists target_user_ids text[];
   alter table if exists protocols add column if not exists target_team_id uuid references teams(id);
 
+  -- protocols: destination -- 'medical' feeds the home screen's "Protocols"
+  -- card (medical-director-authorized content), 'team' feeds "Team
+  -- Protocols" (team-specific, non-medical directions). Defaults to
+  -- 'medical' since every row created before this column existed was
+  -- medical content.
+  alter table if exists protocols add column if not exists category text not null default 'medical';
+
   -- assets: persistent, org-wide resource registry (vehicles, equipment,
   -- caches). Not mission-scoped — where an asset currently is / who has it
   -- lives in asset_assignments below, so its history isn't lost when it moves.

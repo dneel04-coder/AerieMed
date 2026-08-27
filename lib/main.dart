@@ -894,7 +894,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     },
   ];
 
-  late final List<Map<String, String>> rootProtocols;
+  List<Map<String, dynamic>> rootProtocols = [];
 
   @override
   void initState() {
@@ -913,7 +913,8 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     if (!ok || !mounted) return;
 
     // Protocols
-    final pending = await ProtocolSyncService.instance.pendingProtocols();
+    ProtocolSyncService.instance.pruneLocalProtocolCache();
+    final pending = await ProtocolSyncService.instance.pendingProtocols(category: 'medical');
     if (pending.isNotEmpty && mounted) {
       await showDialog(
         context: context,
@@ -934,40 +935,24 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     }
   }
 
-  void _initRootProtocols() {
-    final List<String> allAssets = [
-      'Bites.pdf', 'Hazmat.pdf', 'Stings.pdf', 'Stroke.pdf', 'Seizure.pdf', 'Drowning.pdf',
-      'Crush Injury.pdf', 'Hypertension.pdf', 'Dead on Scene.pdf', 'EXPANDED SCOPE.pdf',
-      'Cyanide Poisoning.pdf', 'Hydrocarbon Fumes.pdf', 'Activated Charcoal.pdf',
-      'Behavior Emergency.pdf', 'Adult Resuscitation.pdf', 'Trauma - Antibiotics.pdf',
-      'Trauma - Head Injury.pdf', 'Trauma - Neck Trauma.pdf', 'Altered Mental Status.pdf',
-      'Trauma - Sexual Assault.pdf', 'Trauma Arrest Guideline.pdf', 'Trauma - Burns - General.pdf',
-      'Headache - Expanded Scope.pdf', 'Spinal Motion Restriction.pdf', 'Epistaxis - Expanded Scope.pdf',
-      'Toxic Ingestion - Overdose.pdf', 'Chest Pain - Expanded Scope.pdf', 'Firefighter Rehab Guidelines.pdf',
-      'GI Bleeding - Expanded Scope.pdf', 'Special Consideration - Rabies.pdf', 'Trauma - Eye Injury - Chemical.pdf',
-      'Abdominal Pain - Expanded Scope.pdf', 'Trauma - Blunt - Expanded Scope.pdf', 'Pain Management w expanded scope.pdf',
-      'Shock - Medical - Expanded Scope.pdf', 'Trauma - General - Expanded Scope.pdf', 'Vaginal Bleeding - Expanded Scope.pdf',
-      'Adult Cardiac Arrest - Initial Care.pdf', 'Diabetic Emergency - Expanded Scope.pdf',
-      'Difficulty Breathing - SCAPE or CHF.pdf', 'Electrical Injury and Electrocution.pdf',
-      'High Altitude Cerebral Edema - HACE.pdf', 'Dislocations in Austere Environments.pdf',
-      'High Altitude Pulmonary Edema - HAPE.pdf', 'Nausea and Vomiting - Expanded Scope.pdf',
-      'Trauma - Eye Injury - Expanded Scope.pdf', 'General Medical Care - Expanded Scope.pdf',
-      'Trauma - Penetrating - Expanded Scope.pdf', 'Adult Cardiac Arrest - VF-Pulseless VT.pdf',
-      'Tranexamic Acid - TXA - Expanded Scope.pdf', 'Adult Cardiac Arrest - PEA and Asystole.pdf',
-      'Allergy-Anaphylaxis with expanded scope.pdf', 'Bradycardia with pulse - Expanded Scope.pdf',
-      'Acute Mountain Sickness - Expanded Scope.pdf', 'Rabies_postexposure_prophylaxis_algorithm.pdf',
-      'Syncope - Weak and Dizzy - Expanded Scope.pdf', 'Airway Obstruction - Foreign Body - Choking.pdf',
-      'Difficulty Breathing - Respiratory Distress.pdf', 'Environmental Hyperthermia - Expanded Scope.pdf',
-      'Tachycardia - Wide Complex - Expanded Scope.pdf', 'Tachycardia - Narrow Complex - Expanded Scope.pdf',
-      'Adult Cardiac Arrest - Additional Treatments to Consider.pdf', 'Difficulty Breathing - Asthma and COPD with expanded scope.pdf',
-      'Termination of Resuscitation - Non-traumatic Cardiac Arrest.pdf', 'Adult Cardiac Arrest - Post Resuscitative Care - Expanded Scope.pdf',
-      'Rabies World_Health_Organization_post_exposure_rabies_management.pdf'
-    ];
-
-    rootProtocols = allAssets.map((asset) => {
-      'title': asset.replaceAll('.pdf', ''),
-      'asset': asset,
-    }).toList();
+  /// "Protocols" (medical) are admin-controlled via the Command Console /
+  /// mobile Protocol Management screen, same as "Team Protocols" -- fetched
+  /// here instead of a hardcoded bundled-asset list so a medical director
+  /// decides who receives what, rather than every install shipping every
+  /// PDF that happens to sit in the local assets/protocols folder.
+  Future<void> _initRootProtocols() async {
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok || !mounted) return;
+    final protocols = await ProtocolSyncService.instance.myVisibleProtocols(category: 'medical');
+    if (!mounted) return;
+    setState(() {
+      rootProtocols = protocols.map((p) => {
+        'title': p.name,
+        'asset': p.id,
+        'isCloudProtocol': true,
+        'entry': p,
+      }).toList();
+    });
   }
 
   Future<void> _loadData() async {
@@ -1062,9 +1047,19 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     _saveFavorites();
   }
 
-  Future<void> _openPdf(String title, String asset, {bool isAsset = true}) async {
+  Future<void> _openPdf(String title, String asset, {bool isAsset = true, ProtocolEntry? cloudEntry}) async {
     String finalPath;
-    if (isAsset) {
+    if (cloudEntry != null) {
+      final file = await ProtocolSyncService.instance.downloadProtocol(cloudEntry);
+      if (file == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Download failed. Check your connection.')));
+        }
+        return;
+      }
+      finalPath = file.path;
+    } else if (isAsset) {
       final dir = await getApplicationDocumentsDirectory();
       finalPath = '${dir.path}/$asset';
       final file = File(finalPath);
@@ -1076,14 +1071,20 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
       finalPath = asset;
     }
 
-    if (mounted) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => PdfViewerScreen(
-        title: title,
-        filePath: finalPath,
-        assetPath: asset,
-        isFavorite: favorites.contains(asset),
-        onToggleFavorite: () => _toggleFavorite(asset),
-      )));
+    if (!mounted) return;
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => PdfViewerScreen(
+      title: title,
+      filePath: finalPath,
+      assetPath: asset,
+      isFavorite: favorites.contains(asset),
+      onToggleFavorite: () => _toggleFavorite(asset),
+    )));
+
+    if (cloudEntry != null && mounted) {
+      final confirmed = await showReadAcknowledgment(context, title: cloudEntry.name, docType: 'Protocol');
+      if (confirmed) {
+        await ProtocolSyncService.instance.acknowledgeProtocol(cloudEntry.id);
+      }
     }
   }
 
@@ -1236,7 +1237,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
     }
     for (var item in rootProtocols) {
       if (favorites.contains(item['asset'])) {
-        items.add({'title': item['title'], 'asset': item['asset']});
+        items.add(item);
       }
     }
     for (final name in medicationData.keys) {
@@ -1333,7 +1334,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
                           title: Text(item['title'] ?? 'Unknown', style: const TextStyle(fontSize: 14)),
                           onTap: () {
                             Navigator.pop(context);
-                            _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser);
+                            _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser, cloudEntry: item['entry'] as ProtocolEntry?);
                           },
                         );
                       },
@@ -1413,7 +1414,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
                     dense: true,
                     leading: const Icon(Icons.picture_as_pdf, color: Colors.red, size: 20),
                     title: Text(item['title'] ?? 'Unknown', style: const TextStyle(fontSize: 14)),
-                    onTap: () => _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser),
+                    onTap: () => _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser, cloudEntry: item['entry'] as ProtocolEntry?),
                   );
                 },
               )
@@ -1549,7 +1550,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
           ),
         ],
       ),
-      onTap: () => _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser),
+      onTap: () => _openPdf(item['title'] ?? 'Unknown', assetPath, isAsset: !isUser, cloudEntry: item['entry'] as ProtocolEntry?),
     );
   }
 }
