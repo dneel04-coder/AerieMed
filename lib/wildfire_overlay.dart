@@ -23,17 +23,46 @@ http.Client wildfireHttpClient() => IOClient(
         ..badCertificateCallback = (_, __, ___) => true,
     );
 
+/// Rotates [point] about [center] by [degrees] counterclockwise, using a
+/// locally-flat approximation (longitude scaled by cos(latitude) to account
+/// for meridian convergence) -- accurate enough over the few-mile extent of
+/// a single incident map. Used for KML <rotation> and any other
+/// rotated-rectangle overlay math.
+LatLng rotateAroundCenter(LatLng point, LatLng center, double degrees) {
+  final centerLatRad = center.latitude * pi / 180;
+  final cosLat = cos(centerLatRad);
+  final dx = (point.longitude - center.longitude) * cosLat;
+  final dy = point.latitude - center.latitude;
+  final theta = degrees * pi / 180;
+  final rotatedDx = dx * cos(theta) - dy * sin(theta);
+  final rotatedDy = dx * sin(theta) + dy * cos(theta);
+  return LatLng(center.latitude + rotatedDy, center.longitude + (cosLat == 0 ? 0 : rotatedDx / cosLat));
+}
+
 class IncidentOverlay {
   final String name;
   final Uint8List? imageBytes;       // null for polygon-only KMZ
   final LatLngBounds bounds;
   final List<List<LatLng>> polygons; // fire perimeter polygons (may be empty)
-  const IncidentOverlay({
+  // The image's actual three corners (top-left, bottom-left, bottom-right)
+  // for RotatedOverlayImage -- NOT necessarily bounds' own NW/SW/SE, since
+  // many wildfire.gov products (KML <rotation>, non-north-up GeoPDFs) are
+  // rotated relative to true north. Defaults to bounds' own corners (an
+  // unrotated rectangle) when there's no rotation to account for.
+  final LatLng topLeft;
+  final LatLng bottomLeft;
+  final LatLng bottomRight;
+  IncidentOverlay({
     required this.name,
     this.imageBytes,
     required this.bounds,
     this.polygons = const [],
-  });
+    LatLng? topLeft,
+    LatLng? bottomLeft,
+    LatLng? bottomRight,
+  })  : topLeft = topLeft ?? bounds.northWest,
+        bottomLeft = bottomLeft ?? bounds.southWest,
+        bottomRight = bottomRight ?? bounds.southEast;
 }
 
 /// Downloads (or reads a local `file://`/absolute path) and parses a KML or
@@ -159,9 +188,17 @@ Future<IncidentOverlay> loadWildfireKmz(String url, String name) async {
   final south = double.tryParse(southM?.group(1) ?? '');
   final east  = double.tryParse(eastM?.group(1)  ?? '');
   final west  = double.tryParse(westM?.group(1)  ?? '');
+  // <LatLonBox> may also carry a <rotation> in degrees (KML spec: positive =
+  // counterclockwise, applied about the box's center) -- common on
+  // wildfire.gov products generated from non-north-up source imagery.
+  // Ignoring it (as this code used to) renders the image as an unrotated
+  // rectangle, which lines up at the center but drifts toward the edges.
+  final rotationM = RegExp(r'<rotation>\s*([\d.\-]+)\s*</rotation>').firstMatch(kmlContent);
+  final rotationDeg = double.tryParse(rotationM?.group(1) ?? '') ?? 0.0;
 
   LatLngBounds bounds;
   List<List<LatLng>> polygons = [];
+  LatLng? topLeft, bottomLeft, bottomRight;
 
   if (north != null && south != null && east != null && west != null) {
     // Image overlay with explicit bounds
@@ -169,6 +206,12 @@ Future<IncidentOverlay> loadWildfireKmz(String url, String name) async {
       throw Exception('No overlay image found. Archive contents: ${archiveFiles.join(', ')}');
     }
     bounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
+    if (rotationDeg != 0.0) {
+      final center = LatLng((north + south) / 2, (east + west) / 2);
+      topLeft = rotateAroundCenter(LatLng(north, west), center, rotationDeg);
+      bottomLeft = rotateAroundCenter(LatLng(south, west), center, rotationDeg);
+      bottomRight = rotateAroundCenter(LatLng(south, east), center, rotationDeg);
+    }
   } else {
     // No LatLonBox — try to extract polygon perimeter from coordinates
     final coordRe = RegExp(r'<coordinates>\s*([\s\S]*?)\s*</coordinates>');
@@ -197,12 +240,36 @@ Future<IncidentOverlay> loadWildfireKmz(String url, String name) async {
     );
   }
 
-  return IncidentOverlay(name: name, imageBytes: imgBytes, bounds: bounds, polygons: polygons);
+  return IncidentOverlay(
+    name: name, imageBytes: imgBytes, bounds: bounds, polygons: polygons,
+    topLeft: topLeft, bottomLeft: bottomLeft, bottomRight: bottomRight,
+  );
 }
 
-/// Extract geographic bounds from a GeoPDF's /GPTS array.
-/// Returns null if no georeferencing data is found.
-LatLngBounds? parseGeoPdfBounds(Uint8List pdfBytes) {
+class GeoPdfGeoref {
+  final LatLngBounds bounds;
+  final LatLng topLeft;
+  final LatLng bottomLeft;
+  final LatLng bottomRight;
+  const GeoPdfGeoref({
+    required this.bounds,
+    required this.topLeft,
+    required this.bottomLeft,
+    required this.bottomRight,
+  });
+}
+
+/// Extract georeferencing from a GeoPDF's /GPTS (and, when present, /LPTS)
+/// arrays. Returns null if no georeferencing data is found.
+///
+/// /GPTS gives the lat/lng of each ground-control point; /LPTS gives that
+/// same point's position on the page as a 0..1 fraction (PDF's bottom-left
+/// origin). Many wildfire.gov GeoPDFs are NOT north-up, so collapsing GPTS
+/// to a min/max axis-aligned box (the old behavior) and rendering it as an
+/// unrotated rectangle lines up at the center but drifts toward the edges.
+/// Pairing GPTS with LPTS recovers the true (possibly rotated) quadrilateral
+/// -- falling back to the unrotated box when LPTS is missing/mismatched.
+GeoPdfGeoref? parseGeoPdfGeoref(Uint8List pdfBytes) {
   // Scan printable-ASCII portion of the PDF bytes for the /GPTS key.
   // Binary sections are replaced with spaces so the regex can't cross them.
   final sb = StringBuffer();
@@ -214,7 +281,7 @@ LatLngBounds? parseGeoPdfBounds(Uint8List pdfBytes) {
   final gptsMatch = RegExp(r'/GPTS\s*\[\s*([\d\s.\-]+)\s*\]').firstMatch(str);
   if (gptsMatch == null) return null;
 
-  final nums = gptsMatch
+  final gptsNums = gptsMatch
       .group(1)!
       .trim()
       .split(RegExp(r'\s+'))
@@ -222,25 +289,64 @@ LatLngBounds? parseGeoPdfBounds(Uint8List pdfBytes) {
       .whereType<double>()
       .toList();
 
-  if (nums.length < 8) return null;
+  if (gptsNums.length < 8) return null;
 
-  // GPTS pairs are (lat, lng) for each LPTS corner — grab all lats/lngs.
-  final lats = <double>[];
-  final lngs = <double>[];
-  for (var i = 0; i + 1 < nums.length; i += 2) {
-    lats.add(nums[i]);
-    lngs.add(nums[i + 1]);
+  // GPTS pairs are (lat, lng) for each ground-control point.
+  final geoPoints = <LatLng>[];
+  for (var i = 0; i + 1 < gptsNums.length; i += 2) {
+    geoPoints.add(LatLng(gptsNums[i], gptsNums[i + 1]));
   }
 
+  final lats = geoPoints.map((p) => p.latitude);
+  final lngs = geoPoints.map((p) => p.longitude);
   final south = lats.reduce(min);
   final north = lats.reduce(max);
   final west  = lngs.reduce(min);
   final east  = lngs.reduce(max);
-
   if (south >= north || west >= east) return null;
   if (south < -90 || north > 90 || west < -180 || east > 180) return null;
+  final bounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
 
-  return LatLngBounds(LatLng(south, west), LatLng(north, east));
+  final lptsMatch = RegExp(r'/LPTS\s*\[\s*([\d\s.\-]+)\s*\]').firstMatch(str);
+  if (lptsMatch != null) {
+    final lptsNums = lptsMatch
+        .group(1)!
+        .trim()
+        .split(RegExp(r'\s+'))
+        .map(double.tryParse)
+        .whereType<double>()
+        .toList();
+    if (lptsNums.length == gptsNums.length) {
+      final pagePoints = <(double, double)>[];
+      for (var i = 0; i + 1 < lptsNums.length; i += 2) {
+        pagePoints.add((lptsNums[i], lptsNums[i + 1]));
+      }
+      // Nearest ground-control point (in page-fraction space) to each of
+      // the three corners RotatedOverlayImage needs: top-left=(0,1),
+      // bottom-left=(0,0), bottom-right=(1,0) -- PDF's y axis runs bottom-up.
+      LatLng nearestTo(double tx, double ty) {
+        var bestIdx = 0;
+        var bestDist = double.infinity;
+        for (var i = 0; i < pagePoints.length && i < geoPoints.length; i++) {
+          final dx = pagePoints[i].$1 - tx;
+          final dy = pagePoints[i].$2 - ty;
+          final d = dx * dx + dy * dy;
+          if (d < bestDist) { bestDist = d; bestIdx = i; }
+        }
+        return geoPoints[bestIdx];
+      }
+      return GeoPdfGeoref(
+        bounds: bounds,
+        topLeft: nearestTo(0, 1),
+        bottomLeft: nearestTo(0, 0),
+        bottomRight: nearestTo(1, 0),
+      );
+    }
+  }
+
+  return GeoPdfGeoref(
+    bounds: bounds, topLeft: bounds.northWest, bottomLeft: bounds.southWest, bottomRight: bounds.southEast,
+  );
 }
 
 /// Downloads (or reads a local `file://`/absolute path) a GeoPDF, rasterizes
@@ -260,9 +366,9 @@ Future<IncidentOverlay> loadWildfirePdf(String url, String name) async {
     pdfBytes = resp.bodyBytes;
   }
 
-  // Extract geographic bounds from the GeoPDF /GPTS viewport metadata.
-  final bounds = parseGeoPdfBounds(pdfBytes);
-  if (bounds == null) {
+  // Extract georeferencing from the GeoPDF /GPTS + /LPTS viewport metadata.
+  final georef = parseGeoPdfGeoref(pdfBytes);
+  if (georef == null) {
     throw Exception(
         'No geographic coordinates found.\n'
         'Only georeferenced (GeoPDF) files are supported.');
@@ -291,7 +397,10 @@ Future<IncidentOverlay> loadWildfirePdf(String url, String name) async {
   if (byteData == null) throw Exception('Failed to encode PDF as PNG.');
   final pngBytes = byteData.buffer.asUint8List();
 
-  return IncidentOverlay(name: name, imageBytes: pngBytes, bounds: bounds, polygons: const []);
+  return IncidentOverlay(
+    name: name, imageBytes: pngBytes, bounds: georef.bounds, polygons: const [],
+    topLeft: georef.topLeft, bottomLeft: georef.bottomLeft, bottomRight: georef.bottomRight,
+  );
 }
 
 /// Single entry point for loading either a KMZ/KML or a GeoPDF fire map,

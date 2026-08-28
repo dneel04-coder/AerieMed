@@ -552,6 +552,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.2.0"
+  home_widget:
+    dependency: "direct main"
+    description:
+      name: home_widget
+      sha256: "7430f7549d42cef2e729bd3c779de748b93f1eb78b1abfe6bca8fffd1cfce3e9"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.7.0+1"
   hooks:
     dependency: transitive
     description:
@@ -913,7 +921,7 @@ packages:
     source: hosted
     version: "2.3.1"
   path_provider_foundation:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: path_provider_foundation
       sha256: "2a376b7d6392d80cd3705782d2caa734ca4727776db0b6ec36ef3f1855197699"

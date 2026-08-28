@@ -86,6 +86,11 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   Set<TacMarkerType> _hiddenMarkerTypes = {};
   Set<String> _hiddenZoneTypes = {};
 
+  // Measure distance — click two points on the map for a straight-line
+  // distance readout, independent of the road-routing tools below.
+  bool _measuring = false;
+  final List<LatLng> _measurePoints = [];
+
   // Dispatch ETA: pick a deployed unit, then a destination marker, to get a
   // road-based distance/ETA between them (the Console has no GPS of its own,
   // so this is the desktop equivalent of mobile's self-navigation feature).
@@ -490,6 +495,8 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     setState(() {
       _placingType = _placingType == type ? null : type;
       _placingZone = false;
+      _measuring = false;
+      _measurePoints.clear();
     });
   }
 
@@ -499,7 +506,25 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           const SnackBar(content: Text('Select an incident to place zones')));
       return;
     }
-    setState(() { _placingZone = !_placingZone; _placingType = null; });
+    setState(() { _placingZone = !_placingZone; _placingType = null; _measuring = false; _measurePoints.clear(); });
+  }
+
+  void _toggleMeasuring() {
+    setState(() {
+      _measuring = !_measuring;
+      _measurePoints.clear();
+      if (_measuring) {
+        _placingType = null;
+        _placingZone = false;
+      }
+    });
+  }
+
+  void _handleMeasureClick(LatLng point) {
+    setState(() {
+      if (_measurePoints.length >= 2) _measurePoints.clear();
+      _measurePoints.add(point);
+    });
   }
 
   Future<void> _placeMarkerDesktop(LatLng pos, TacMarkerType type) async {
@@ -916,7 +941,46 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     }
     if (_planningRoute) {
       _toggleRouteStop(m);
+      return;
     }
+    _showMarkerInfoDesktop(m);
+  }
+
+  void _showMarkerInfoDesktop(TacMarker m) {
+    final coordText = '${m.lat.toStringAsFixed(5)}, ${m.lng.toStringAsFixed(5)}';
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Row(children: [
+          Icon(m.type.icon, color: m.type.color),
+          const SizedBox(width: 8),
+          Text(m.type.label),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          if (m.label.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 6), child: Text(m.label)),
+          Text('Placed by ${m.placedBy}', style: TextStyle(color: Colors.grey[600])),
+          Text('Reported ${formatMarkerTimestamp(m.createdAt)}', style: TextStyle(color: Colors.grey[600])),
+          const SizedBox(height: 10),
+          InkWell(
+            onTap: () {
+              Clipboard.setData(ClipboardData(text: coordText));
+              ScaffoldMessenger.of(dialogCtx).showSnackBar(
+                  const SnackBar(content: Text('Location copied'), duration: Duration(seconds: 1)));
+            },
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.my_location, size: 14, color: Colors.grey[600]),
+              const SizedBox(width: 6),
+              Text(coordText, style: TextStyle(color: Colors.grey[600], fontFamily: 'monospace', fontSize: 12)),
+              const SizedBox(width: 6),
+              Icon(Icons.copy, size: 14, color: Colors.grey[400]),
+            ]),
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('Close')),
+        ],
+      ),
+    );
   }
 
   // ── Multi-stop route planning ────────────────────────────────────────────
@@ -945,6 +1009,15 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     if (index < 0 || index >= _routeStops.length) return '?';
     final m = _routeStops[index];
     return m.label.isNotEmpty ? m.label : m.type.label;
+  }
+
+  double _multiRouteStraightLineTotal() {
+    var total = 0.0;
+    for (var i = 0; i + 1 < _routeStops.length; i++) {
+      total += haversineMeters(
+          LatLng(_routeStops[i].lat, _routeStops[i].lng), LatLng(_routeStops[i + 1].lat, _routeStops[i + 1].lng));
+    }
+    return total;
   }
 
   Future<void> _calculateMultiRoute() async {
@@ -1042,6 +1115,13 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           ),
           const SizedBox(width: 8),
           InputChip(
+            label: const Text('Measure'),
+            avatar: const Icon(Icons.straighten, size: 18),
+            selected: _measuring,
+            onPressed: _toggleMeasuring,
+          ),
+          const SizedBox(width: 8),
+          InputChip(
             label: const Text('Dispatch ETA'),
             avatar: const Icon(Icons.alt_route, size: 18),
             selected: _pickingRoute,
@@ -1078,19 +1158,25 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
             onPressed: _showAddByCoordinatesDialog,
             icon: const Icon(Icons.pin_drop_outlined),
           ),
-          if (_placingType != null || _placingZone || _pickingRoute || _planningRoute) ...[
+          if (_placingType != null || _placingZone || _pickingRoute || _planningRoute || _measuring) ...[
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                _placingType != null
-                    ? 'Click the map to place ${_placingType!.label}'
-                    : _placingZone
-                        ? 'Click the map to place the zone centre'
-                        : _planningRoute
-                            ? 'Click markers in order: origin, then any stops, then destination'
-                            : _routeOriginUser == null
-                                ? 'Click a unit, then a destination marker'
-                                : 'Click a destination marker for ${_routeOriginUser!.callsign}',
+                _measuring
+                    ? (_measurePoints.isEmpty
+                        ? 'Click a point to start measuring'
+                        : _measurePoints.length == 1
+                            ? 'Click a second point to measure'
+                            : 'Click again to start a new measurement')
+                    : _placingType != null
+                        ? 'Click the map to place ${_placingType!.label}'
+                        : _placingZone
+                            ? 'Click the map to place the zone centre'
+                            : _planningRoute
+                                ? 'Click markers in order: origin, then any stops, then destination'
+                                : _routeOriginUser == null
+                                    ? 'Click a unit, then a destination marker'
+                                    : 'Click a destination marker for ${_routeOriginUser!.callsign}',
                 style: TextStyle(color: Theme.of(context).colorScheme.primary, fontStyle: FontStyle.italic),
               ),
             ),
@@ -1176,6 +1262,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     if (_navRoute != null) {
       polylines.add(Polyline(points: _navRoute!.points, color: Colors.cyanAccent, strokeWidth: 4));
     }
+    if (_measurePoints.length == 2) {
+      polylines.add(Polyline(points: _measurePoints, color: Colors.amberAccent, strokeWidth: 3));
+    }
     if (_multiRoute != null) {
       polylines.add(Polyline(points: _multiRoute!.points, color: Colors.amberAccent, strokeWidth: 4));
     }
@@ -1198,6 +1287,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 initialCenter: const LatLng(39.8283, -98.5795),
                 initialZoom: 4,
                 onTap: (_, point) {
+                  if (_measuring) { _handleMeasureClick(point); return; }
                   if (_placingZone) { _createZoneDesktop(point); return; }
                   if (_placingType == TacMarkerType.waypoint) { _placeWaypointDesktop(point); return; }
                   if (_placingType != null) { _placeMarkerDesktop(point, _placingType!); return; }
@@ -1217,11 +1307,13 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                     // RotatedOverlayImage (not OverlayImage) so filterQuality
                     // can be set -- see the matching mobile comment in
                     // tac_map.dart for why plain OverlayImage looks
-                    // blocky/blurry once zoomed in.
+                    // blocky/blurry once zoomed in. Corners come from the
+                    // overlay's own georeferencing, not bounds' NW/SW/SE --
+                    // see wildfire_overlay.dart.
                     RotatedOverlayImage(
-                      topLeftCorner: _incidentOverlay!.bounds.northWest,
-                      bottomLeftCorner: _incidentOverlay!.bounds.southWest,
-                      bottomRightCorner: _incidentOverlay!.bounds.southEast,
+                      topLeftCorner: _incidentOverlay!.topLeft,
+                      bottomLeftCorner: _incidentOverlay!.bottomLeft,
+                      bottomRightCorner: _incidentOverlay!.bottomRight,
                       imageProvider: MemoryImage(_incidentOverlay!.imageBytes!),
                       opacity: _fireMapAsBase ? 1.0 : 0.7,
                       filterQuality: FilterQuality.high,
@@ -1237,6 +1329,24 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                           ))
                       .toList()),
                 PolylineLayer(polylines: polylines),
+                if (_measurePoints.isNotEmpty)
+                  MarkerLayer(markers: [
+                    for (var i = 0; i < _measurePoints.length; i++)
+                      Marker(
+                        point: _measurePoints[i],
+                        width: 22, height: 22,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.amberAccent,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.black, width: 1.5),
+                          ),
+                          alignment: Alignment.center,
+                          child: Text('${i + 1}',
+                              style: const TextStyle(color: Colors.black, fontSize: 11, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                  ]),
                 CircleLayer(
                   circles: visibleZones
                       .map((z) => CircleMarker(
@@ -1418,6 +1528,26 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                   ]),
                 )),
               ),
+            if (_measurePoints.length == 2)
+              Positioned(
+                left: 12,
+                bottom: 12,
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.straighten),
+                      const SizedBox(width: 8),
+                      Text('Straight-line: ${formatDistance(haversineMeters(_measurePoints[0], _measurePoints[1]))}'),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        onPressed: () => setState(() => _measurePoints.clear()),
+                      ),
+                    ]),
+                  ),
+                ),
+              ),
             if (_navRoute != null && _navTarget != null && _routeOriginUser == null)
               Positioned(
                 left: 12,
@@ -1429,7 +1559,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       const Icon(Icons.alt_route),
                       const SizedBox(width: 8),
                       Text('${_navTarget!.label.isNotEmpty ? _navTarget!.label : _navTarget!.type.label} · '
-                          '${formatDistance(_navRoute!.distanceMeters)} · ${formatDuration(_navRoute!.duration)}'),
+                          '${formatDistance(_navRoute!.distanceMeters)} '
+                          '(straight: ${formatDistance(haversineMeters(_navRoute!.points.first, _navRoute!.points.last))}) '
+                          '· ${formatDuration(_navRoute!.duration)}'),
                       const SizedBox(width: 8),
                       IconButton(
                         icon: const Icon(Icons.close, size: 18),
@@ -1484,7 +1616,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Total: ${formatDistance(_multiRoute!.totalDistanceMeters)} · ${formatDuration(_multiRoute!.totalDuration)}',
+                            'Total: ${formatDistance(_multiRoute!.totalDistanceMeters)} '
+                            '(straight: ${formatDistance(_multiRouteStraightLineTotal())}) '
+                            '· ${formatDuration(_multiRoute!.totalDuration)}',
                             style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
                         ),
@@ -1499,8 +1633,12 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                           padding: const EdgeInsets.symmetric(vertical: 2),
                           child: Text(
                             '${_stopLabel(i)} → ${_stopLabel(i + 1)}: '
-                            '${formatDistance(_multiRoute!.legs[i].distanceMeters)} · '
-                            '${formatDuration(_multiRoute!.legs[i].duration)}',
+                            '${formatDistance(_multiRoute!.legs[i].distanceMeters)} '
+                            '(straight: ${formatDistance(haversineMeters(
+                              LatLng(_routeStops[i].lat, _routeStops[i].lng),
+                              LatLng(_routeStops[i + 1].lat, _routeStops[i + 1].lng),
+                            ))}) '
+                            '· ${formatDuration(_multiRoute!.legs[i].duration)}',
                             style: const TextStyle(fontSize: 12),
                           ),
                         ),
@@ -1598,6 +1736,8 @@ class _UserMarker extends StatelessWidget {
                 teamColor: teamColor,
                 deploymentStatus: deploymentStatus,
                 assignedBy: 'Command Console',
+                lat: user.lat,
+                lng: user.lng,
               ),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(

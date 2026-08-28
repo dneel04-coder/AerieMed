@@ -27,10 +27,20 @@ workflows:
             --type IOS_APP_STORE \
             --certificate-key @env:CERTIFICATE_PRIVATE_KEY \
             --create
+          app-store-connect fetch-signing-files \
+            com.peninsulathreat.resqruck.widget \
+            --type IOS_APP_STORE \
+            --certificate-key @env:CERTIFICATE_PRIVATE_KEY \
+            --create
           keychain add-certificates
 
       - name: Flutter packages
         script: flutter pub get
+
+      - name: Add home-screen widget extension target
+        script: |
+          gem install xcodeproj --no-document
+          cd ios && ruby add_widget_extension.rb
 
       - name: CocoaPods install
         script: cd ios && pod install

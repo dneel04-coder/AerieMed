@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show SocketException;
+import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
@@ -124,8 +125,26 @@ class OsrmRoutingService {
   }
 }
 
-String formatDistance(double meters) =>
-    meters >= 1000 ? '${(meters / 1000).toStringAsFixed(1)} km' : '${meters.round()} m';
+String formatDistance(double meters) {
+  final feet = meters * 3.28084;
+  if (feet >= 528) return '${(feet / 5280).toStringAsFixed(1)} mi';
+  return '${feet.round()} ft';
+}
+
+/// Great-circle ("as the crow flies") distance between two points, in
+/// meters -- the road/trail route from OsrmRoutingService is almost always
+/// longer than this, and knowing both matters in the field (e.g. judging
+/// how much a route detours around terrain).
+double haversineMeters(LatLng a, LatLng b) {
+  const earthRadiusM = 6371000.0;
+  final dLat = (b.latitude - a.latitude) * pi / 180.0;
+  final dLon = (b.longitude - a.longitude) * pi / 180.0;
+  final lat1 = a.latitude * pi / 180.0;
+  final lat2 = b.latitude * pi / 180.0;
+  final h = sin(dLat / 2) * sin(dLat / 2) +
+      cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2);
+  return 2 * earthRadiusM * asin(min(1.0, sqrt(h)));
+}
 
 String formatDuration(Duration d) =>
     d.inHours > 0 ? '${d.inHours}h ${d.inMinutes % 60}m' : '${d.inMinutes} min';

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:in_app_update/in_app_update.dart';
@@ -28,6 +29,8 @@ import 'backcountry_guide.dart';
 import 'rems_checklist.dart';
 import 'push_notification_service.dart';
 import 'ics206wf_form.dart';
+import 'package:home_widget/home_widget.dart';
+import 'home_widget_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -192,6 +195,7 @@ class _MainShellState extends State<MainShell> {
   RealtimeChannel? _alertChannel;
   RealtimeChannel? _missionChannel;
   bool _showingMissionPrompt = false;
+  StreamSubscription<Uri?>? _widgetClickSub;
 
   @override
   void initState() {
@@ -214,7 +218,35 @@ class _MainShellState extends State<MainShell> {
       _checkPendingMissionAssignment();
       _subscribeMissionAssignments();
       _initPushNotifications();
+      _initHomeWidget();
     });
+  }
+
+  // ── Home-screen widget: periodic snapshot refresh + tap-to-route ─────────
+
+  Future<void> _initHomeWidget() async {
+    await HomeWidgetService.instance.init();
+    final initialUri = await HomeWidget.initiallyLaunchedFromHomeWidget();
+    _routeFromWidget(initialUri);
+    _widgetClickSub = HomeWidget.widgetClicked.listen(_routeFromWidget);
+  }
+
+  void _routeFromWidget(Uri? uri) {
+    final route = HomeWidgetService.routeFor(uri);
+    if (route == null || !mounted) return;
+    switch (route) {
+      case WidgetRoute.protocols:
+        Navigator.push(context, MaterialPageRoute(
+            builder: (_) => TableOfContentsScreen(
+                onThemeToggle: widget.onThemeToggle, onLogout: widget.onLogout, protocolsOnly: true)));
+        break;
+      case WidgetRoute.eightLine:
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const Ics206WfFormScreen()));
+        break;
+      case WidgetRoute.map:
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const TacMapScreen()));
+        break;
+    }
   }
 
   Future<void> _showPaywall() async {
@@ -229,6 +261,8 @@ class _MainShellState extends State<MainShell> {
   void dispose() {
     _alertChannel?.unsubscribe();
     _missionChannel?.unsubscribe();
+    _widgetClickSub?.cancel();
+    HomeWidgetService.instance.dispose();
     super.dispose();
   }
 

@@ -245,6 +245,8 @@ Future<void> showPersonnelInfoSheet(
   String? deploymentStatus,
   String assignedBy = '',
   VoidCallback? onNavigate,
+  double? lat,
+  double? lng,
 }) {
   return showModalBottomSheet(
     context: context,
@@ -259,6 +261,8 @@ Future<void> showPersonnelInfoSheet(
       deploymentStatus: deploymentStatus,
       assignedBy: assignedBy,
       onNavigate: onNavigate,
+      lat: lat,
+      lng: lng,
     ),
   );
 }
@@ -272,6 +276,8 @@ class _PersonnelInfoSheet extends StatefulWidget {
   final String? deploymentStatus;
   final String assignedBy;
   final VoidCallback? onNavigate;
+  final double? lat;
+  final double? lng;
 
   const _PersonnelInfoSheet({
     required this.userId,
@@ -282,6 +288,8 @@ class _PersonnelInfoSheet extends StatefulWidget {
     this.deploymentStatus,
     this.assignedBy = '',
     this.onNavigate,
+    this.lat,
+    this.lng,
   });
 
   @override
@@ -385,6 +393,25 @@ class _PersonnelInfoSheetState extends State<_PersonnelInfoSheet> {
               ]),
             ),
           ]),
+          if (widget.lat != null && widget.lng != null) ...[
+            const SizedBox(height: 10),
+            GestureDetector(
+              onTap: () {
+                final text = '${widget.lat!.toStringAsFixed(5)}, ${widget.lng!.toStringAsFixed(5)}';
+                Clipboard.setData(ClipboardData(text: text));
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(const SnackBar(content: Text('Location copied'), duration: Duration(seconds: 1)));
+              },
+              child: Row(children: [
+                Icon(Icons.my_location, size: 14, color: Colors.grey[600]),
+                const SizedBox(width: 6),
+                Text('${widget.lat!.toStringAsFixed(5)}, ${widget.lng!.toStringAsFixed(5)}',
+                    style: TextStyle(color: Colors.grey[600], fontFamily: 'monospace', fontSize: 12)),
+                const SizedBox(width: 6),
+                Icon(Icons.copy, size: 14, color: Colors.grey[400]),
+              ]),
+            ),
+          ],
           const SizedBox(height: 16),
           Text('Assigned Assets', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 8),
@@ -1931,6 +1958,12 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
   Set<TacMarkerType> _hiddenMarkerTypes = {};
   Set<String> _hiddenZoneTypes = {};
 
+  // Measure distance — tap two points on the map for a straight-line
+  // distance readout, independent of the road-routing "Navigate"/"Plan
+  // Route" tools above.
+  bool _measuring = false;
+  final List<LatLng> _measurePoints = [];
+
   // Navigation — road route + ETA from current GPS position to a tapped marker
   RouteResult? _navRoute;
   String? _navTargetLabel;
@@ -2920,7 +2953,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
 
   // ── Zones ─────────────────────────────────────────────────────────────────
   void _startZonePlacement() {
-    setState(() => _placingZone = true);
+    setState(() { _placingZone = true; _measuring = false; _measurePoints.clear(); });
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
       content: Text('Tap the map to place zone centre'),
       duration: Duration(seconds: 5),
@@ -3334,6 +3367,8 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             deploymentStatus: _deploymentStatusByUser[user.id],
             assignedBy: _callsign,
             onNavigate: isMe ? null : () => _navigateToPoint(LatLng(user.lat, user.lng), user.callsign),
+            lat: user.lat,
+            lng: user.lng,
           );
       markers.add(Marker(
         point: LatLng(user.lat, user.lng),
@@ -3528,6 +3563,7 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No GPS fix yet')));
       return;
     }
+    setState(() { _measuring = false; _measurePoints.clear(); });
     setState(() => _isRouting = true);
     try {
       final result = await OsrmRoutingService.route(_myLocation!, point);
@@ -3556,6 +3592,32 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
       _planningRoute = !_planningRoute;
       if (!_planningRoute) _routeStops.clear();
       _multiRoute = null;
+      if (_planningRoute) { _measuring = false; _measurePoints.clear(); }
+    });
+  }
+
+  void _toggleMeasuring() {
+    setState(() {
+      _measuring = !_measuring;
+      _measurePoints.clear();
+      if (_measuring) {
+        // Only one full-screen tap-catching tool -- and one bottom banner --
+        // active at a time.
+        _placingType = null;
+        _placingZone = false;
+        _planningRoute = false;
+        _routeStops.clear();
+        _multiRoute = null;
+        _navRoute = null;
+        _navTargetLabel = null;
+      }
+    });
+  }
+
+  void _handleMeasureTap(LatLng point) {
+    setState(() {
+      if (_measurePoints.length >= 2) _measurePoints.clear();
+      _measurePoints.add(point);
     });
   }
 
@@ -3600,6 +3662,15 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     return m.label.isNotEmpty ? m.label : m.type.label;
   }
 
+  double _multiRouteStraightLineTotal() {
+    var total = 0.0;
+    for (var i = 0; i + 1 < _routeStops.length; i++) {
+      total += haversineMeters(
+          LatLng(_routeStops[i].lat, _routeStops[i].lng), LatLng(_routeStops[i + 1].lat, _routeStops[i + 1].lng));
+    }
+    return total;
+  }
+
   void _showMarkerInfo(TacMarker m) {
     showModalBottomSheet(
       context: context,
@@ -3616,6 +3687,23 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             if (m.label.isNotEmpty) Text(m.label, style: const TextStyle(fontSize: 14)),
             Text('Placed by ${m.placedBy}', style: TextStyle(color: Colors.grey[600])),
             Text('Reported ${formatMarkerTimestamp(m.createdAt)}', style: TextStyle(color: Colors.grey[600])),
+            const SizedBox(height: 8),
+            GestureDetector(
+              onTap: () {
+                final text = '${m.lat.toStringAsFixed(5)}, ${m.lng.toStringAsFixed(5)}';
+                Clipboard.setData(ClipboardData(text: text));
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(const SnackBar(content: Text('Location copied'), duration: Duration(seconds: 1)));
+              },
+              child: Row(children: [
+                Icon(Icons.my_location, size: 14, color: Colors.grey[600]),
+                const SizedBox(width: 6),
+                Text('${m.lat.toStringAsFixed(5)}, ${m.lng.toStringAsFixed(5)}',
+                    style: TextStyle(color: Colors.grey[600], fontFamily: 'monospace', fontSize: 12)),
+                const SizedBox(width: 6),
+                Icon(Icons.copy, size: 14, color: Colors.grey[400]),
+              ]),
+            ),
             const SizedBox(height: 16),
             Row(children: [
               Expanded(
@@ -3679,6 +3767,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
     }
     if (_navRoute != null) {
       polylines.add(Polyline(points: _navRoute!.points, color: Colors.cyanAccent, strokeWidth: 4));
+    }
+    if (_measurePoints.length == 2) {
+      polylines.add(Polyline(points: _measurePoints, color: Colors.amberAccent, strokeWidth: 3));
     }
     if (_multiRoute != null) {
       polylines.add(Polyline(points: _multiRoute!.points, color: Colors.amberAccent, strokeWidth: 4));
@@ -3749,13 +3840,14 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   // can be set -- plain OverlayImage always renders with
                   // Flutter's default low-quality bilinear filtering, which
                   // looks blocky/blurry once zoomed in past the source
-                  // image's native resolution. Corners set to the bounds'
-                  // NW/SW/SE produce an unrotated rectangle identical to
-                  // what OverlayImage would draw.
+                  // image's native resolution. Corners come from the
+                  // overlay's own georeferencing (not bounds' NW/SW/SE),
+                  // since many wildfire.gov products are rotated relative
+                  // to true north -- see wildfire_overlay.dart.
                   RotatedOverlayImage(
-                    topLeftCorner: _incidentOverlay!.bounds.northWest,
-                    bottomLeftCorner: _incidentOverlay!.bounds.southWest,
-                    bottomRightCorner: _incidentOverlay!.bounds.southEast,
+                    topLeftCorner: _incidentOverlay!.topLeft,
+                    bottomLeftCorner: _incidentOverlay!.bottomLeft,
+                    bottomRightCorner: _incidentOverlay!.bottomRight,
                     imageProvider: MemoryImage(_incidentOverlay!.imageBytes!),
                     opacity: _fireMapAsBase ? 1.0 : 0.7,
                     filterQuality: FilterQuality.high,
@@ -3772,6 +3864,24 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                         ))
                     .toList()),
               PolylineLayer(polylines: polylines),
+              if (_measurePoints.isNotEmpty)
+                MarkerLayer(markers: [
+                  for (var i = 0; i < _measurePoints.length; i++)
+                    Marker(
+                      point: _measurePoints[i],
+                      width: 22, height: 22,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.amberAccent,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.black, width: 1.5),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text('${i + 1}',
+                            style: const TextStyle(color: Colors.black, fontSize: 11, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                ]),
               if (zoneCircles.isNotEmpty) CircleLayer(circles: zoneCircles),
               if (_showTakLayer && _takPositions.isNotEmpty)
                 MarkerLayer(markers: _buildTakMarkers()),
@@ -3821,7 +3931,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '$_navTargetLabel · ${formatDistance(_navRoute!.distanceMeters)} · ${formatDuration(_navRoute!.duration)}',
+                        '$_navTargetLabel · ${formatDistance(_navRoute!.distanceMeters)} '
+                        '(straight: ${formatDistance(haversineMeters(_navRoute!.points.first, _navRoute!.points.last))}) '
+                        '· ${formatDuration(_navRoute!.duration)}',
                         style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -3885,7 +3997,9 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Total: ${formatDistance(_multiRoute!.totalDistanceMeters)} · ${formatDuration(_multiRoute!.totalDuration)}',
+                          'Total: ${formatDistance(_multiRoute!.totalDistanceMeters)} '
+                          '(straight: ${formatDistance(_multiRouteStraightLineTotal())}) '
+                          '· ${formatDuration(_multiRoute!.totalDuration)}',
                           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
                         ),
                       ),
@@ -3900,8 +4014,12 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 2),
                         child: Text(
                           '${_stopLabel(i)} → ${_stopLabel(i + 1)}: '
-                          '${formatDistance(_multiRoute!.legs[i].distanceMeters)} · '
-                          '${formatDuration(_multiRoute!.legs[i].duration)}',
+                          '${formatDistance(_multiRoute!.legs[i].distanceMeters)} '
+                          '(straight: ${formatDistance(haversineMeters(
+                            LatLng(_routeStops[i].lat, _routeStops[i].lng),
+                            LatLng(_routeStops[i + 1].lat, _routeStops[i + 1].lng),
+                          ))}) '
+                          '· ${formatDuration(_multiRoute!.legs[i].duration)}',
                           style: const TextStyle(color: Colors.white70, fontSize: 12),
                         ),
                       ),
@@ -4096,6 +4214,12 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               _atakBtn(Icons.alt_route, bg,
                   _planningRoute || _multiRoute != null ? Colors.amberAccent : Colors.white54,
                   _toggleRoutePlanning),
+              const SizedBox(height: 1),
+              // Measure straight-line distance between any two tapped points
+              // -- independent of road routing above.
+              _atakBtn(Icons.straighten, bg,
+                  _measuring ? Colors.amberAccent : Colors.white54,
+                  _toggleMeasuring),
               const SizedBox(height: 6),
               // Mission filter
               _atakBtn(Icons.filter_list, bg,
@@ -4211,6 +4335,64 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
               ),
             ),
 
+          // ── Measure-distance overlay ─────────────────────────────────────
+          // Transparent (not darkened) so the user can still see the map to
+          // pick precise points -- unlike the marker/zone placement overlays
+          // above, which obscure the map because a rough tap is fine there.
+          if (_measuring)
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (d) {
+                  if (!_mapReady) return;
+                  _handleMeasureTap(_mapCtrl.camera.pointToLatLng(
+                      Point(d.localPosition.dx, d.localPosition.dy)));
+                },
+              ),
+            ),
+          if (_measuring && _measurePoints.isNotEmpty)
+            Positioned(
+              top: _sosBannerHeight + 8, left: 12, right: 12,
+              child: IgnorePointer(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(8)),
+                  child: Text(
+                    _measurePoints.length == 1
+                        ? 'Tap a second point to measure'
+                        : 'Tap again to start a new measurement',
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+            ),
+          if (_measurePoints.length == 2)
+            Positioned(
+              left: 12, right: 56, bottom: _bottomChromeHeight + 8,
+              child: Material(
+                color: bg, borderRadius: BorderRadius.circular(8), elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  child: Row(children: [
+                    const Icon(Icons.straighten, color: Colors.amberAccent, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Straight-line: ${formatDistance(haversineMeters(_measurePoints[0], _measurePoints[1]))}',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white70, size: 18),
+                      onPressed: () => setState(() => _measurePoints.clear()),
+                    ),
+                  ]),
+                ),
+              ),
+            ),
+
           // ── Bottom: TEAM panel + coordinate bar ─────────────────────────
           Positioned(
             bottom: 0, left: 0, right: 0,
@@ -4225,8 +4407,10 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                   isAdmin: _isAdmin,
                   filterMission: _filterMission,
                   placingType: _placingType,
-                  onPlaceType: (t) =>
-                      setState(() => _placingType = _placingType == t ? null : t),
+                  onPlaceType: (t) => setState(() {
+                    _placingType = _placingType == t ? null : t;
+                    if (_placingType != null) { _measuring = false; _measurePoints.clear(); }
+                  }),
                   onKickUser: (id) async {
                     try { await _supabase.from('tac_users').delete().eq('id', id); }
                     catch (_) {}
