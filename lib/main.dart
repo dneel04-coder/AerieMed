@@ -225,10 +225,18 @@ class _MainShellState extends State<MainShell> {
   // ── Home-screen widget: periodic snapshot refresh + tap-to-route ─────────
 
   Future<void> _initHomeWidget() async {
-    await HomeWidgetService.instance.init();
-    final initialUri = await HomeWidget.initiallyLaunchedFromHomeWidget();
-    _routeFromWidget(initialUri);
-    _widgetClickSub = HomeWidget.widgetClicked.listen(_routeFromWidget);
+    // This feature must never be able to take the whole app down -- any
+    // platform-channel hiccup here (plugin registration, permissions, a
+    // stale native build) is swallowed rather than left to become an
+    // uncaught Future error.
+    try {
+      await HomeWidgetService.instance.init();
+      final initialUri = await HomeWidget.initiallyLaunchedFromHomeWidget();
+      _routeFromWidget(initialUri);
+      _widgetClickSub = HomeWidget.widgetClicked.listen(_routeFromWidget, onError: (_) {});
+    } catch (e) {
+      debugPrint('_initHomeWidget failed (non-fatal): $e');
+    }
   }
 
   void _routeFromWidget(Uri? uri) {

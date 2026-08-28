@@ -1,7 +1,7 @@
 name: resqruck
 description: ResQruck - Field Medical Protocols
 publish_to: 'none'
-version: 1.0.2+129
+version: 1.0.2+130
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -39,7 +39,7 @@ dependencies:
   firebase_core: ^4.13.0
   firebase_messaging: ^16.5.0
   mgrs_dart: ^2.0.0
-  home_widget: ^0.7.0
+  home_widget: ^0.9.3
   path_provider_foundation: ^2.4.0
 
 # pdfrx 2.4.0 transitively allows pdfrx_engine down to a version with a real
