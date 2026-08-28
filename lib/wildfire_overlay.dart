@@ -251,11 +251,16 @@ class GeoPdfGeoref {
   final LatLng topLeft;
   final LatLng bottomLeft;
   final LatLng bottomRight;
+  // [x0, y0, x1, y1] in PDF points (bottom-left origin) of the specific
+  // Viewport this georeferencing came from, when one was found -- null means
+  // the whole rendered page should be used as-is (no per-frame crop needed).
+  final List<double>? pageBBox;
   const GeoPdfGeoref({
     required this.bounds,
     required this.topLeft,
     required this.bottomLeft,
     required this.bottomRight,
+    this.pageBBox,
   });
 }
 
@@ -263,12 +268,26 @@ class GeoPdfGeoref {
 /// arrays. Returns null if no georeferencing data is found.
 ///
 /// /GPTS gives the lat/lng of each ground-control point; /LPTS gives that
-/// same point's position on the page as a 0..1 fraction (PDF's bottom-left
-/// origin). Many wildfire.gov GeoPDFs are NOT north-up, so collapsing GPTS
-/// to a min/max axis-aligned box (the old behavior) and rendering it as an
-/// unrotated rectangle lines up at the center but drifts toward the edges.
-/// Pairing GPTS with LPTS recovers the true (possibly rotated) quadrilateral
-/// -- falling back to the unrotated box when LPTS is missing/mismatched.
+/// same point's position within its Viewport's own on-page rectangle as a
+/// 0..1 fraction (PDF's bottom-left origin). Many wildfire.gov GeoPDFs are
+/// NOT north-up, so collapsing GPTS to a min/max axis-aligned box (the old
+/// behavior) and rendering it as an unrotated rectangle lines up at the
+/// center but drifts toward the edges. Pairing GPTS with LPTS recovers the
+/// true (possibly rotated) quadrilateral -- falling back to the unrotated
+/// box when LPTS is missing/mismatched.
+///
+/// A single page commonly carries MULTIPLE Viewport dictionaries -- e.g. a
+/// wildfire.gov Division/IAP map's main tactical map plus a small locator
+////vicinity inset in a corner, each with its own /BBox (on-page rectangle)
+/// and its own /Measure/GPTS. Picking the wrong one, or ignoring /BBox
+/// entirely and treating the whole page as if it were one frame, silently
+/// stretches the image across the wrong geographic extent -- the symptom is
+/// roads/terrain drifting out of alignment with the base map, worse on
+/// whichever axis has more title/legend/margin space outside the real map
+/// frame. Confirmed against a real wildfire.gov product (RoweCreekComplex
+/// DIV P map, 2026-08-28): the main map frame's BBox covered 2520x3042pt of
+/// a 2592x3456pt page -- stretching the full page over just that frame's
+/// GPTS bounds was ~3% too wide and ~14% too tall.
 GeoPdfGeoref? parseGeoPdfGeoref(Uint8List pdfBytes) {
   // Scan printable-ASCII portion of the PDF bytes for the /GPTS key.
   // Binary sections are replaced with spaces so the regex can't cross them.
@@ -278,18 +297,57 @@ GeoPdfGeoref? parseGeoPdfGeoref(Uint8List pdfBytes) {
   }
   final str = sb.toString();
 
-  final gptsMatch = RegExp(r'/GPTS\s*\[\s*([\d\s.\-]+)\s*\]').firstMatch(str);
-  if (gptsMatch == null) return null;
+  // A Viewport dictionary lays out as
+  // <</BBox[...]/Measure<<.../GPTS[...]/LPTS[...]/Subtype/GEO.../Type/Measure>>/Type/Viewport>>
+  // -- exactly one Measure block (and so exactly one GPTS/LPTS pair) sits
+  // between a given /BBox and the next one, so a non-greedy match pairs each
+  // triple correctly even with several Viewports back-to-back in the array.
+  final vpRe = RegExp(
+    r'/BBox\s*\[\s*([\d.\-\s]+?)\s*\][\s\S]*?/GPTS\s*\[\s*([\d.\-\s]+?)\s*\][\s\S]*?/LPTS\s*\[\s*([\d.\-\s]+?)\s*\]',
+  );
 
-  final gptsNums = gptsMatch
-      .group(1)!
-      .trim()
-      .split(RegExp(r'\s+'))
-      .map(double.tryParse)
-      .whereType<double>()
-      .toList();
+  List<double>? bestBBox;
+  List<double>? bestGpts;
+  List<double>? bestLpts;
+  var bestArea = -1.0;
+  for (final m in vpRe.allMatches(str)) {
+    final bbox = m.group(1)!.trim().split(RegExp(r'\s+')).map(double.tryParse).whereType<double>().toList();
+    final gpts = m.group(2)!.trim().split(RegExp(r'\s+')).map(double.tryParse).whereType<double>().toList();
+    final lpts = m.group(3)!.trim().split(RegExp(r'\s+')).map(double.tryParse).whereType<double>().toList();
+    if (bbox.length != 4 || gpts.length < 8 || lpts.length != gpts.length) continue;
+    // The main map frame is always the largest on-page rectangle -- locator
+    // /vicinity insets are, by convention, much smaller than the map they
+    // accompany.
+    final area = (bbox[2] - bbox[0]).abs() * (bbox[3] - bbox[1]).abs();
+    if (area > bestArea) {
+      bestArea = area;
+      bestBBox = bbox;
+      bestGpts = gpts;
+      bestLpts = lpts;
+    }
+  }
 
-  if (gptsNums.length < 8) return null;
+  List<double> gptsNums;
+  List<double>? lptsNums;
+  final pageBBox = bestBBox;
+
+  if (bestGpts != null) {
+    gptsNums = bestGpts;
+    lptsNums = bestLpts;
+  } else {
+    // Fall back to a bare top-level /GPTS (+ optional /LPTS) for files that
+    // don't expose a plain-text /BBox/Viewport structure (e.g. the geospatial
+    // metadata sits inside a compressed object stream this raw-byte scan
+    // can't see into) -- no per-frame cropping is possible in that case.
+    final gptsMatch = RegExp(r'/GPTS\s*\[\s*([\d\s.\-]+)\s*\]').firstMatch(str);
+    if (gptsMatch == null) return null;
+    gptsNums = gptsMatch.group(1)!.trim().split(RegExp(r'\s+')).map(double.tryParse).whereType<double>().toList();
+    if (gptsNums.length < 8) return null;
+    final lptsMatch = RegExp(r'/LPTS\s*\[\s*([\d\s.\-]+)\s*\]').firstMatch(str);
+    lptsNums = lptsMatch != null
+        ? lptsMatch.group(1)!.trim().split(RegExp(r'\s+')).map(double.tryParse).whereType<double>().toList()
+        : null;
+  }
 
   // GPTS pairs are (lat, lng) for each ground-control point.
   final geoPoints = <LatLng>[];
@@ -307,45 +365,37 @@ GeoPdfGeoref? parseGeoPdfGeoref(Uint8List pdfBytes) {
   if (south < -90 || north > 90 || west < -180 || east > 180) return null;
   final bounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
 
-  final lptsMatch = RegExp(r'/LPTS\s*\[\s*([\d\s.\-]+)\s*\]').firstMatch(str);
-  if (lptsMatch != null) {
-    final lptsNums = lptsMatch
-        .group(1)!
-        .trim()
-        .split(RegExp(r'\s+'))
-        .map(double.tryParse)
-        .whereType<double>()
-        .toList();
-    if (lptsNums.length == gptsNums.length) {
-      final pagePoints = <(double, double)>[];
-      for (var i = 0; i + 1 < lptsNums.length; i += 2) {
-        pagePoints.add((lptsNums[i], lptsNums[i + 1]));
-      }
-      // Nearest ground-control point (in page-fraction space) to each of
-      // the three corners RotatedOverlayImage needs: top-left=(0,1),
-      // bottom-left=(0,0), bottom-right=(1,0) -- PDF's y axis runs bottom-up.
-      LatLng nearestTo(double tx, double ty) {
-        var bestIdx = 0;
-        var bestDist = double.infinity;
-        for (var i = 0; i < pagePoints.length && i < geoPoints.length; i++) {
-          final dx = pagePoints[i].$1 - tx;
-          final dy = pagePoints[i].$2 - ty;
-          final d = dx * dx + dy * dy;
-          if (d < bestDist) { bestDist = d; bestIdx = i; }
-        }
-        return geoPoints[bestIdx];
-      }
-      return GeoPdfGeoref(
-        bounds: bounds,
-        topLeft: nearestTo(0, 1),
-        bottomLeft: nearestTo(0, 0),
-        bottomRight: nearestTo(1, 0),
-      );
+  if (lptsNums != null && lptsNums.length == gptsNums.length) {
+    final pagePoints = <(double, double)>[];
+    for (var i = 0; i + 1 < lptsNums.length; i += 2) {
+      pagePoints.add((lptsNums[i], lptsNums[i + 1]));
     }
+    // Nearest ground-control point (in frame-fraction space) to each of
+    // the three corners RotatedOverlayImage needs: top-left=(0,1),
+    // bottom-left=(0,0), bottom-right=(1,0) -- PDF's y axis runs bottom-up.
+    LatLng nearestTo(double tx, double ty) {
+      var bestIdx = 0;
+      var bestDist = double.infinity;
+      for (var i = 0; i < pagePoints.length && i < geoPoints.length; i++) {
+        final dx = pagePoints[i].$1 - tx;
+        final dy = pagePoints[i].$2 - ty;
+        final d = dx * dx + dy * dy;
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      return geoPoints[bestIdx];
+    }
+    return GeoPdfGeoref(
+      bounds: bounds,
+      topLeft: nearestTo(0, 1),
+      bottomLeft: nearestTo(0, 0),
+      bottomRight: nearestTo(1, 0),
+      pageBBox: pageBBox,
+    );
   }
 
   return GeoPdfGeoref(
     bounds: bounds, topLeft: bounds.northWest, bottomLeft: bounds.southWest, bottomRight: bounds.southEast,
+    pageBBox: pageBBox,
   );
 }
 
@@ -391,11 +441,38 @@ Future<IncidentOverlay> loadWildfirePdf(String url, String name) async {
   // BGRA pixels → dart:ui Image → PNG bytes
   final uiImage = await pdfImage.createImage();
   pdfImage.dispose();
-  doc.dispose();
   final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.png);
   uiImage.dispose();
-  if (byteData == null) throw Exception('Failed to encode PDF as PNG.');
-  final pngBytes = byteData.buffer.asUint8List();
+  if (byteData == null) {
+    doc.dispose();
+    throw Exception('Failed to encode PDF as PNG.');
+  }
+  var pngBytes = byteData.buffer.asUint8List();
+
+  // If georeferencing came from a specific Viewport's own on-page BBox
+  // rather than the whole page, crop the rendered raster down to just that
+  // rectangle. Otherwise the image -- which also includes title blocks,
+  // legends, and any locator/vicinity inset outside the main map frame --
+  // gets stretched across the main frame's geographic bounds, throwing off
+  // the scale on whichever axis has more margin (see parseGeoPdfGeoref).
+  final bbox = georef.pageBBox;
+  if (bbox != null) {
+    final decoded = img.decodeImage(pngBytes);
+    if (decoded != null) {
+      final x0 = (bbox[0] * scale).round().clamp(0, decoded.width);
+      final x1 = (bbox[2] * scale).round().clamp(0, decoded.width);
+      // PDF points are bottom-up; image pixels are top-down.
+      final y0 = ((page.height - bbox[3]) * scale).round().clamp(0, decoded.height);
+      final y1 = ((page.height - bbox[1]) * scale).round().clamp(0, decoded.height);
+      final w = x1 - x0;
+      final h = y1 - y0;
+      if (w > 0 && h > 0) {
+        final cropped = img.copyCrop(decoded, x: x0, y: y0, width: w, height: h);
+        pngBytes = Uint8List.fromList(img.encodePng(cropped));
+      }
+    }
+  }
+  doc.dispose();
 
   return IncidentOverlay(
     name: name, imageBytes: pngBytes, bounds: georef.bounds, polygons: const [],
