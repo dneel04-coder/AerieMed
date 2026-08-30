@@ -92,7 +92,7 @@ Future<Uint8List> buildShiftTicketPdf(ShiftTicketData f) async {
       footer: (ctx) => pw.Row(children: [
         pw.Text('ResQruck', style: _sSmall),
         pw.Spacer(),
-        pw.Text('OPTIONAL FORM 297 (REV. 5/2024) — USDA/USDI', style: _sSmall),
+        pw.Text('OPTIONAL FORM 297 (REV. 5/2024) - USDA/USDI', style: _sSmall),
       ]),
       build: (_) => _buildContent(f),
     ),
@@ -164,7 +164,7 @@ List<pw.Widget> _buildContent(ShiftTicketData f) {
     _personnelTable(f.personnelRows),
 
     pw.SizedBox(height: 10),
-    pw.Text('Remarks — equipment breakdown, operating issues, or other information:', style: _sTableHeader),
+    pw.Text('Remarks - equipment breakdown, operating issues, or other information:', style: _sTableHeader),
     pw.SizedBox(height: 3),
     pw.Container(
       width: double.infinity,
@@ -210,10 +210,13 @@ pw.Widget _checkboxLabel(String label, bool checked) => pw.Row(
 
 /// A row of bordered grid cells (label above value), each already sized via
 /// its own [_cell] flex -- mirrors the paper form's numbered boxed fields.
-pw.Widget _gridRow(List<pw.Widget> cells) => pw.Row(
-      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-      children: cells,
-    );
+/// Note: no CrossAxisAlignment.stretch here -- this package's Row computes
+/// unbounded cross-axis (height) for stretch when used inside a MultiPage's
+/// vertically-flowing content, which throws ("height Infinity exceeds a
+/// page height"). Cells with uneven content just end up mismatched by a
+/// couple points instead, which is a fine trade for not crashing PDF
+/// generation.
+pw.Widget _gridRow(List<pw.Widget> cells) => pw.Row(children: cells);
 
 pw.Widget _cell(String label, String value, {int flex = 1}) => pw.Expanded(
       flex: flex,
