@@ -3574,6 +3574,39 @@ do \$\$ begin
     for all using (true) with check (true);
 exception when others then null;
 end \$\$;
+
+-- ── Shift Tickets (transmitted, for the Command Console's archive) ────────────
+
+create table if not exists shift_tickets (
+  id uuid default gen_random_uuid() primary key,
+  incident_name text default '',
+  agreement_number text default '',
+  resource_order_number text default '',
+  equipment_make_model text default '',
+  recipient_email text default '',
+  subject text default '',
+  file_path text not null default '',
+  file_name text not null default '',
+  sent_at timestamptz default now(),
+  sent_by text default ''
+);
+
+alter table shift_tickets enable row level security;
+
+do \$\$ begin
+  create policy "public_access" on shift_tickets
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+
+insert into storage.buckets (id, name, public)
+  values ('shift_tickets', 'shift_tickets', true)
+  on conflict (id) do nothing;
+
+do \$\$ begin
+  create policy "public_shift_tickets" on storage.objects
+    for all using (bucket_id = 'shift_tickets')
+    with check (bucket_id = 'shift_tickets');
+exception when duplicate_object then null; end \$\$;
 ''';
 
 

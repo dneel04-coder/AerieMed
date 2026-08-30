@@ -1,9 +1,11 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'shift_ticket_pdf.dart';
 import 'form_email_service.dart';
+import 'shift_ticket_record_service.dart';
 
 const _kAgreementNumberKey = 'shift_ticket_agreement_number';
 const _kContractorAgencyNameKey = 'shift_ticket_contractor_agency_name';
@@ -222,13 +224,27 @@ class _ShiftTicketFormScreenState extends State<ShiftTicketFormScreen> {
   Future<void> _email() async {
     FocusManager.instance.primaryFocus?.unfocus();
     await _saveStickyFields();
-    final bytes = await buildShiftTicketPdf(_compile());
+    final data = _compile();
+    final bytes = await buildShiftTicketPdf(data);
+    final filename = '${_filename()}.pdf';
     if (!mounted) return;
     await showEmailFormDialog(
       context,
       pdfBytes: bytes,
-      filename: '${_filename()}.pdf',
+      filename: filename,
       subject: 'Shift Ticket — ${_incidentName.text.trim().isEmpty ? 'ResQruck' : _incidentName.text.trim()}',
+      onSent: (recipientEmail, subject) async {
+        final prefs = await SharedPreferences.getInstance();
+        final sentBy = prefs.getString('tac_callsign') ?? '';
+        await recordAndUploadShiftTicket(
+          pdfBytes: bytes,
+          fileName: filename,
+          data: data,
+          recipientEmail: recipientEmail,
+          subject: subject,
+          sentBy: sentBy,
+        );
+      },
     );
   }
 
@@ -289,6 +305,9 @@ class _ShiftTicketFormScreenState extends State<ShiftTicketFormScreen> {
                 Row(children: [
                   Expanded(child: _tf('Date', _equipmentRows[i]['date']!)),
                   const SizedBox(width: 8),
+                  // Not a time field: block 14 says these record miles OR
+                  // hours (odometer/hour-meter reading), per the Miles/Hours
+                  // toggle above -- unlike the Personnel table's Start/Stop.
                   Expanded(child: _tf('Start', _equipmentRows[i]['start']!)),
                   const SizedBox(width: 8),
                   Expanded(child: _tf('Stop', _equipmentRows[i]['stop']!)),
@@ -318,13 +337,13 @@ class _ShiftTicketFormScreenState extends State<ShiftTicketFormScreen> {
                 ]),
                 const SizedBox(height: 8),
                 Row(children: [
-                  Expanded(child: _tf('Start', _personnelRows[i]['start1']!)),
+                  Expanded(child: _timeField('Start', _personnelRows[i]['start1']!)),
                   const SizedBox(width: 8),
-                  Expanded(child: _tf('Stop', _personnelRows[i]['stop1']!)),
+                  Expanded(child: _timeField('Stop', _personnelRows[i]['stop1']!)),
                   const SizedBox(width: 8),
-                  Expanded(child: _tf('Start', _personnelRows[i]['start2']!)),
+                  Expanded(child: _timeField('Start', _personnelRows[i]['start2']!)),
                   const SizedBox(width: 8),
-                  Expanded(child: _tf('Stop', _personnelRows[i]['stop2']!)),
+                  Expanded(child: _timeField('Stop', _personnelRows[i]['stop2']!)),
                   const SizedBox(width: 8),
                   Expanded(child: _tf('Total', _personnelRows[i]['total']!)),
                 ]),
@@ -436,6 +455,28 @@ class _ShiftTicketFormScreenState extends State<ShiftTicketFormScreen> {
       maxLines: maxLines,
       decoration: InputDecoration(
         labelText: label,
+        isDense: true,
+        filled: true,
+        border: const OutlineInputBorder(),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+      ),
+    );
+  }
+
+  /// Start/Stop fields on the paper form are military time (block 11: "Use
+  /// MILITARY TIME") -- digits only, capped at 4 (HHMM), with a hint showing
+  /// the expected format.
+  Widget _timeField(String label, TextEditingController ctrl) {
+    return TextField(
+      controller: ctrl,
+      keyboardType: TextInputType.number,
+      inputFormatters: [
+        FilteringTextInputFormatter.digitsOnly,
+        LengthLimitingTextInputFormatter(4),
+      ],
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: 'HHMM',
         isDense: true,
         filled: true,
         border: const OutlineInputBorder(),

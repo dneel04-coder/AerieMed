@@ -44,6 +44,7 @@ Future<void> showEmailFormDialog(
   required Uint8List pdfBytes,
   required String filename,
   required String subject,
+  Future<void> Function(String recipientEmail, String subject)? onSent,
 }) async {
   final prefs = await SharedPreferences.getInstance();
   final lastRecipient = prefs.getString(_kLastRecipientKey) ?? '';
@@ -90,12 +91,14 @@ Future<void> showEmailFormDialog(
   final messenger = ScaffoldMessenger.of(context);
   messenger.showSnackBar(const SnackBar(content: Text('Sending…'), duration: Duration(seconds: 20)));
   try {
+    final sentSubject = finalSubject.isEmpty ? subject : finalSubject;
     await sendFormPdfByEmail(
       pdfBytes: pdfBytes,
       filename: filename,
       recipientEmail: email,
-      subject: finalSubject.isEmpty ? subject : finalSubject,
+      subject: sentSubject,
     );
+    if (onSent != null) await onSent(email, sentSubject);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(content: Text('Sent to $email')));
   } catch (e) {

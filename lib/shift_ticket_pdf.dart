@@ -106,65 +106,83 @@ List<pw.Widget> _buildContent(ShiftTicketData f) {
     pw.Center(child: pw.Text('Emergency Equipment Shift Ticket', style: _sTitle)),
     pw.SizedBox(height: 8),
 
-    // Row: Agreement / Contractor-Agency / Resource Order
+    // Blocks 1-3: Agreement / Contractor-Agency / Resource Order
     _gridRow([
-      _cell('Agreement Number', f.agreementNumber, flex: 2),
-      _cell('Contractor/Agency Name', f.contractorAgencyName, flex: 3),
-      _cell('Resource Order Number', f.resourceOrderNumber, flex: 2),
+      _cell('1. Agreement Number:', f.agreementNumber, flex: 2),
+      _cell('2. Contractor/Agency Name:', f.contractorAgencyName, flex: 3),
+      _cell('3. Resource Order Number:', f.resourceOrderNumber, flex: 2),
     ]),
-    // Row: Incident Name / Incident Number / Financial Code
+    // Blocks 4-6: Incident Name / Incident Number / Financial Code
     _gridRow([
-      _cell('Incident Name', f.incidentName, flex: 3),
-      _cell('Incident Number', f.incidentNumber, flex: 2),
-      _cell('Financial Code', f.financialCode, flex: 2),
+      _cell('4. Incident Name:', f.incidentName, flex: 3),
+      _cell('5. Incident Number:', f.incidentNumber, flex: 2),
+      _cell('6. Financial Code:', f.financialCode, flex: 2),
     ]),
-    // Row: Equipment Make/Model / Type / Serial/VIN / License/ID
+    // Blocks 7-10: Equipment Make/Model / Type / Serial/VIN / License/ID
     _gridRow([
-      _cell('Equipment Make/Model', f.equipmentMakeModel, flex: 2),
-      _cell('Equipment Type', f.equipmentType, flex: 2),
-      _cell('Serial/VIN Number', f.serialVinNumber, flex: 2),
-      _cell('License/ID Number', f.licenseIdNumber, flex: 2),
+      _cell('7. Equipment Make/Model:', f.equipmentMakeModel, flex: 2),
+      _cell('8. Equipment Type:', f.equipmentType, flex: 2),
+      _cell('9. Serial/VIN Number:', f.serialVinNumber, flex: 2),
+      _cell('10. License/ID Number:', f.licenseIdNumber, flex: 2),
     ]),
 
-    pw.SizedBox(height: 4),
-    pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.center, children: [
-      pw.Expanded(
-        child: pw.Text(
-          'If applicable check and complete the following boxes. Use MILITARY TIME and/or real odometer reading.',
+    // Blocks 11-12
+    _dividedRow(
+      flexes: const [3, 2],
+      [
+        pw.Text(
+          '11. If applicable check and complete the following boxes. '
+          'Use MILITARY TIME and/or real odometer reading.',
           style: _sInstruction,
         ),
-      ),
-      pw.SizedBox(width: 10),
-      pw.Text('Transport Retained?  ', style: _sTableHeader),
-      _checkboxLabel('Yes', f.transportRetained),
-      pw.SizedBox(width: 6),
-      _checkboxLabel('No', !f.transportRetained),
-    ]),
-    pw.SizedBox(height: 8),
+        pw.Row(children: [
+          pw.Text('12. Transport Retained?  ', style: _sTableHeader),
+          _checkboxLabel('Yes', f.transportRetained),
+          pw.SizedBox(width: 6),
+          _checkboxLabel('No', !f.transportRetained),
+        ]),
+      ],
+    ),
 
     _sectionHeader('Equipment'),
-    pw.SizedBox(height: 4),
-    pw.Row(children: [
-      pw.Text('Is this a First/Last Ticket?  ', style: _sTableHeader),
-      _checkboxLabel('Mobilization', f.mobilization),
-      pw.SizedBox(width: 10),
-      _checkboxLabel('Demobilization', f.demobilization),
-      pw.SizedBox(width: 16),
-      pw.Text('Miles/Hours applies to Start/Stop/Total:  ', style: _sTableHeader),
-      _checkboxLabel('Miles', f.appliesMiles),
-      pw.SizedBox(width: 10),
-      _checkboxLabel('Hours', f.appliesHours),
-    ]),
-    pw.SizedBox(height: 4),
+
+    // Blocks 13-14 + the (unnumbered) Blocks 19-20 special-rates note
+    _dividedRow(
+      flexes: const [2, 2, 3],
+      [
+        pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+          pw.Text('13. Is this a First/Last Ticket? (Check if yes)', style: _sTableHeader),
+          pw.SizedBox(height: 3),
+          pw.Row(children: [
+            _checkboxLabel('Mobilization', f.mobilization),
+            pw.SizedBox(width: 10),
+            _checkboxLabel('Demobilization', f.demobilization),
+          ]),
+        ]),
+        pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+          pw.Row(children: [
+            _checkboxLabel('14. Miles', f.appliesMiles),
+            pw.SizedBox(width: 10),
+            _checkboxLabel('Hours', f.appliesHours),
+          ]),
+          pw.SizedBox(height: 3),
+          pw.Text('(Applies to blocks 16-18 below)', style: _sInstruction),
+        ]),
+        pw.Text('Blocks 19-20 Special Rates, indicate type and quantity (ex: 1 Day)', style: _sInstruction),
+      ],
+    ),
     _equipmentTable(f.equipmentRows),
 
     pw.SizedBox(height: 10),
     _sectionHeader('Personnel'),
-    pw.SizedBox(height: 4),
     _personnelTable(f.personnelRows),
 
     pw.SizedBox(height: 10),
-    pw.Text('Remarks - equipment breakdown, operating issues, or other information:', style: _sTableHeader),
+    pw.Text(
+      '30. Remarks - Provide details of any equipment breakdown or operating issues. '
+      'Include other information as necessary.',
+      style: _sTableHeader,
+    ),
     pw.SizedBox(height: 3),
     pw.Container(
       width: double.infinity,
@@ -176,21 +194,21 @@ List<pw.Widget> _buildContent(ShiftTicketData f) {
 
     pw.SizedBox(height: 10),
     _gridRow([
-      _cell('Contractor/Agency Representative (Printed Name)', f.contractorRepPrintedName, flex: 1),
-      _cell('Contractor/Agency Representative (Signature)', f.contractorRepSignature, flex: 1),
+      _cell('31. Contractor/Agency Representative (Printed Name)', f.contractorRepPrintedName, flex: 1),
+      _cell('32. Contractor/Agency Representative (Signature)', f.contractorRepSignature, flex: 1),
     ]),
     _gridRow([
-      _cell('Incident Supervisor (Printed Name & Resource Order Number)', f.incidentSupervisorPrintedName, flex: 1),
-      _cell('Incident Supervisor (Signature)', f.incidentSupervisorSignature, flex: 1),
+      _cell('33. Incident Supervisor (Printed Name & Resource Order number)', f.incidentSupervisorPrintedName, flex: 1),
+      _cell('34. Incident Supervisor (Signature)', f.incidentSupervisorSignature, flex: 1),
     ]),
   ];
 }
 
 pw.Widget _sectionHeader(String title) => pw.Container(
       width: double.infinity,
-      color: PdfColors.grey300,
+      decoration: pw.BoxDecoration(color: PdfColors.grey300, border: _border),
       padding: const pw.EdgeInsets.symmetric(vertical: 3, horizontal: 6),
-      child: pw.Text(title, style: _sBoxHeader),
+      child: pw.Center(child: pw.Text(title, style: _sBoxHeader)),
     );
 
 pw.Widget _checkboxLabel(String label, bool checked) => pw.Row(
@@ -206,6 +224,27 @@ pw.Widget _checkboxLabel(String label, bool checked) => pw.Row(
         ),
         pw.Text(label, style: _sTableHeader),
       ],
+    );
+
+/// A single bordered strip split into vertically-divided segments (a right
+/// border on every segment but the last) -- matches the paper form's blocks
+/// 11-12 and 13-14 rows, which are one bordered band internally split into
+/// several fields rather than independent boxed cells like blocks 1-10.
+pw.Widget _dividedRow(List<pw.Widget> segments, {List<int>? flexes}) => pw.Container(
+      decoration: pw.BoxDecoration(border: _border),
+      child: pw.Row(children: [
+        for (var i = 0; i < segments.length; i++)
+          pw.Expanded(
+            flex: flexes != null ? flexes[i] : 1,
+            child: pw.Container(
+              decoration: i < segments.length - 1
+                  ? const pw.BoxDecoration(border: pw.Border(right: pw.BorderSide(width: 0.75)))
+                  : null,
+              padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              child: segments[i],
+            ),
+          ),
+      ]),
     );
 
 /// A row of bordered grid cells (label above value), each already sized via
@@ -258,13 +297,13 @@ pw.Widget _equipmentTable(List<ShiftTicketEquipmentRow> rows) {
     },
     children: [
       pw.TableRow(children: [
-        _tableHeaderCell('Date'),
-        _tableHeaderCell('Start'),
-        _tableHeaderCell('Stop'),
-        _tableHeaderCell('Total'),
-        _tableHeaderCell('Quantity'),
-        _tableHeaderCell('Type'),
-        _tableHeaderCell('Note Travel/Other remarks'),
+        _tableHeaderCell('15. Date'),
+        _tableHeaderCell('16. Start'),
+        _tableHeaderCell('17. Stop'),
+        _tableHeaderCell('18. Total'),
+        _tableHeaderCell('19. Quantity'),
+        _tableHeaderCell('20. Type'),
+        _tableHeaderCell('21. Note Travel/Other remarks'),
       ]),
       for (final r in rows)
         pw.TableRow(children: [
@@ -295,14 +334,14 @@ pw.Widget _personnelTable(List<ShiftTicketPersonnelRow> rows) {
     },
     children: [
       pw.TableRow(children: [
-        _tableHeaderCell('Date'),
-        _tableHeaderCell('Operator Name\n(First & Last)'),
-        _tableHeaderCell('Start'),
-        _tableHeaderCell('Stop'),
-        _tableHeaderCell('Start'),
-        _tableHeaderCell('Stop'),
-        _tableHeaderCell('Total'),
-        _tableHeaderCell('Note Travel/Other remarks'),
+        _tableHeaderCell('22. Date'),
+        _tableHeaderCell('23. Operator Name\n(First & Last)'),
+        _tableHeaderCell('24. Start'),
+        _tableHeaderCell('25. Stop'),
+        _tableHeaderCell('26. Start'),
+        _tableHeaderCell('27. Stop'),
+        _tableHeaderCell('28. Total'),
+        _tableHeaderCell('29. Note Travel/Other remarks'),
       ]),
       for (final r in rows)
         pw.TableRow(children: [
