@@ -35,8 +35,9 @@ Future<void> sendFormPdfByEmail({
 }
 
 /// Prompts for a recipient address (pre-filled with the last one used across
-/// any form) and sends [pdfBytes] there. Shows its own snackbars for
-/// progress/success/failure, matching this app's existing dialog/snackbar
+/// any form) and a subject line (pre-filled with [subject], editable by the
+/// sender before it goes out), then sends [pdfBytes]. Shows its own snackbars
+/// for progress/success/failure, matching this app's existing dialog/snackbar
 /// conventions -- callers just need a BuildContext and the PDF to send.
 Future<void> showEmailFormDialog(
   BuildContext context, {
@@ -46,32 +47,45 @@ Future<void> showEmailFormDialog(
 }) async {
   final prefs = await SharedPreferences.getInstance();
   final lastRecipient = prefs.getString(_kLastRecipientKey) ?? '';
-  final ctrl = TextEditingController(text: lastRecipient);
+  final emailCtrl = TextEditingController(text: lastRecipient);
+  final subjectCtrl = TextEditingController(text: subject);
   if (!context.mounted) return;
-  final email = await showDialog<String>(
+  final result = await showDialog<(String, String)>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: const Text('Email This Form'),
-      content: TextField(
-        controller: ctrl,
-        autofocus: true,
-        keyboardType: TextInputType.emailAddress,
-        decoration: const InputDecoration(
-          labelText: 'Recipient Email',
-          border: OutlineInputBorder(),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(
+          controller: emailCtrl,
+          autofocus: true,
+          keyboardType: TextInputType.emailAddress,
+          decoration: const InputDecoration(
+            labelText: 'Recipient Email',
+            border: OutlineInputBorder(),
+          ),
         ),
-      ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: subjectCtrl,
+          decoration: const InputDecoration(
+            labelText: 'Subject',
+            border: OutlineInputBorder(),
+          ),
+        ),
+      ]),
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
         FilledButton(
-          onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+          onPressed: () => Navigator.pop(ctx, (emailCtrl.text.trim(), subjectCtrl.text.trim())),
           child: const Text('Send'),
         ),
       ],
     ),
   );
-  ctrl.dispose();
-  if (email == null || email.isEmpty || !context.mounted) return;
+  emailCtrl.dispose();
+  subjectCtrl.dispose();
+  if (result == null || result.$1.isEmpty || !context.mounted) return;
+  final (email, finalSubject) = result;
 
   final messenger = ScaffoldMessenger.of(context);
   messenger.showSnackBar(const SnackBar(content: Text('Sending…'), duration: Duration(seconds: 20)));
@@ -80,7 +94,7 @@ Future<void> showEmailFormDialog(
       pdfBytes: pdfBytes,
       filename: filename,
       recipientEmail: email,
-      subject: subject,
+      subject: finalSubject.isEmpty ? subject : finalSubject,
     );
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(content: Text('Sent to $email')));

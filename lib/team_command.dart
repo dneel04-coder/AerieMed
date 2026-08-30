@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, DeploymentOrder, DeploymentOrderService, TeamProtocolsScreen, showReadAcknowledgment, AdminAlertService;
 import 'user_profile.dart' show LoginScreen;
 import 'crew_swap_form.dart' show CrewSwapFormScreen;
+import 'shift_ticket_form.dart' show ShiftTicketFormScreen;
 
 enum _CertExpiry { green, yellow, red }
 
@@ -762,7 +763,7 @@ class _TeamCommandTabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 7,
+      length: 8,
       initialIndex: initialTab,
       child: Scaffold(
         appBar: AppBar(
@@ -778,6 +779,7 @@ class _TeamCommandTabs extends StatelessWidget {
               Tab(icon: Icon(Icons.assignment_outlined, size: 20), text: 'Orders'),
               Tab(icon: Icon(Icons.calendar_month_outlined, size: 20), text: 'Availability'),
               Tab(icon: Icon(Icons.swap_horiz, size: 20), text: 'Crew Swap'),
+              Tab(icon: Icon(Icons.receipt_long_outlined, size: 20), text: 'Shift Ticket'),
             ],
           ),
         ),
@@ -789,6 +791,7 @@ class _TeamCommandTabs extends StatelessWidget {
           _DeploymentOrdersTab(),
           _AvailabilityTab(),
           const _CrewSwapTab(),
+          const _ShiftTicketTab(),
         ]),
       ),
     );
@@ -2833,6 +2836,28 @@ class _CrewSwapTabState extends State<_CrewSwapTab> with AutomaticKeepAliveClien
   Widget build(BuildContext context) {
     super.build(context);
     return const CrewSwapFormScreen();
+  }
+}
+
+
+// ── Shift Ticket tab ─────────────────────────────────────────────────────────
+// Embeds the OF-297 Emergency Equipment Shift Ticket form, same
+// always-available placement as Crew Swap.
+
+class _ShiftTicketTab extends StatefulWidget {
+  const _ShiftTicketTab();
+  @override
+  State<_ShiftTicketTab> createState() => _ShiftTicketTabState();
+}
+
+class _ShiftTicketTabState extends State<_ShiftTicketTab> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return const ShiftTicketFormScreen();
   }
 }
 
