@@ -43,8 +43,12 @@ class ShiftTicketData {
   final List<ShiftTicketEquipmentRow> equipmentRows;
   final List<ShiftTicketPersonnelRow> personnelRows;
   final String remarks;
-  final String contractorRepPrintedName, contractorRepSignature;
-  final String incidentSupervisorPrintedName, incidentSupervisorSignature;
+  final String contractorRepPrintedName;
+  final String incidentSupervisorPrintedName;
+  // Drawn ("Tap to Sign") signatures, PNG bytes -- null means unsigned, which
+  // renders as a blank box, same as an unsigned paper form.
+  final Uint8List? contractorRepSignatureImage;
+  final Uint8List? incidentSupervisorSignatureImage;
 
   const ShiftTicketData({
     required this.agreementNumber,
@@ -66,9 +70,9 @@ class ShiftTicketData {
     required this.personnelRows,
     required this.remarks,
     required this.contractorRepPrintedName,
-    required this.contractorRepSignature,
+    this.contractorRepSignatureImage,
     required this.incidentSupervisorPrintedName,
-    required this.incidentSupervisorSignature,
+    this.incidentSupervisorSignatureImage,
   });
 }
 
@@ -195,11 +199,11 @@ List<pw.Widget> _buildContent(ShiftTicketData f) {
     pw.SizedBox(height: 10),
     _gridRow([
       _cell('31. Contractor/Agency Representative (Printed Name)', f.contractorRepPrintedName, flex: 1),
-      _cell('32. Contractor/Agency Representative (Signature)', f.contractorRepSignature, flex: 1),
+      _signatureCell('32. Contractor/Agency Representative (Signature)', f.contractorRepSignatureImage, flex: 1),
     ]),
     _gridRow([
       _cell('33. Incident Supervisor (Printed Name & Resource Order number)', f.incidentSupervisorPrintedName, flex: 1),
-      _cell('34. Incident Supervisor (Signature)', f.incidentSupervisorSignature, flex: 1),
+      _signatureCell('34. Incident Supervisor (Signature)', f.incidentSupervisorSignatureImage, flex: 1),
     ]),
   ];
 }
@@ -266,6 +270,29 @@ pw.Widget _cell(String label, String value, {int flex = 1}) => pw.Expanded(
           pw.Text(label, style: _sLabel),
           pw.SizedBox(height: 2),
           pw.Text(value, style: _sValue),
+        ]),
+      ),
+    );
+
+/// Same box style as [_cell] but for a drawn ("Tap to Sign") signature --
+/// renders the captured PNG in place of a text value, or stays blank
+/// (matching an unsigned paper form) when [signatureImage] is null. A fixed
+/// height keeps the Column bounded, which is required for pw.Expanded to
+/// lay out the image safely inside it.
+pw.Widget _signatureCell(String label, Uint8List? signatureImage, {int flex = 1}) => pw.Expanded(
+      flex: flex,
+      child: pw.Container(
+        height: 44,
+        decoration: pw.BoxDecoration(border: _border),
+        padding: const pw.EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+        child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+          pw.Text(label, style: _sLabel),
+          pw.SizedBox(height: 2),
+          if (signatureImage != null)
+            pw.Expanded(
+              child: pw.Image(pw.MemoryImage(signatureImage),
+                  fit: pw.BoxFit.contain, alignment: pw.Alignment.centerLeft),
+            ),
         ]),
       ),
     );

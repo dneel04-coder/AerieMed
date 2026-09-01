@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'protocol_version.dart' show MedicalCitationBanner;
@@ -445,6 +446,21 @@ class ChatIntentEngine {
       _s.clearDrug();
       return ChatResponse(
         responseText: _formatDosing(drug, null),
+        suggestions: _kDefaultReplies,
+      );
+    }
+
+    // Guideline 1.4.2: a per-patient weight-based dose calculation is exactly
+    // what got the app rejected (the standalone Dosing Calculator screen was
+    // already removed from iOS for this same reason -- see DrugDosingScreen
+    // in main.dart). Fixed-dose lookups above are unaffected; only the
+    // math that multiplies mg/kg by an entered weight is blocked here.
+    // Android is unaffected.
+    if (Platform.isIOS) {
+      _s.clearDrug();
+      return ChatResponse(
+        responseText: '${drug.name} is a weight-based dose. '
+            'Check your agency\'s Protocols for exact dosing.',
         suggestions: _kDefaultReplies,
       );
     }

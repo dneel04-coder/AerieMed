@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'shift_ticket_pdf.dart';
 import 'form_email_service.dart';
 import 'shift_ticket_record_service.dart';
+import 'signature_pad.dart';
 
 const _kAgreementNumberKey = 'shift_ticket_agreement_number';
 const _kContractorAgencyNameKey = 'shift_ticket_contractor_agency_name';
@@ -75,9 +76,9 @@ class _ShiftTicketFormScreenState extends State<ShiftTicketFormScreen> {
 
   final _remarks = TextEditingController();
   final _contractorRepPrintedName = TextEditingController();
-  final _contractorRepSignature = TextEditingController();
   final _incidentSupervisorPrintedName = TextEditingController();
-  final _incidentSupervisorSignature = TextEditingController();
+  Uint8List? _contractorRepSignatureImage;
+  Uint8List? _incidentSupervisorSignatureImage;
 
   bool _loaded = false;
 
@@ -112,7 +113,7 @@ class _ShiftTicketFormScreenState extends State<ShiftTicketFormScreen> {
       _agreementNumber, _contractorAgencyName, _resourceOrderNumber, _incidentName,
       _incidentNumber, _financialCode, _equipmentMakeModel, _equipmentType,
       _serialVinNumber, _licenseIdNumber, _remarks, _contractorRepPrintedName,
-      _contractorRepSignature, _incidentSupervisorPrintedName, _incidentSupervisorSignature,
+      _incidentSupervisorPrintedName,
     ]) {
       c.dispose();
     }
@@ -167,9 +168,9 @@ class _ShiftTicketFormScreenState extends State<ShiftTicketFormScreen> {
         ],
         remarks: _remarks.text.trim(),
         contractorRepPrintedName: _contractorRepPrintedName.text.trim(),
-        contractorRepSignature: _contractorRepSignature.text.trim(),
+        contractorRepSignatureImage: _contractorRepSignatureImage,
         incidentSupervisorPrintedName: _incidentSupervisorPrintedName.text.trim(),
-        incidentSupervisorSignature: _incidentSupervisorSignature.text.trim(),
+        incidentSupervisorSignatureImage: _incidentSupervisorSignatureImage,
       );
 
   String _filename() {
@@ -357,11 +358,19 @@ class _ShiftTicketFormScreenState extends State<ShiftTicketFormScreen> {
             _card('Approvals', Colors.blueGrey, [
               _tf('Contractor/Agency Representative (Printed Name)', _contractorRepPrintedName),
               const SizedBox(height: 8),
-              _tf('Contractor/Agency Representative (Signature)', _contractorRepSignature),
+              SignatureField(
+                label: 'Contractor/Agency Representative (Signature)',
+                signatureBytes: _contractorRepSignatureImage,
+                onChanged: (bytes) => setState(() => _contractorRepSignatureImage = bytes),
+              ),
               const SizedBox(height: 8),
               _tf('Incident Supervisor (Printed Name & Resource Order Number)', _incidentSupervisorPrintedName),
               const SizedBox(height: 8),
-              _tf('Incident Supervisor (Signature)', _incidentSupervisorSignature),
+              SignatureField(
+                label: 'Incident Supervisor (Signature)',
+                signatureBytes: _incidentSupervisorSignatureImage,
+                onChanged: (bytes) => setState(() => _incidentSupervisorSignatureImage = bytes),
+              ),
             ]),
           ]),
         ),

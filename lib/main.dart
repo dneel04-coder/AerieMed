@@ -591,7 +591,14 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
 
     final cards = [
       _MedCardData(Icons.menu_book,         'Protocols',     const Color(0xFFCC2222), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => TableOfContentsScreen(onThemeToggle: widget.onThemeToggle, onLogout: widget.onLogout, protocolsOnly: true))))),
-      _MedCardData(Icons.medication,         'Drug & Dosing', const Color(0xFF1565C0), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const DrugDosingScreen())))),
+      // Guideline 1.4.2: removing just the interactive calculator (see
+      // DrugDosingScreen) wasn't enough -- Apple re-rejected v1.0.2+122,
+      // which already had that removal, on the same guideline. Pulling the
+      // whole entry point off iOS is the more defensible next step; drug
+      // dosing content lives in Protocols (pushed by admins) instead.
+      // Android is unaffected.
+      if (!Platform.isIOS)
+        _MedCardData(Icons.medication,         'Drug & Dosing', const Color(0xFF1565C0), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const DrugDosingScreen())))),
       _MedCardData(Icons.account_tree,       'Decision Tree', const Color(0xFF6A1B9A), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const DecisionTreeScreen())))),
       _MedCardData(Icons.checklist_outlined, 'Procedures',   const Color(0xFF2E7D32), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProcedureListScreen())))),
       _MedCardData(Icons.emergency,          'MCI Triage',   const Color(0xFFE65100), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const MciTriageScreen())))),
@@ -1473,15 +1480,18 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
       children: [
         _launcherSection('Clinical Tools'),
-        _launcherGrid(context, const [
-          _FeatureTile(Icons.account_tree, 'Decision Trees', Colors.indigo, DecisionTreeScreen()),
-          _FeatureTile(Icons.medication, 'Drug & Dosing', Colors.teal, DrugDosingScreen()),
-          _FeatureTile(Icons.checklist, 'Procedure\nChecklists', Colors.green, ProcedureListScreen()),
-          _FeatureTile(Icons.biotech, 'Differential\nDiagnosis', Colors.purple, DifferentialDxScreen()),
-          _FeatureTile(Icons.assignment_outlined, 'Patient\nReports', Colors.red, PatientReportListScreen()),
-          _FeatureTile(Icons.workspace_premium, 'Cert\nVault', Colors.deepPurple, CertVaultScreen()),
-          _FeatureTile(Icons.terrain, 'Field\nGuide', Color(0xFF4E6B3A), BackcountryGuideScreen()),
-          _FeatureTile(Icons.checklist_rtl, 'Pre-Deploy\nChecklist', Color(0xFF0277BD), RemsChecklistScreen()),
+        _launcherGrid(context, [
+          const _FeatureTile(Icons.account_tree, 'Decision Trees', Colors.indigo, DecisionTreeScreen()),
+          // See the matching comment on the Drug & Dosing home card:
+          // removed on iOS for Guideline 1.4.2, Android unaffected.
+          if (!Platform.isIOS)
+            const _FeatureTile(Icons.medication, 'Drug & Dosing', Colors.teal, DrugDosingScreen()),
+          const _FeatureTile(Icons.checklist, 'Procedure\nChecklists', Colors.green, ProcedureListScreen()),
+          const _FeatureTile(Icons.biotech, 'Differential\nDiagnosis', Colors.purple, DifferentialDxScreen()),
+          const _FeatureTile(Icons.assignment_outlined, 'Patient\nReports', Colors.red, PatientReportListScreen()),
+          const _FeatureTile(Icons.workspace_premium, 'Cert\nVault', Colors.deepPurple, CertVaultScreen()),
+          const _FeatureTile(Icons.terrain, 'Field\nGuide', Color(0xFF4E6B3A), BackcountryGuideScreen()),
+          const _FeatureTile(Icons.checklist_rtl, 'Pre-Deploy\nChecklist', Color(0xFF0277BD), RemsChecklistScreen()),
         ]),
         _launcherSection('Team Coordination'),
         _launcherGrid(context, const [
