@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'protocol_admin.dart' show SupabaseService, ProtocolSyncService, ProtocolEntry;
 
 
@@ -21,27 +22,80 @@ const String kCurrentVersion = '1.3.0';
 const String kReleaseDate = '2026-05-26';
 
 /// Apple Guideline 1.4.1 requires citations for medical/dosing content,
-/// easy for the user to find -- shown as a persistent banner on every
-/// screen presenting protocol, drug, or dosing recommendations.
-const String kMedicalSourceCitation =
-    'Medical content sourced from: Aerie Backcountry Medicine COG (Course of Guidelines), Revised 3/20/2025.';
+/// easy for the user to find, "such as links to sources" -- shown as a
+/// persistent banner on every screen presenting protocol, drug, or dosing
+/// recommendations. Replaces an earlier version of this banner that named
+/// an internal training document with no public URL -- unverifiable, which
+/// is very likely why Apple rejected it as not being a real citation.
+/// MARCH/hemorrhage-control content is genuinely drawn from TCCC; cardiac
+/// arrest content genuinely follows the AHA ACLS algorithm (both confirmed
+/// against this app's own protocol content) -- linked to their real public
+/// sources below. The medical director line has no public URL to link
+/// (Acrux Medical Solutions has no public website), so it stays plain text.
+const String kMedicalDirectorCitation =
+    'Medical content developed under the clinical direction of '
+    'Sarah Frances McClure, MD — Acrux Medical Solutions.';
+
+class CitationSource {
+  final String label;
+  final String url;
+  const CitationSource(this.label, this.url);
+}
+
+const List<CitationSource> kMedicalGuidelineSources = [
+  CitationSource('Tactical Combat Casualty Care (TCCC) Guidelines',
+      'https://jts.health.mil/index.cfm/PI_CPGs/cpgs'),
+  CitationSource('AHA ACLS Guidelines',
+      'https://cpr.heart.org/en/resuscitation-science/cpr-and-ecc-guidelines'),
+];
 
 class MedicalCitationBanner extends StatelessWidget {
   const MedicalCitationBanner({super.key});
 
+  Future<void> _openSource(BuildContext context, CitationSource source) async {
+    final uri = Uri.parse(source.url);
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Could not open ${source.url}')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final outline = Theme.of(context).colorScheme.outline;
+    final linkColor = Theme.of(context).colorScheme.primary;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      child: Row(children: [
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Icon(Icons.menu_book_outlined, size: 13, color: outline),
         const SizedBox(width: 6),
         Expanded(
-          child: Text(kMedicalSourceCitation,
-              style: TextStyle(fontSize: 10, color: outline)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(kMedicalDirectorCitation,
+                style: TextStyle(fontSize: 10, color: outline)),
+            const SizedBox(height: 2),
+            Wrap(
+              spacing: 4,
+              children: [
+                Text('Sources:', style: TextStyle(fontSize: 10, color: outline)),
+                for (final source in kMedicalGuidelineSources)
+                  InkWell(
+                    onTap: () => _openSource(context, source),
+                    child: Text(
+                      source.label,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: linkColor,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ]),
         ),
       ]),
     );

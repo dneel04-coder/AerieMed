@@ -1,7 +1,7 @@
 name: resqruck
 description: ResQruck - Field Medical Protocols
 publish_to: 'none'
-version: 1.0.2+133
+version: 1.0.2+134
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -41,6 +41,7 @@ dependencies:
   mgrs_dart: ^2.0.0
   home_widget: ^0.9.3
   path_provider_foundation: ^2.4.0
+  url_launcher: ^6.3.0
 
 # pdfrx 2.4.0 transitively allows pdfrx_engine down to a version with a real
 # null-safety compile bug in pdf_file_cache.dart: cache!.blockSize on one
