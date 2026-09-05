@@ -616,7 +616,16 @@ class _TreeRunnerScreenState extends State<TreeRunnerScreen> {
           IconButton(icon: const Icon(Icons.refresh), tooltip: 'Restart', onPressed: _restart),
         ],
       ),
-      body: SingleChildScrollView(
+      body: Column(children: [
+        // Guideline 1.4.1: Apple's second rejection specifically called out
+        // "calculations in the decision trees" -- the citation banner was
+        // only ever on DecisionTreeScreen's tree-picker list, never on this
+        // screen, which is where the actual per-node dosing figures (e.g.
+        // "Ketamine 0.3 mg/kg IV") are shown. This is the screen a reviewer
+        // is actually looking at when they file that finding.
+        const MedicalCitationBanner(),
+        Expanded(
+          child: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -689,7 +698,9 @@ class _TreeRunnerScreenState extends State<TreeRunnerScreen> {
             const SizedBox(height: 40),
           ],
         ),
-      ),
+          ),
+        ),
+      ]),
     );
   }
 }
