@@ -4163,95 +4163,6 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
             ),
           ),
 
-          // ── Right tool panel ────────────────────────────────────────────
-          // Height-constrained to stop above the bottom panel (rather than
-          // just growing downward indefinitely) and scrollable, so every
-          // button stays reachable regardless of screen height or how many
-          // tools end up in this column. Collapsible via the toggle at the
-          // top, since a full column of tools can otherwise run into the
-          // route/nav banners lower on screen. Pinch-to-zoom already covers
-          // zoom, so the +/- buttons that used to be here are gone.
-          Positioned(
-            right: 8,
-            top: (_sosBannerHeight) + 34,
-            bottom: _bottomChromeHeight + 8,
-            child: SingleChildScrollView(
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-              _atakBtn(_toolsExpanded ? Icons.chevron_right : Icons.chevron_left, bg,
-                  Colors.white70, () => setState(() => _toolsExpanded = !_toolsExpanded)),
-              if (_toolsExpanded) ...[
-              const SizedBox(height: 6),
-              // Re-centre
-              _atakBtn(Icons.my_location, bg,
-                  _myLocation != null ? cyan : Colors.white24,
-                  () { if (_myLocation != null) _mapCtrl.move(_myLocation!, 14); }),
-              const SizedBox(height: 6),
-              // North-up compass -- tap to reset rotation
-              _compassBtn(bg),
-              const SizedBox(height: 6),
-              // Layer toggles
-              _atakBtn(Icons.radar, bg,
-                  _showTakLayer ? cyan : Colors.white24,
-                  () => setState(() => _showTakLayer = !_showTakLayer)),
-              const SizedBox(height: 1),
-              _atakBtn(Icons.place, bg,
-                  _showPoiLayer ? Colors.orangeAccent : Colors.white24,
-                  () => setState(() => _showPoiLayer = !_showPoiLayer)),
-              const SizedBox(height: 1),
-              _atakBtn(Icons.route, bg,
-                  _showTrails ? Colors.amber : Colors.white24,
-                  () => setState(() => _showTrails = !_showTrails)),
-              const SizedBox(height: 1),
-              // Marker/zone visibility (hide by type — not the same as the
-              // tile-layer picker below, and never deletes anything)
-              _atakBtn(Icons.checklist, bg,
-                  (_hiddenMarkerTypes.isNotEmpty || _hiddenZoneTypes.isNotEmpty)
-                      ? Colors.amber : Colors.white54,
-                  _showLayersSheet),
-              const SizedBox(height: 1),
-              // Multi-stop route planning: tap existing markers in order to
-              // get a total ETA plus a per-segment breakdown.
-              _atakBtn(Icons.alt_route, bg,
-                  _planningRoute || _multiRoute != null ? Colors.amberAccent : Colors.white54,
-                  _toggleRoutePlanning),
-              const SizedBox(height: 1),
-              // Measure straight-line distance between any two tapped points
-              // -- independent of road routing above.
-              _atakBtn(Icons.straighten, bg,
-                  _measuring ? Colors.amberAccent : Colors.white54,
-                  _toggleMeasuring),
-              const SizedBox(height: 6),
-              // Mission filter
-              _atakBtn(Icons.filter_list, bg,
-                  _filterMission != null ? Colors.amber : Colors.white38,
-                  _showMissionPicker),
-              const SizedBox(height: 6),
-              // Location share
-              _atakBtn(
-                  _sharingLocation ? Icons.location_on : Icons.location_off,
-                  bg, _sharingLocation ? Colors.greenAccent : Colors.redAccent,
-                  _sharingLocation ? _stopSharing : _startSharing),
-              const SizedBox(height: 6),
-              // Wildfire overlay
-              _atakBtn(Icons.local_fire_department, bg, Colors.deepOrangeAccent,
-                  _showIncidentBrowser),
-              const SizedBox(height: 1),
-              // Tile layers picker
-              _atakBtn(Icons.layers, bg, Colors.white54, _showLayerPicker),
-              const SizedBox(height: 1),
-              // Field tools (GPS, LZ, Offline maps)
-              _atakBtn(Icons.build_outlined, bg, Colors.white54, _showFieldTools),
-              const SizedBox(height: 6),
-              // SOS
-              _atakBtn(Icons.sos, Colors.red, Colors.white, _triggerSos),
-              const SizedBox(height: 6),
-              // Overflow menu
-              _atakPopup(bg, dim),
-              ],
-            ]),
-            ),
-          ),
-
           // ── Join Mission button (when no mission) ───────────────────────
           if (!_hasMission)
             Positioned(
@@ -4392,6 +4303,107 @@ class _ActiveMapScreenState extends State<_ActiveMapScreen> {
                 ),
               ),
             ),
+
+          // ── Right tool panel ────────────────────────────────────────────
+          // Height-constrained to stop above the bottom panel (rather than
+          // just growing downward indefinitely) and scrollable, so every
+          // button stays reachable regardless of screen height or how many
+          // tools end up in this column. Collapsible via the toggle at the
+          // top, since a full column of tools can otherwise run into the
+          // route/nav banners lower on screen. Pinch-to-zoom already covers
+          // zoom, so the +/- buttons that used to be here are gone.
+          //
+          // Declared AFTER (i.e. on top of, in both paint and hit-test order)
+          // the full-screen placement/measuring overlays above -- previously
+          // it came before them, so once any of those opaque full-screen
+          // GestureDetectors activated, they covered this entire panel and
+          // silently ate every tap meant for it. That included the very
+          // buttons needed to cancel out of those modes (e.g. the ruler
+          // toggle for measuring), so once a user started measuring there
+          // was no reachable way to turn it back off -- it looked "stuck"
+          // until the app was fully restarted, and while stuck, taps on
+          // markers elsewhere landed on the overlay instead, reading as
+          // "can't clear map icons."
+          Positioned(
+            right: 8,
+            top: (_sosBannerHeight) + 34,
+            bottom: _bottomChromeHeight + 8,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+              _atakBtn(_toolsExpanded ? Icons.chevron_right : Icons.chevron_left, bg,
+                  Colors.white70, () => setState(() => _toolsExpanded = !_toolsExpanded)),
+              if (_toolsExpanded) ...[
+              const SizedBox(height: 6),
+              // Re-centre
+              _atakBtn(Icons.my_location, bg,
+                  _myLocation != null ? cyan : Colors.white24,
+                  () { if (_myLocation != null) _mapCtrl.move(_myLocation!, 14); }),
+              const SizedBox(height: 6),
+              // North-up compass -- tap to reset rotation
+              _compassBtn(bg),
+              const SizedBox(height: 6),
+              // Layer toggles
+              _atakBtn(Icons.radar, bg,
+                  _showTakLayer ? cyan : Colors.white24,
+                  () => setState(() => _showTakLayer = !_showTakLayer)),
+              const SizedBox(height: 1),
+              _atakBtn(Icons.place, bg,
+                  _showPoiLayer ? Colors.orangeAccent : Colors.white24,
+                  () => setState(() => _showPoiLayer = !_showPoiLayer)),
+              const SizedBox(height: 1),
+              _atakBtn(Icons.route, bg,
+                  _showTrails ? Colors.amber : Colors.white24,
+                  () => setState(() => _showTrails = !_showTrails)),
+              const SizedBox(height: 1),
+              // Marker/zone visibility (hide by type — not the same as the
+              // tile-layer picker below, and never deletes anything)
+              _atakBtn(Icons.checklist, bg,
+                  (_hiddenMarkerTypes.isNotEmpty || _hiddenZoneTypes.isNotEmpty)
+                      ? Colors.amber : Colors.white54,
+                  _showLayersSheet),
+              const SizedBox(height: 1),
+              // Multi-stop route planning: tap existing markers in order to
+              // get a total ETA plus a per-segment breakdown.
+              _atakBtn(Icons.alt_route, bg,
+                  _planningRoute || _multiRoute != null ? Colors.amberAccent : Colors.white54,
+                  _toggleRoutePlanning),
+              const SizedBox(height: 1),
+              // Measure straight-line distance between any two tapped points
+              // -- independent of road routing above.
+              _atakBtn(Icons.straighten, bg,
+                  _measuring ? Colors.amberAccent : Colors.white54,
+                  _toggleMeasuring),
+              const SizedBox(height: 6),
+              // Mission filter
+              _atakBtn(Icons.filter_list, bg,
+                  _filterMission != null ? Colors.amber : Colors.white38,
+                  _showMissionPicker),
+              const SizedBox(height: 6),
+              // Location share
+              _atakBtn(
+                  _sharingLocation ? Icons.location_on : Icons.location_off,
+                  bg, _sharingLocation ? Colors.greenAccent : Colors.redAccent,
+                  _sharingLocation ? _stopSharing : _startSharing),
+              const SizedBox(height: 6),
+              // Wildfire overlay
+              _atakBtn(Icons.local_fire_department, bg, Colors.deepOrangeAccent,
+                  _showIncidentBrowser),
+              const SizedBox(height: 1),
+              // Tile layers picker
+              _atakBtn(Icons.layers, bg, Colors.white54, _showLayerPicker),
+              const SizedBox(height: 1),
+              // Field tools (GPS, LZ, Offline maps)
+              _atakBtn(Icons.build_outlined, bg, Colors.white54, _showFieldTools),
+              const SizedBox(height: 6),
+              // SOS
+              _atakBtn(Icons.sos, Colors.red, Colors.white, _triggerSos),
+              const SizedBox(height: 6),
+              // Overflow menu
+              _atakPopup(bg, dim),
+              ],
+            ]),
+            ),
+          ),
 
           // ── Bottom: TEAM panel + coordinate bar ─────────────────────────
           Positioned(
