@@ -3607,6 +3607,42 @@ do \$\$ begin
     for all using (bucket_id = 'shift_tickets')
     with check (bucket_id = 'shift_tickets');
 exception when duplicate_object then null; end \$\$;
+
+-- ── Transmitted Forms (all form types, superseding shift_tickets above) ───────
+-- One shared table/bucket for every fillable form's send archive -- Shift
+-- Ticket, Crew Swap, SF-261, ICS 214/205/213 -- instead of one per form
+-- type. The shift_tickets table/bucket above are left in place (unused) so
+-- nothing breaks for anyone who hasn't re-run this block yet.
+
+create table if not exists transmitted_forms (
+  id uuid default gen_random_uuid() primary key,
+  form_type text not null default '',
+  form_title text default '',
+  summary text default '',
+  recipient_email text default '',
+  subject text default '',
+  file_path text not null default '',
+  file_name text not null default '',
+  sent_at timestamptz default now(),
+  sent_by text default ''
+);
+
+alter table transmitted_forms enable row level security;
+
+do \$\$ begin
+  create policy "public_access" on transmitted_forms
+    for all using (true) with check (true);
+exception when duplicate_object then null; end \$\$;
+
+insert into storage.buckets (id, name, public)
+  values ('transmitted_forms', 'transmitted_forms', true)
+  on conflict (id) do nothing;
+
+do \$\$ begin
+  create policy "public_transmitted_forms" on storage.objects
+    for all using (bucket_id = 'transmitted_forms')
+    with check (bucket_id = 'transmitted_forms');
+exception when duplicate_object then null; end \$\$;
 ''';
 
 

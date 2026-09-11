@@ -177,6 +177,9 @@ class _Ics205FormScreenState extends State<Ics205FormScreen> {
       pdfBytes: bytes,
       filename: '${_filename()}.pdf',
       subject: 'Incident Radio Communications Plan (ICS 205) — ${_incidentName.text.trim().isEmpty ? 'ResQruck' : _incidentName.text.trim()}',
+      formType: 'ics205',
+      formTitle: 'Incident Radio Communications Plan (ICS 205)',
+      summary: _incidentName.text.trim().isEmpty ? 'Unknown incident' : _incidentName.text.trim(),
     );
   }
 

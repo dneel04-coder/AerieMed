@@ -4,9 +4,8 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart' show FileOptions;
 import 'protocol_admin.dart' show SupabaseService;
-import 'shift_ticket_pdf.dart' show ShiftTicketData;
 
-String _newUuidV4() {
+String newUuidV4() {
   final rng = Random.secure();
   final bytes = List.generate(16, (_) => rng.nextInt(256));
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
@@ -16,18 +15,18 @@ String _newUuidV4() {
       '${hex.substring(16, 20)}-${hex.substring(20)}';
 }
 
-/// A transmitted Shift Ticket, archived so the Command Console can browse
-/// what's gone out -- mirrors DeploymentOrderService's storage-bucket +
-/// metadata-table shape in protocol_admin.dart (same bucket-then-base64
-/// fallback, same SDK-download-then-public-URL fallback), kept in its own
-/// file since that shape doesn't need access to ProtocolSyncService's
-/// private helpers.
-class ShiftTicketRecord {
+/// Any transmitted form -- Shift Ticket, Crew Swap, SF-261, ICS 214/205/213
+/// -- archived so the Command Console can browse everything that's actually
+/// gone out, regardless of which form it was. One shared table/bucket
+/// instead of one per form type, distinguished by [formType]/[formTitle].
+/// Mirrors DeploymentOrderService's storage-bucket + metadata-table shape in
+/// protocol_admin.dart (same bucket-then-base64 fallback, same
+/// SDK-download-then-public-URL fallback).
+class TransmittedFormRecord {
   final String id;
-  final String incidentName;
-  final String agreementNumber;
-  final String resourceOrderNumber;
-  final String equipmentMakeModel;
+  final String formType;
+  final String formTitle;
+  final String summary;
   final String recipientEmail;
   final String subject;
   final String filePath;
@@ -35,12 +34,11 @@ class ShiftTicketRecord {
   final DateTime sentAt;
   final String sentBy;
 
-  const ShiftTicketRecord({
+  const TransmittedFormRecord({
     required this.id,
-    required this.incidentName,
-    required this.agreementNumber,
-    required this.resourceOrderNumber,
-    required this.equipmentMakeModel,
+    required this.formType,
+    required this.formTitle,
+    required this.summary,
     required this.recipientEmail,
     required this.subject,
     required this.filePath,
@@ -49,12 +47,11 @@ class ShiftTicketRecord {
     required this.sentBy,
   });
 
-  factory ShiftTicketRecord.fromMap(Map<String, dynamic> m) => ShiftTicketRecord(
+  factory TransmittedFormRecord.fromMap(Map<String, dynamic> m) => TransmittedFormRecord(
         id: m['id'] as String,
-        incidentName: m['incident_name'] as String? ?? '',
-        agreementNumber: m['agreement_number'] as String? ?? '',
-        resourceOrderNumber: m['resource_order_number'] as String? ?? '',
-        equipmentMakeModel: m['equipment_make_model'] as String? ?? '',
+        formType: m['form_type'] as String? ?? '',
+        formTitle: m['form_title'] as String? ?? '',
+        summary: m['summary'] as String? ?? '',
         recipientEmail: m['recipient_email'] as String? ?? '',
         subject: m['subject'] as String? ?? '',
         filePath: m['file_path'] as String? ?? '',
@@ -64,27 +61,31 @@ class ShiftTicketRecord {
       );
 }
 
-const _kBucket = 'shift_tickets';
-const _kTable = 'shift_tickets';
+const _kBucket = 'transmitted_forms';
+const _kTable = 'transmitted_forms';
 const _kSupabaseBaseUrl = 'https://vlgiclyuxaleyusalexo.supabase.co';
 const _kSupabaseAnonKey = 'sb_publishable_U6M_YMbubI1Y8qD4a3SKCA_Oeo6L75B';
 
 /// Uploads the PDF and inserts a metadata row -- called right after a
-/// successful send so the archive reflects only tickets that actually went
-/// out, not ones a user filled in but never sent.
-Future<void> recordAndUploadShiftTicket({
+/// successful send (immediate or via FormOutboxService's later retry) so the
+/// archive reflects only forms that actually went out, not ones a user
+/// filled in but never sent. Best-effort: a missing table/bucket (schema
+/// not run yet) never blocks or fails the send itself.
+Future<void> recordAndUploadTransmittedForm({
   required Uint8List pdfBytes,
   required String fileName,
-  required ShiftTicketData data,
+  required String formType,
+  required String formTitle,
+  required String summary,
   required String recipientEmail,
   required String subject,
   required String sentBy,
 }) async {
   final ok = await SupabaseService.ensureInitialized();
   final client = SupabaseService.client;
-  if (!ok || client == null) return; // Archiving is best-effort; don't block the send.
+  if (!ok || client == null) return;
 
-  final id = _newUuidV4();
+  final id = newUuidV4();
   final storagePath = '$id.pdf';
   var savedPath = storagePath;
 
@@ -102,10 +103,9 @@ Future<void> recordAndUploadShiftTicket({
   try {
     await client.from(_kTable).insert({
       'id': id,
-      'incident_name': data.incidentName,
-      'agreement_number': data.agreementNumber,
-      'resource_order_number': data.resourceOrderNumber,
-      'equipment_make_model': data.equipmentMakeModel,
+      'form_type': formType,
+      'form_title': formTitle,
+      'summary': summary,
       'recipient_email': recipientEmail,
       'subject': subject,
       'file_path': savedPath,
@@ -118,20 +118,20 @@ Future<void> recordAndUploadShiftTicket({
   }
 }
 
-Future<List<ShiftTicketRecord>> allShiftTicketRecords() async {
+Future<List<TransmittedFormRecord>> allTransmittedForms() async {
   final ok = await SupabaseService.ensureInitialized();
   final client = SupabaseService.client;
   if (!ok || client == null) return [];
   try {
     return (await client.from(_kTable).select().order('sent_at', ascending: false) as List)
-        .map((r) => ShiftTicketRecord.fromMap(r as Map<String, dynamic>))
+        .map((r) => TransmittedFormRecord.fromMap(r as Map<String, dynamic>))
         .toList();
   } catch (_) {
     return [];
   }
 }
 
-Future<Uint8List?> fetchShiftTicketRecordBytes(ShiftTicketRecord r) async {
+Future<Uint8List?> fetchTransmittedFormBytes(TransmittedFormRecord r) async {
   if (r.filePath.startsWith('base64:')) {
     try {
       return base64.decode(r.filePath.substring(7));
@@ -157,7 +157,7 @@ Future<Uint8List?> fetchShiftTicketRecordBytes(ShiftTicketRecord r) async {
   return null;
 }
 
-Future<void> deleteShiftTicketRecord(ShiftTicketRecord r) async {
+Future<void> deleteTransmittedFormRecord(TransmittedFormRecord r) async {
   final ok = await SupabaseService.ensureInitialized();
   final client = SupabaseService.client;
   if (!ok || client == null) return;

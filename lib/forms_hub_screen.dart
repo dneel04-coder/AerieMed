@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'form_outbox_service.dart';
 import 'crew_swap_form.dart' show CrewSwapFormScreen;
 import 'shift_ticket_form.dart' show ShiftTicketFormScreen;
 import 'sf261_form.dart' show Sf261FormScreen;
@@ -85,7 +86,36 @@ class FormsHubScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Forms')),
-      body: ListView.separated(
+      body: Column(children: [
+        ValueListenableBuilder<int>(
+          valueListenable: FormOutboxService.instance.pendingCount,
+          builder: (context, pending, _) {
+            if (pending == 0) return const SizedBox.shrink();
+            return Container(
+              width: double.infinity,
+              color: Colors.amber.withValues(alpha: 0.15),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(children: [
+                const Icon(Icons.cloud_off, size: 18, color: Colors.amber),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    pending == 1
+                        ? '1 form queued — will send automatically once connected'
+                        : '$pending forms queued — will send automatically once connected',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => FormOutboxService.instance.flushQueue(),
+                  child: const Text('Retry now'),
+                ),
+              ]),
+            );
+          },
+        ),
+        Expanded(
+          child: ListView.separated(
         padding: const EdgeInsets.all(16),
         itemCount: _kForms.length,
         separatorBuilder: (_, __) => const SizedBox(height: 12),
@@ -113,7 +143,9 @@ class FormsHubScreen extends StatelessWidget {
             ),
           );
         },
-      ),
+          ),
+        ),
+      ]),
     );
   }
 }

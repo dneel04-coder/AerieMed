@@ -143,6 +143,10 @@ class _Ics213FormScreenState extends State<Ics213FormScreen> {
       pdfBytes: bytes,
       filename: '${_filename()}.pdf',
       subject: 'General Message (ICS 213) — ${_subject.text.trim().isEmpty ? 'ResQruck' : _subject.text.trim()}',
+      formType: 'ics213',
+      formTitle: 'General Message (ICS 213)',
+      summary: '${_subject.text.trim().isEmpty ? 'No subject' : _subject.text.trim()}'
+          '${_to.text.trim().isEmpty ? '' : ' — To: ${_to.text.trim()}'}',
     );
   }
 

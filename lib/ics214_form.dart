@@ -177,6 +177,10 @@ class _Ics214FormScreenState extends State<Ics214FormScreen> {
       pdfBytes: bytes,
       filename: '${_filename()}.pdf',
       subject: 'Activity Log (ICS 214) — ${_incidentName.text.trim().isEmpty ? 'ResQruck' : _incidentName.text.trim()}',
+      formType: 'ics214',
+      formTitle: 'Activity Log (ICS 214)',
+      summary: '${_incidentName.text.trim().isEmpty ? 'Unknown incident' : _incidentName.text.trim()}'
+          '${_name.text.trim().isEmpty ? '' : ' — ${_name.text.trim()}'}',
     );
   }
 

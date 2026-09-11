@@ -214,13 +214,17 @@ class _Ics206WfFormScreenState extends State<Ics206WfFormScreen> {
 
   Future<void> _email() async {
     FocusManager.instance.primaryFocus?.unfocus();
-    final bytes = await buildIcs206WfPdf(_compile());
+    final data = _compile();
+    final bytes = await buildIcs206WfPdf(data);
     if (!mounted) return;
     await showEmailFormDialog(
       context,
       pdfBytes: bytes,
       filename: '${_filename()}.pdf',
       subject: '8-Line/206WF Medical Incident Report — ${_incidentName.text.trim().isEmpty ? 'ResQruck' : _incidentName.text.trim()}',
+      formType: 'ics206wf',
+      formTitle: '8-Line/206WF Medical Incident Report',
+      summary: data.incidentName.isEmpty ? 'Unknown incident' : data.incidentName,
     );
   }
 

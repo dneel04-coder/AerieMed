@@ -174,6 +174,10 @@ class _Sf261FormScreenState extends State<Sf261FormScreen> {
       pdfBytes: bytes,
       filename: '${_filename()}.pdf',
       subject: 'Crew Time Report (SF-261) — ${_crewName.text.trim().isEmpty ? 'ResQruck' : _crewName.text.trim()}',
+      formType: 'sf261',
+      formTitle: 'Crew Time Report (SF-261)',
+      summary: '${_crewName.text.trim().isEmpty ? 'Unknown crew' : _crewName.text.trim()}'
+          '${_fireName.text.trim().isEmpty ? '' : ' — ${_fireName.text.trim()}'}',
     );
   }
 

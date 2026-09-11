@@ -5,7 +5,6 @@ import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'shift_ticket_pdf.dart';
 import 'form_email_service.dart';
-import 'shift_ticket_record_service.dart';
 import 'signature_pad.dart';
 
 const _kAgreementNumberKey = 'shift_ticket_agreement_number';
@@ -234,18 +233,10 @@ class _ShiftTicketFormScreenState extends State<ShiftTicketFormScreen> {
       pdfBytes: bytes,
       filename: filename,
       subject: 'Shift Ticket — ${_incidentName.text.trim().isEmpty ? 'ResQruck' : _incidentName.text.trim()}',
-      onSent: (recipientEmail, subject) async {
-        final prefs = await SharedPreferences.getInstance();
-        final sentBy = prefs.getString('tac_callsign') ?? '';
-        await recordAndUploadShiftTicket(
-          pdfBytes: bytes,
-          fileName: filename,
-          data: data,
-          recipientEmail: recipientEmail,
-          subject: subject,
-          sentBy: sentBy,
-        );
-      },
+      formType: 'shift_ticket',
+      formTitle: 'Shift Ticket',
+      summary: '${data.incidentName.isEmpty ? 'Unknown incident' : data.incidentName}'
+          '${data.equipmentMakeModel.isEmpty ? '' : ' — ${data.equipmentMakeModel}'}',
     );
   }
 

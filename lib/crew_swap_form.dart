@@ -258,6 +258,10 @@ class _CrewSwapFormScreenState extends State<CrewSwapFormScreen> {
       pdfBytes: bytes,
       filename: '${_filename()}.pdf',
       subject: 'Crew Change Form — ${_incidentName.text.trim().isEmpty ? 'ResQruck' : _incidentName.text.trim()}',
+      formType: 'crew_swap',
+      formTitle: 'Crew Swap',
+      summary: '${_incidentName.text.trim().isEmpty ? 'Unknown incident' : _incidentName.text.trim()}'
+          '${_resourceNumber.text.trim().isEmpty ? '' : ' — ${_resourceNumber.text.trim()}'}',
     );
   }
 

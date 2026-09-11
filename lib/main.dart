@@ -32,6 +32,7 @@ import 'ics206wf_form.dart';
 import 'package:home_widget/home_widget.dart';
 import 'home_widget_service.dart';
 import 'forms_hub_screen.dart';
+import 'form_outbox_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -220,6 +221,10 @@ class _MainShellState extends State<MainShell> {
       _subscribeMissionAssignments();
       _initPushNotifications();
       _initHomeWidget();
+      // Retries any forms that failed to send (no/poor connectivity) on the
+      // previous run, then keeps retrying periodically while the app is
+      // open -- see FormOutboxService.
+      FormOutboxService.instance.startAutoFlush();
     });
   }
 
