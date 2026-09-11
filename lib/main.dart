@@ -31,6 +31,7 @@ import 'push_notification_service.dart';
 import 'ics206wf_form.dart';
 import 'package:home_widget/home_widget.dart';
 import 'home_widget_service.dart';
+import 'forms_hub_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -606,6 +607,7 @@ class _MedHomeScreenState extends State<MedHomeScreen> {
       _MedCardData(Icons.campaign_outlined,  '8-Line/206WF', const Color(0xFFB71C1C), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const Ics206WfFormScreen())))),
       _MedCardData(Icons.terrain,            'Field Guide',  const Color(0xFF4E6B3A), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const BackcountryGuideScreen())))),
       _MedCardData(Icons.checklist_rtl,      'Pre-Deploy\nChecklist', const Color(0xFF0277BD), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const RemsChecklistScreen())))),
+      _MedCardData(Icons.description_outlined,'Forms',        const Color(0xFF6D4C41), gated(() => Navigator.push(context, MaterialPageRoute(builder: (_) => const FormsHubScreen())))),
     ];
 
     return Scaffold(
@@ -1492,6 +1494,7 @@ class _TableOfContentsScreenState extends State<TableOfContentsScreen> {
           const _FeatureTile(Icons.workspace_premium, 'Cert\nVault', Colors.deepPurple, CertVaultScreen()),
           const _FeatureTile(Icons.terrain, 'Field\nGuide', Color(0xFF4E6B3A), BackcountryGuideScreen()),
           const _FeatureTile(Icons.checklist_rtl, 'Pre-Deploy\nChecklist', Color(0xFF0277BD), RemsChecklistScreen()),
+          const _FeatureTile(Icons.description_outlined, 'Forms', Color(0xFF6D4C41), FormsHubScreen()),
         ]),
         _launcherSection('Team Coordination'),
         _launcherGrid(context, const [
