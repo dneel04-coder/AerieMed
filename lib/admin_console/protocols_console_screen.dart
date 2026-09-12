@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show SupabaseClient;
 import '../protocol_admin.dart' show ProtocolSyncService, ProtocolEntry, SupabaseService;
 import '../asset_service.dart' show AssetService, Team;
 
@@ -98,15 +99,7 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
             .where((u) => u.userId.isNotEmpty)
             .toList();
       } catch (_) {}
-      if (widget.role == 'super_admin') {
-        try {
-          final rows = await client.from('organizations').select('id, name').order('name') as List;
-          orgs = rows.map((r) {
-            final m = r as Map<String, dynamic>;
-            return (id: m['id'] as String, name: m['name'] as String? ?? '');
-          }).toList();
-        } catch (_) {}
-      }
+      orgs = await _fetchOrgs(client);
     }
     if (mounted) {
       setState(() {
@@ -119,12 +112,31 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
     }
   }
 
+  /// Organizations a super_admin can push to -- fetched fresh right before
+  /// the push dialog opens (not just once at screen-load), since a new org
+  /// created from the separate Organizations tab wouldn't otherwise show up
+  /// here until this screen's IndexedStack entry happened to reload.
+  Future<List<({String id, String name})>> _fetchOrgs(SupabaseClient? client) async {
+    if (client == null || widget.role != 'super_admin') return [];
+    try {
+      final rows = await client.from('organizations').select('id, name').order('name') as List;
+      return rows.map((r) {
+        final m = r as Map<String, dynamic>;
+        return (id: m['id'] as String, name: m['name'] as String? ?? '');
+      }).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   Future<void> _pickAndUpload() async {
     final result = await FilePicker.platform.pickFiles(
         withData: true, type: FileType.custom, allowedExtensions: ['pdf'], allowMultiple: true);
     if (result == null) return;
     final files = result.files.where((f) => f.bytes != null).map((f) => _PickedFile(f.bytes!, f.name)).toList();
     if (files.isEmpty) return;
+    _orgs = await _fetchOrgs(SupabaseService.client);
+    if (!mounted) return;
     await _showUploadDialog(files);
   }
 
@@ -135,6 +147,8 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
       files.add(_PickedFile(await file.readAsBytes(), file.name));
     }
     if (files.isEmpty) return;
+    _orgs = await _fetchOrgs(SupabaseService.client);
+    if (!mounted) return;
     await _showUploadDialog(files);
   }
 
