@@ -3728,6 +3728,65 @@ do \$\$ begin
     with check (bucket_id = 'transmitted_forms');
 exception when duplicate_object then null; end \$\$;
 
+-- ── Org helper functions (used by RLS policies below and by the app/Console
+-- directly) -- defined FIRST since organizations/org_join_codes' own RLS
+-- policies below reference is_super_admin()/current_user_org_id(), and a
+-- CREATE POLICY expression is validated immediately (unlike a plpgsql
+-- function body, which only gets checked when it's actually called) --
+-- these must exist before any policy can reference them. These only touch
+-- user_profiles, which already exists from earlier in this script, so they
+-- can safely come before organizations/org_join_codes are created.
+
+create or replace function current_user_org_id()
+returns uuid language sql stable security definer set search_path = public as \$\$
+  select org_id from user_profiles where auth_user_id = auth.uid() limit 1;
+\$\$;
+
+create or replace function current_user_id_text()
+returns text language sql stable security definer set search_path = public as \$\$
+  select user_id from user_profiles where auth_user_id = auth.uid() limit 1;
+\$\$;
+
+create or replace function is_super_admin()
+returns boolean language sql stable security definer set search_path = public as \$\$
+  select coalesce((select role = 'super_admin' from user_profiles
+    where auth_user_id = auth.uid() limit 1), false);
+\$\$;
+
+create or replace function is_org_admin(check_org uuid)
+returns boolean language sql stable security definer set search_path = public as \$\$
+  select coalesce((select (role = 'super_admin')
+    or (role = 'org_admin' and org_id = check_org)
+    from user_profiles where auth_user_id = auth.uid() limit 1), false);
+\$\$;
+
+grant execute on function current_user_org_id() to anon, authenticated;
+grant execute on function current_user_id_text() to anon, authenticated;
+grant execute on function is_super_admin() to anon, authenticated;
+grant execute on function is_org_admin(uuid) to anon, authenticated;
+
+-- Two callsign lookups the mobile app currently does as a raw
+-- user_profiles select -- once that table's RLS is flipped to be
+-- org-scoped, an anon/cross-org caller wouldn't be able to see the row it
+-- needs to check, so these give it a narrow, safe way to ask "is this
+-- callsign taken" / "look up my own callsign" without exposing anyone
+-- else's full profile.
+create or replace function callsign_taken(p_callsign text, p_exclude_user_id text default '')
+returns boolean language sql stable security definer set search_path = public as \$\$
+  select exists(select 1 from user_profiles
+    where callsign ilike p_callsign and user_id <> p_exclude_user_id);
+\$\$;
+
+create or replace function find_profile_by_callsign(p_callsign text)
+returns table(user_id text, name text, callsign text, cert_level text, rt130 boolean, rope_rescue boolean)
+language sql stable security definer set search_path = public as \$\$
+  select user_id, name, callsign, cert_level, rt130, rope_rescue
+  from user_profiles where callsign ilike p_callsign limit 1;
+\$\$;
+
+grant execute on function callsign_taken(text, text) to anon, authenticated;
+grant execute on function find_profile_by_callsign(text) to anon, authenticated;
+
 -- ── Organizations & join codes ─────────────────────────────────────────────────
 -- Real per-org data isolation for protocols. A user joins an org by
 -- entering that org's join code at signup; org admins are assigned
@@ -3783,37 +3842,8 @@ do \$\$ begin
     for all using (is_super_admin()) with check (is_super_admin());
 exception when duplicate_object then null; end \$\$;
 
--- ── Org helper functions (used by RLS policies once those are flipped, and
--- by the app/Console directly) ─────────────────────────────────────────────
-
-create or replace function current_user_org_id()
-returns uuid language sql stable security definer set search_path = public as \$\$
-  select org_id from user_profiles where auth_user_id = auth.uid() limit 1;
-\$\$;
-
-create or replace function current_user_id_text()
-returns text language sql stable security definer set search_path = public as \$\$
-  select user_id from user_profiles where auth_user_id = auth.uid() limit 1;
-\$\$;
-
-create or replace function is_super_admin()
-returns boolean language sql stable security definer set search_path = public as \$\$
-  select coalesce((select role = 'super_admin' from user_profiles
-    where auth_user_id = auth.uid() limit 1), false);
-\$\$;
-
-create or replace function is_org_admin(check_org uuid)
-returns boolean language sql stable security definer set search_path = public as \$\$
-  select coalesce((select (role = 'super_admin')
-    or (role = 'org_admin' and org_id = check_org)
-    from user_profiles where auth_user_id = auth.uid() limit 1), false);
-\$\$;
-
-grant execute on function current_user_org_id() to anon, authenticated;
-grant execute on function current_user_id_text() to anon, authenticated;
-grant execute on function is_super_admin() to anon, authenticated;
-grant execute on function is_org_admin(uuid) to anon, authenticated;
-
+-- Depends on both tables above existing, so it's defined here rather than
+-- with the other helper functions.
 create or replace function resolve_join_code(p_code text)
 returns table(org_id uuid, org_name text)
 language sql stable security definer set search_path = public as \$\$
@@ -3823,28 +3853,6 @@ language sql stable security definer set search_path = public as \$\$
   limit 1;
 \$\$;
 grant execute on function resolve_join_code(text) to anon, authenticated;
-
--- Two callsign lookups the mobile app currently does as a raw
--- user_profiles select -- once that table's RLS is flipped to be
--- org-scoped, an anon/cross-org caller wouldn't be able to see the row it
--- needs to check, so these give it a narrow, safe way to ask "is this
--- callsign taken" / "look up my own callsign" without exposing anyone
--- else's full profile.
-create or replace function callsign_taken(p_callsign text, p_exclude_user_id text default '')
-returns boolean language sql stable security definer set search_path = public as \$\$
-  select exists(select 1 from user_profiles
-    where callsign ilike p_callsign and user_id <> p_exclude_user_id);
-\$\$;
-
-create or replace function find_profile_by_callsign(p_callsign text)
-returns table(user_id text, name text, callsign text, cert_level text, rt130 boolean, rope_rescue boolean)
-language sql stable security definer set search_path = public as \$\$
-  select user_id, name, callsign, cert_level, rt130, rope_rescue
-  from user_profiles where callsign ilike p_callsign limit 1;
-\$\$;
-
-grant execute on function callsign_taken(text, text) to anon, authenticated;
-grant execute on function find_profile_by_callsign(text) to anon, authenticated;
 
 -- ── Auth wiring: link a real Supabase Auth signup to a user_profiles row ──────
 -- Fires once per new auth.users row. If the client passed device_user_id in
