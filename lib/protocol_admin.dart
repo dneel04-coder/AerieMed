@@ -3753,27 +3753,42 @@ exception when duplicate_object then null; end \$\$;
 -- user_profiles, which already exists from earlier in this script, so they
 -- can safely come before organizations/org_join_codes are created.
 
+-- LANGUAGE PLPGSQL, not SQL: a plain SQL function body is validated against
+-- the catalog immediately at CREATE FUNCTION time, but org_id/auth_user_id/
+-- role don't exist on user_profiles yet at that point in a fresh run of
+-- this script -- they're only added once resqruck_auto_migrate() is later
+-- INVOKED, not merely defined. A plpgsql body defers that check until the
+-- function is actually called, by which point those columns exist (same
+-- reason resqruck_auto_migrate() itself is plpgsql, not sql).
 create or replace function current_user_org_id()
-returns uuid language sql stable security definer set search_path = public as \$\$
-  select org_id from user_profiles where auth_user_id = auth.uid() limit 1;
+returns uuid language plpgsql stable security definer set search_path = public as \$\$
+begin
+  return (select org_id from user_profiles where auth_user_id = auth.uid() limit 1);
+end;
 \$\$;
 
 create or replace function current_user_id_text()
-returns text language sql stable security definer set search_path = public as \$\$
-  select user_id from user_profiles where auth_user_id = auth.uid() limit 1;
+returns text language plpgsql stable security definer set search_path = public as \$\$
+begin
+  return (select user_id from user_profiles where auth_user_id = auth.uid() limit 1);
+end;
 \$\$;
 
 create or replace function is_super_admin()
-returns boolean language sql stable security definer set search_path = public as \$\$
-  select coalesce((select role = 'super_admin' from user_profiles
+returns boolean language plpgsql stable security definer set search_path = public as \$\$
+begin
+  return coalesce((select role = 'super_admin' from user_profiles
     where auth_user_id = auth.uid() limit 1), false);
+end;
 \$\$;
 
 create or replace function is_org_admin(check_org uuid)
-returns boolean language sql stable security definer set search_path = public as \$\$
-  select coalesce((select (role = 'super_admin')
+returns boolean language plpgsql stable security definer set search_path = public as \$\$
+begin
+  return coalesce((select (role = 'super_admin')
     or (role = 'org_admin' and org_id = check_org)
     from user_profiles where auth_user_id = auth.uid() limit 1), false);
+end;
 \$\$;
 
 grant execute on function current_user_org_id() to anon, authenticated;
