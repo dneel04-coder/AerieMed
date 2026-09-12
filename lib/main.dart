@@ -59,6 +59,11 @@ class _ResQruckAppState extends State<ResQruckApp> {
   // access-code path is unaffected and falls through to normal LoginScreen).
   String? _accessStatus;
   String _deviceUserId = '';
+  // True for an already-logged-in install with no real Supabase Auth session
+  // yet (i.e. it predates org-scoped protocols) -- shown AccountUpgradeScreen
+  // once per launch, skippable, never blocks MainShell.
+  bool _needsAuthUpgrade = false;
+  UserProfile? _upgradeProfile;
 
   @override
   void initState() {
@@ -82,7 +87,17 @@ class _ResQruckAppState extends State<ResQruckApp> {
       }
       return;
     }
-    if (mounted) setState(() { _loggedIn = loggedIn; _authChecked = true; });
+    final authUpgraded = await UserProfile.isAuthUpgraded();
+    UserProfile? profile;
+    if (!authUpgraded) profile = await UserProfile.load();
+    if (mounted) {
+      setState(() {
+        _loggedIn = loggedIn;
+        _needsAuthUpgrade = !authUpgraded;
+        _upgradeProfile = profile;
+        _authChecked = true;
+      });
+    }
   }
 
   void _logout() async {
@@ -161,7 +176,14 @@ class _ResQruckAppState extends State<ResQruckApp> {
       home: !_authChecked
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : _loggedIn
-              ? MainShell(onThemeToggle: toggleTheme, onLogout: _logout)
+              ? (_needsAuthUpgrade && _upgradeProfile != null
+                  ? AccountUpgradeScreen(
+                      profile: _upgradeProfile!,
+                      onDone: () {
+                        if (mounted) setState(() => _needsAuthUpgrade = false);
+                      },
+                    )
+                  : MainShell(onThemeToggle: toggleTheme, onLogout: _logout))
               : _accessStatus != null
                   ? AccessPendingScreen(
                       userId: _deviceUserId,

@@ -99,6 +99,13 @@ class ProtocolEntry {
   // authorized content); 'team' feeds "Team Protocols" (team-specific,
   // non-medical directions).
   final String category;
+  // Org scoping: isPersonal + ownerUserId = visible only to that one user
+  // (created by a user with no organization); otherwise orgId = the
+  // organization this protocol is shared with (every pre-org row backfilled
+  // to the shared "Legacy / Unassigned" org -- see Phase 1 migration).
+  final String? orgId;
+  final bool isPersonal;
+  final String? ownerUserId;
 
   const ProtocolEntry({
     required this.id,
@@ -112,6 +119,9 @@ class ProtocolEntry {
     this.targetUserIds,
     this.targetTeamId,
     this.category = 'medical',
+    this.orgId,
+    this.isPersonal = false,
+    this.ownerUserId,
   });
 
   factory ProtocolEntry.fromMap(Map<String, dynamic> m) => ProtocolEntry(
@@ -126,6 +136,9 @@ class ProtocolEntry {
         targetUserIds: (m['target_user_ids'] as List?)?.cast<String>(),
         targetTeamId: m['target_team_id'] as String?,
         category: m['category'] as String? ?? 'medical',
+        orgId: m['org_id'] as String?,
+        isPersonal: m['is_personal'] as bool? ?? false,
+        ownerUserId: m['owner_user_id'] as String?,
       );
 
   String get localCacheName => '${id}_v$version.pdf';
@@ -250,6 +263,27 @@ class ProtocolSyncService {
     }).toList();
   }
 
+  /// This user's own private protocols (created while org-less, or by choice
+  /// even if a member of an org) -- never shared with anyone else, never
+  /// mixed into activeProtocols/myVisibleProtocols above.
+  Future<List<ProtocolEntry>> myPersonalProtocols() async {
+    final client = await _client();
+    if (client == null) return [];
+    try {
+      final userId = await _userId();
+      return (await client
+              .from('protocols')
+              .select()
+              .eq('is_personal', true)
+              .eq('owner_user_id', userId)
+              .order('name') as List)
+          .map((r) => ProtocolEntry.fromMap(r as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   Future<List<ProtocolEntry>> allProtocols() async {
     final client = await _client();
     if (client == null) return [];
@@ -333,6 +367,14 @@ class ProtocolSyncService {
     }
   }
 
+  /// [isPersonal] true creates/updates a protocol visible only to the
+  /// caller (owner_user_id is set to their own device id, org_id stays
+  /// null) -- this is how a user with no organization gets to keep their
+  /// own protocols. [isPersonal] false (the default, matching existing
+  /// behavior) shares it org-wide via [orgId] -- an org admin's "push to my
+  /// org" action should always pass their own org id here, never let the
+  /// caller pick an arbitrary one, since that's also what the server-side
+  /// RLS check will enforce once org isolation is turned on.
   Future<void> uploadProtocol({
     required String name,
     required String notes,
@@ -342,6 +384,8 @@ class ProtocolSyncService {
     List<String>? targetUserIds,
     String? targetTeamId,
     String category = 'medical',
+    bool isPersonal = false,
+    String? orgId,
   }) async {
     final client = await _client();
     if (client == null) throw Exception('Supabase not configured');
@@ -352,6 +396,7 @@ class ProtocolSyncService {
       bytes,
       fileOptions: const FileOptions(upsert: true, contentType: 'application/pdf'),
     );
+    final ownerUserId = isPersonal ? await _userId() : null;
     if (existingId != null) {
       final row = await client.from('protocols').select('version').eq('id', existingId).single();
       final newVer = ((row['version'] as int?) ?? 1) + 1;
@@ -365,6 +410,9 @@ class ProtocolSyncService {
         'target_user_ids': targetUserIds,
         'target_team_id': targetTeamId,
         'category': category,
+        'is_personal': isPersonal,
+        'owner_user_id': ownerUserId,
+        'org_id': isPersonal ? null : orgId,
       }).eq('id', existingId);
       // Invalidate acknowledgments so users must re-acknowledge this version
       await client.from('protocol_acknowledgments').delete().eq('protocol_id', existingId);
@@ -381,6 +429,9 @@ class ProtocolSyncService {
         'target_user_ids': targetUserIds,
         'target_team_id': targetTeamId,
         'category': category,
+        'is_personal': isPersonal,
+        'owner_user_id': ownerUserId,
+        'org_id': isPersonal ? null : orgId,
       });
     }
   }
