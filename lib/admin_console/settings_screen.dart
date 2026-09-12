@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import '../protocol_admin.dart' show ProtocolSyncService;
+import 'package:supabase_flutter/supabase_flutter.dart' show UserAttributes;
+import '../protocol_admin.dart' show SupabaseService;
 import '../team_settings_service.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -33,28 +34,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _changeCredentials(BuildContext context) async {
-    final curUserCtrl = TextEditingController();
-    final curPassCtrl = TextEditingController();
-    final newUserCtrl = TextEditingController();
+  Future<void> _changePassword(BuildContext context) async {
     final newPassCtrl = TextEditingController();
+    final confirmPassCtrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Change Admin Credentials'),
+        title: const Text('Change Password'),
         content: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: curUserCtrl,
-                decoration: const InputDecoration(labelText: 'Current Username', border: OutlineInputBorder())),
-            const SizedBox(height: 10),
-            TextField(controller: curPassCtrl, obscureText: true,
-                decoration: const InputDecoration(labelText: 'Current Password', border: OutlineInputBorder())),
-            const Divider(height: 24),
-            TextField(controller: newUserCtrl,
-                decoration: const InputDecoration(labelText: 'New Username', border: OutlineInputBorder())),
-            const SizedBox(height: 10),
             TextField(controller: newPassCtrl, obscureText: true,
-                decoration: const InputDecoration(labelText: 'New Password', border: OutlineInputBorder())),
+                decoration: const InputDecoration(labelText: 'New Password', hintText: 'At least 6 characters', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: confirmPassCtrl, obscureText: true,
+                decoration: const InputDecoration(labelText: 'Confirm New Password', border: OutlineInputBorder())),
           ]),
         ),
         actions: [
@@ -64,20 +57,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (ok != true) return;
-    final correctUser = await ProtocolSyncService.instance.getAdminUsername();
-    final correctPass = await ProtocolSyncService.instance.getAdminPassword();
-    if (curUserCtrl.text.trim() != correctUser || curPassCtrl.text != correctPass) {
+    final newPass = newPassCtrl.text;
+    if (newPass.length < 6) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Current credentials incorrect')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Password must be at least 6 characters.'), backgroundColor: Colors.red));
       }
       return;
     }
-    final newUser = newUserCtrl.text.trim();
-    final newPass = newPassCtrl.text;
-    if (newUser.isEmpty || newPass.isEmpty) return;
-    await ProtocolSyncService.instance.setAdminCredentials(newUser, newPass);
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Credentials updated')));
+    if (newPass != confirmPassCtrl.text) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Passwords do not match.'), backgroundColor: Colors.red));
+      }
+      return;
+    }
+    try {
+      final client = SupabaseService.client;
+      if (client == null) throw Exception('Not connected');
+      await client.auth.updateUser(UserAttributes(password: newPass));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password updated')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not update password: $e'), backgroundColor: Colors.red));
+      }
     }
   }
 
@@ -149,10 +155,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Card(
             child: ListTile(
               leading: const Icon(Icons.password_outlined),
-              title: const Text('Admin Credentials'),
-              subtitle: const Text('Shared with the mobile admin panel PIN'),
+              title: const Text('Password'),
+              subtitle: const Text('Change the password for your Command Console account'),
               trailing: FilledButton.tonal(
-                onPressed: () => _changeCredentials(context),
+                onPressed: () => _changePassword(context),
                 child: const Text('Change'),
               ),
             ),

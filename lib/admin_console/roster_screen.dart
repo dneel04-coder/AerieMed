@@ -28,7 +28,21 @@ class _DirectoryUser {
 
 class RosterScreen extends StatefulWidget {
   final TacIncident? incident;
-  const RosterScreen({super.key, required this.incident});
+  // The signed-in admin's own role/org -- an org_admin only ever sees their
+  // own organization's directory; a super_admin sees everyone. RLS itself
+  // stays permissive until a later migration (see the approved org-scoping
+  // plan), so this client-side filter is what actually gives an org_admin
+  // the right scoped view today.
+  final String role;
+  final String? orgId;
+  final String orgName;
+  const RosterScreen({
+    super.key,
+    required this.incident,
+    this.role = 'super_admin',
+    this.orgId,
+    this.orgName = '',
+  });
 
   @override
   State<RosterScreen> createState() => _RosterScreenState();
@@ -102,7 +116,12 @@ class _RosterScreenState extends State<RosterScreen> {
             .toList();
       } catch (_) {}
       try {
-        final rows = await client.from('user_profiles').select() as List;
+        var query = client.from('user_profiles').select();
+        final myOrgId = widget.orgId;
+        if (widget.role == 'org_admin' && myOrgId != null) {
+          query = query.eq('org_id', myOrgId);
+        }
+        final rows = await query as List;
         directory = rows
             .map((r) {
               final m = r as Map<String, dynamic>;
@@ -317,9 +336,12 @@ class _RosterScreenState extends State<RosterScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final title = widget.role == 'super_admin'
+        ? 'Roster — All Organizations (Super Admin)'
+        : 'Roster${widget.orgName.isEmpty ? '' : ' — ${widget.orgName}'}';
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Roster'),
+        title: Text(title),
         actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _load)],
       ),
       body: Column(children: [

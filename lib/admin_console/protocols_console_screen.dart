@@ -15,7 +15,7 @@ class _RosterUser {
   const _RosterUser({required this.userId, required this.display, this.teamId});
 }
 
-enum _ProtocolScope { everyone, team, users }
+enum _ProtocolScope { everyone, team, users, orgWide }
 
 class _PickedFile {
   final Uint8List bytes;
@@ -28,7 +28,19 @@ class _PickedFile {
 /// protocols are a standing library independent of any active incident
 /// (unlike Deployment Orders, which this screen's drag-and-drop UX mirrors).
 class ProtocolsConsoleScreen extends StatefulWidget {
-  const ProtocolsConsoleScreen({super.key});
+  // The signed-in admin's own role/org -- an org_admin's "My Organization"
+  // push always targets their own org (never a client-chosen one, matching
+  // what the server-side RLS check will enforce once org isolation is
+  // turned on); a super_admin gets an org picker instead.
+  final String role;
+  final String? orgId;
+  final String orgName;
+  const ProtocolsConsoleScreen({
+    super.key,
+    this.role = 'super_admin',
+    this.orgId,
+    this.orgName = '',
+  });
 
   @override
   State<ProtocolsConsoleScreen> createState() => _ProtocolsConsoleScreenState();
@@ -38,6 +50,7 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
   List<ProtocolEntry> _protocols = [];
   List<_RosterUser> _roster = [];
   List<Team> _teams = [];
+  List<({String id, String name})> _orgs = [];
   bool _loading = true;
   bool _dragging = false;
   bool _uploading = false;
@@ -53,9 +66,20 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final protocols = await ProtocolSyncService.instance.allProtocols();
+    var protocols = await ProtocolSyncService.instance.allProtocols();
+    // This console manages shared, org-wide protocols only -- an
+    // individual's personal protocols (created while org-less) are theirs
+    // alone and never appear here. An org_admin additionally only manages
+    // their own organization's protocols; client-side for now since RLS on
+    // protocols stays permissive until a later migration (see the approved
+    // org-scoping plan) -- a super_admin sees every org's protocols.
+    protocols = protocols.where((p) => !p.isPersonal).toList();
+    if (widget.role == 'org_admin' && widget.orgId != null) {
+      protocols = protocols.where((p) => p.orgId == widget.orgId).toList();
+    }
     final teams = await AssetService.instance.fetchTeams();
     var roster = <_RosterUser>[];
+    var orgs = <({String id, String name})>[];
     final client = SupabaseService.client;
     if (client != null) {
       try {
@@ -74,12 +98,22 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
             .where((u) => u.userId.isNotEmpty)
             .toList();
       } catch (_) {}
+      if (widget.role == 'super_admin') {
+        try {
+          final rows = await client.from('organizations').select('id, name').order('name') as List;
+          orgs = rows.map((r) {
+            final m = r as Map<String, dynamic>;
+            return (id: m['id'] as String, name: m['name'] as String? ?? '');
+          }).toList();
+        } catch (_) {}
+      }
     }
     if (mounted) {
       setState(() {
         _protocols = protocols;
         _teams = teams;
         _roster = roster;
+        _orgs = orgs;
         _loading = false;
       });
     }
@@ -110,9 +144,14 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
     ];
     final notesCtrl = TextEditingController();
     var category = _categoryFilter;
-    var scope = _ProtocolScope.everyone;
     Team? selectedTeam;
     final selectedUsers = <String>{};
+    var selectedOrgId = widget.orgId;
+    final isSuperAdmin = widget.role == 'super_admin';
+    // A broadcast-to-literally-everyone push is a super_admin-only power --
+    // an org_admin's reach is their own organization (or team/specific users
+    // within it), never every organization in the system.
+    var scope = isSuperAdmin ? _ProtocolScope.everyone : _ProtocolScope.orgWide;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -148,14 +187,37 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
                 const Text('Send to', style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 SegmentedButton<_ProtocolScope>(
-                  segments: const [
-                    ButtonSegment(value: _ProtocolScope.everyone, label: Text('Everyone'), icon: Icon(Icons.public)),
-                    ButtonSegment(value: _ProtocolScope.team, label: Text('Team'), icon: Icon(Icons.groups)),
-                    ButtonSegment(value: _ProtocolScope.users, label: Text('Specific Users'), icon: Icon(Icons.person_pin_circle_outlined)),
+                  segments: [
+                    if (isSuperAdmin)
+                      const ButtonSegment(value: _ProtocolScope.everyone, label: Text('Everyone'), icon: Icon(Icons.public)),
+                    ButtonSegment(
+                        value: _ProtocolScope.orgWide,
+                        label: Text(isSuperAdmin ? 'Organization' : 'My Organization'),
+                        icon: const Icon(Icons.corporate_fare)),
+                    const ButtonSegment(value: _ProtocolScope.team, label: Text('Team'), icon: Icon(Icons.groups)),
+                    const ButtonSegment(value: _ProtocolScope.users, label: Text('Specific Users'), icon: Icon(Icons.person_pin_circle_outlined)),
                   ],
                   selected: {scope},
                   onSelectionChanged: (s) => setDialogState(() => scope = s.first),
                 ),
+                if (scope == _ProtocolScope.orgWide) ...[
+                  const SizedBox(height: 12),
+                  if (isSuperAdmin)
+                    _orgs.isEmpty
+                        ? Text('No organizations yet — create one from the Organizations tab.',
+                            style: TextStyle(color: Colors.grey[600]))
+                        : DropdownButtonFormField<String>(
+                            initialValue: selectedOrgId,
+                            decoration: const InputDecoration(labelText: 'Organization', border: OutlineInputBorder(), isDense: true),
+                            items: _orgs.map((o) => DropdownMenuItem(value: o.id, child: Text(o.name))).toList(),
+                            onChanged: (v) => setDialogState(() => selectedOrgId = v),
+                          )
+                  else
+                    Text(
+                      'Visible to everyone in ${widget.orgName.isEmpty ? 'your organization' : widget.orgName}.',
+                      style: TextStyle(color: Colors.grey[600]),
+                    ),
+                ],
                 if (scope == _ProtocolScope.team) ...[
                   const SizedBox(height: 12),
                   if (_teams.isEmpty)
@@ -205,7 +267,8 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
             TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
             FilledButton(
               onPressed: (scope == _ProtocolScope.team && selectedTeam == null) ||
-                      (scope == _ProtocolScope.users && selectedUsers.isEmpty)
+                      (scope == _ProtocolScope.users && selectedUsers.isEmpty) ||
+                      (scope == _ProtocolScope.orgWide && selectedOrgId == null)
                   ? null
                   : () => Navigator.pop(ctx, true),
               child: const Text('Push'),
@@ -227,12 +290,17 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
           targetUserIds: scope == _ProtocolScope.users ? selectedUsers.toList() : null,
           targetTeamId: scope == _ProtocolScope.team ? selectedTeam?.id : null,
           category: category,
+          orgId: scope == _ProtocolScope.orgWide ? selectedOrgId : null,
         );
       }
       if (mounted) {
         final dest = category == 'medical' ? 'Protocols' : 'Team Protocols';
+        final orgLabel = selectedOrgId == null
+            ? 'your organization'
+            : (_orgs.where((o) => o.id == selectedOrgId).firstOrNull?.name ?? widget.orgName);
         final target = switch (scope) {
           _ProtocolScope.everyone => 'everyone',
+          _ProtocolScope.orgWide => 'organization "$orgLabel"',
           _ProtocolScope.team => 'team "${selectedTeam?.name}"',
           _ProtocolScope.users => '${selectedUsers.length} recipient(s)',
         };
@@ -258,12 +326,17 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
     if (p.targetUserIds != null) {
       return '${p.targetUserIds!.length} specific user(s)';
     }
+    if (p.orgId != null) {
+      final org = _orgs.where((o) => o.id == p.orgId).firstOrNull;
+      return 'Org "${org?.name ?? widget.orgName}"';
+    }
     return 'Everyone';
   }
 
   IconData _scopeIcon(ProtocolEntry p) {
     if (p.targetTeamId != null) return Icons.groups;
     if (p.targetUserIds != null) return Icons.person_pin_circle_outlined;
+    if (p.orgId != null) return Icons.corporate_fare;
     return Icons.public;
   }
 
@@ -436,7 +509,9 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Protocols'),
+          title: Text(widget.role == 'org_admin' && widget.orgName.isNotEmpty
+              ? 'Protocols — ${widget.orgName}'
+              : 'Protocols'),
           actions: [
             if (_filtered.isNotEmpty)
               IconButton(
@@ -502,7 +577,9 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
                           return Card(
                             child: ListTile(
                               leading: Icon(_scopeIcon(p),
-                                  color: p.targetTeamId != null || p.targetUserIds != null ? Colors.orange : Colors.blueGrey),
+                                  color: p.targetTeamId != null || p.targetUserIds != null
+                                      ? Colors.orange
+                                      : (p.orgId != null ? Colors.teal : Colors.blueGrey)),
                               title: Text(p.name),
                               subtitle: Text('${_scopeLabel(p)} • v${p.version} • ${p.updatedBy}'),
                               trailing: Row(
