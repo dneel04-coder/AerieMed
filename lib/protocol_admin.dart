@@ -3547,6 +3547,39 @@ begin
   create trigger access_requests_decision_trigger
     after update on access_requests
     for each row execute function notify_access_decision();
+
+  -- ── Organization scoping (schema only for now -- see organizations/
+  -- org_join_codes below; RLS on protocols/user_profiles/teams stays
+  -- permissive until a later migration explicitly flips it, so this is
+  -- invisible to every install until that happens). auth_user_id links a
+  -- profile to a real Supabase Auth identity once the mobile app's
+  -- account-upgrade flow creates one; existing profiles keep working with
+  -- it null.
+  alter table if exists user_profiles add column if not exists auth_user_id uuid references auth.users(id);
+  alter table if exists user_profiles add column if not exists org_id uuid references organizations(id);
+  alter table if exists user_profiles add column if not exists role text not null default 'member';
+  begin
+    create unique index if not exists user_profiles_auth_user_id_uq
+      on user_profiles (auth_user_id) where auth_user_id is not null;
+  exception when others then null;
+  end;
+  update user_profiles set org_id = '00000000-0000-0000-0000-000000000001'
+    where org_id is null;
+
+  alter table if exists teams add column if not exists org_id uuid references organizations(id);
+  update teams set org_id = '00000000-0000-0000-0000-000000000001' where org_id is null;
+
+  -- protocols: org_id + is_personal/owner_user_id split org-wide content
+  -- (org_id set, is_personal false) from an individual's own private
+  -- protocols (is_personal true, owner_user_id set, org_id left null).
+  -- Every row that predates this column was broadcast-to-everyone, so it
+  -- backfills as org-wide content of the Legacy org -- nothing currently
+  -- live loses visibility.
+  alter table if exists protocols add column if not exists org_id uuid references organizations(id);
+  alter table if exists protocols add column if not exists is_personal boolean not null default false;
+  alter table if exists protocols add column if not exists owner_user_id text;
+  update protocols set org_id = '00000000-0000-0000-0000-000000000001'
+    where org_id is null and is_personal = false;
 end;
 \$func\$;
 
@@ -3643,6 +3676,193 @@ do \$\$ begin
     for all using (bucket_id = 'transmitted_forms')
     with check (bucket_id = 'transmitted_forms');
 exception when duplicate_object then null; end \$\$;
+
+-- ── Organizations & join codes ─────────────────────────────────────────────────
+-- Real per-org data isolation for protocols. A user joins an org by
+-- entering that org's join code at signup; org admins are assigned
+-- manually by a super_admin (see role on user_profiles above), never
+-- self-service. Every pre-existing user/protocol is bucketed into the
+-- fixed-id "Legacy / Unassigned" org below so nothing already live loses
+-- visibility when this ships.
+
+create table if not exists organizations (
+  id uuid default gen_random_uuid() primary key,
+  name text not null,
+  is_default boolean not null default false,
+  created_at timestamptz default now(),
+  created_by uuid references auth.users(id)
+);
+
+create unique index if not exists organizations_one_default_uq
+  on organizations (is_default) where is_default;
+
+insert into organizations (id, name, is_default)
+  values ('00000000-0000-0000-0000-000000000001', 'Legacy / Unassigned', true)
+  on conflict (id) do nothing;
+
+alter table organizations enable row level security;
+
+do \$\$ begin
+  create policy "orgs_select" on organizations
+    for select using (is_super_admin() or id = current_user_org_id());
+exception when duplicate_object then null; end \$\$;
+
+do \$\$ begin
+  create policy "orgs_write" on organizations
+    for all using (is_super_admin()) with check (is_super_admin());
+exception when duplicate_object then null; end \$\$;
+
+create table if not exists org_join_codes (
+  id uuid default gen_random_uuid() primary key,
+  org_id uuid not null references organizations(id) on delete cascade,
+  code text unique not null,
+  is_active boolean not null default true,
+  created_at timestamptz default now(),
+  created_by uuid references auth.users(id)
+);
+
+alter table org_join_codes enable row level security;
+
+-- Deliberately no SELECT policy reachable by anon/authenticated -- a join
+-- code determines a real data-isolation boundary, so it's only ever
+-- resolved through the SECURITY DEFINER resolve_join_code() RPC below, and
+-- otherwise only manageable by a super_admin (who bypasses this policy).
+do \$\$ begin
+  create policy "org_join_codes_admin_all" on org_join_codes
+    for all using (is_super_admin()) with check (is_super_admin());
+exception when duplicate_object then null; end \$\$;
+
+-- ── Org helper functions (used by RLS policies once those are flipped, and
+-- by the app/Console directly) ─────────────────────────────────────────────
+
+create or replace function current_user_org_id()
+returns uuid language sql stable security definer set search_path = public as \$\$
+  select org_id from user_profiles where auth_user_id = auth.uid() limit 1;
+\$\$;
+
+create or replace function current_user_id_text()
+returns text language sql stable security definer set search_path = public as \$\$
+  select user_id from user_profiles where auth_user_id = auth.uid() limit 1;
+\$\$;
+
+create or replace function is_super_admin()
+returns boolean language sql stable security definer set search_path = public as \$\$
+  select coalesce((select role = 'super_admin' from user_profiles
+    where auth_user_id = auth.uid() limit 1), false);
+\$\$;
+
+create or replace function is_org_admin(check_org uuid)
+returns boolean language sql stable security definer set search_path = public as \$\$
+  select coalesce((select (role = 'super_admin')
+    or (role = 'org_admin' and org_id = check_org)
+    from user_profiles where auth_user_id = auth.uid() limit 1), false);
+\$\$;
+
+grant execute on function current_user_org_id() to anon, authenticated;
+grant execute on function current_user_id_text() to anon, authenticated;
+grant execute on function is_super_admin() to anon, authenticated;
+grant execute on function is_org_admin(uuid) to anon, authenticated;
+
+create or replace function resolve_join_code(p_code text)
+returns table(org_id uuid, org_name text)
+language sql stable security definer set search_path = public as \$\$
+  select o.id, o.name from org_join_codes j
+  join organizations o on o.id = j.org_id
+  where j.code = upper(trim(p_code)) and j.is_active = true
+  limit 1;
+\$\$;
+grant execute on function resolve_join_code(text) to anon, authenticated;
+
+-- Two callsign lookups the mobile app currently does as a raw
+-- user_profiles select -- once that table's RLS is flipped to be
+-- org-scoped, an anon/cross-org caller wouldn't be able to see the row it
+-- needs to check, so these give it a narrow, safe way to ask "is this
+-- callsign taken" / "look up my own callsign" without exposing anyone
+-- else's full profile.
+create or replace function callsign_taken(p_callsign text, p_exclude_user_id text default '')
+returns boolean language sql stable security definer set search_path = public as \$\$
+  select exists(select 1 from user_profiles
+    where callsign ilike p_callsign and user_id <> p_exclude_user_id);
+\$\$;
+
+create or replace function find_profile_by_callsign(p_callsign text)
+returns table(user_id text, name text, callsign text, cert_level text, rt130 boolean, rope_rescue boolean)
+language sql stable security definer set search_path = public as \$\$
+  select user_id, name, callsign, cert_level, rt130, rope_rescue
+  from user_profiles where callsign ilike p_callsign limit 1;
+\$\$;
+
+grant execute on function callsign_taken(text, text) to anon, authenticated;
+grant execute on function find_profile_by_callsign(text) to anon, authenticated;
+
+-- ── Auth wiring: link a real Supabase Auth signup to a user_profiles row ──────
+-- Fires once per new auth.users row. If the client passed device_user_id in
+-- signUp()'s data (an existing local install upgrading to a real account),
+-- this links auth_user_id onto that SAME existing profile row instead of
+-- creating a duplicate -- preserving name/callsign/certs/history. Otherwise
+-- (a brand-new signup with no prior local profile) it creates a fresh row.
+-- A join_code that's missing or doesn't resolve falls back to the Legacy
+-- org, never to no org at all (which would make every org-scoped query
+-- return nothing for that user).
+create or replace function handle_new_auth_user()
+returns trigger language plpgsql security definer set search_path = public as \$handleauth\$
+declare
+  meta jsonb := new.raw_user_meta_data;
+  device_uid text := nullif(meta->>'device_user_id', '');
+  join_code text := upper(trim(coalesce(meta->>'join_code', '')));
+  resolved_org uuid;
+begin
+  if join_code <> '' then
+    select org_id into resolved_org from org_join_codes
+      where code = join_code and is_active = true limit 1;
+  end if;
+  if resolved_org is null then
+    resolved_org := '00000000-0000-0000-0000-000000000001'; -- Legacy/Unassigned
+  end if;
+
+  if device_uid is not null then
+    insert into user_profiles (user_id, auth_user_id, org_id, name, callsign)
+      values (device_uid, new.id, resolved_org, coalesce(meta->>'name', ''), coalesce(meta->>'callsign', ''))
+    on conflict (user_id) do update
+      set auth_user_id = excluded.auth_user_id,
+          org_id = coalesce(user_profiles.org_id, excluded.org_id);
+  else
+    insert into user_profiles (user_id, auth_user_id, org_id, name, callsign)
+      values (new.id::text, new.id, resolved_org, coalesce(meta->>'name', ''), coalesce(meta->>'callsign', ''));
+  end if;
+  return new;
+end;
+\$handleauth\$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_auth_user();
+
+-- Guards against a user upserting their own row to grant themselves
+-- org_admin/super_admin or hop into another org -- RLS alone can't do
+-- column-level checks. Exempts direct Postgres/SQL-editor connections
+-- (session_user is postgres/supabase_admin there, never through
+-- anon/authenticated/service_role) so a super_admin can still be bootstrapped
+-- by hand the first time, before anyone holds that role yet.
+create or replace function prevent_self_privilege_escalation()
+returns trigger language plpgsql security definer set search_path = public as \$priv\$
+begin
+  if session_user in ('postgres', 'supabase_admin') then
+    return new;
+  end if;
+  if not (is_org_admin(new.org_id) or is_super_admin()) then
+    new.org_id := old.org_id;
+    new.role := old.role;
+  end if;
+  return new;
+end;
+\$priv\$;
+
+drop trigger if exists user_profiles_privilege_guard on user_profiles;
+create trigger user_profiles_privilege_guard
+  before update on user_profiles
+  for each row execute function prevent_self_privilege_escalation();
 ''';
 
 
