@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -1852,7 +1853,7 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
   void _showSchema() {
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogCtx) => AlertDialog(
         title: const Text('Supabase SQL — Run in SQL Editor'),
         content: const SizedBox(
           width: double.maxFinite,
@@ -1864,7 +1865,22 @@ class _AdminProtocolScreenState extends State<AdminProtocolScreen> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))
+          TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('Close')),
+          // Manually selecting ~39,000 characters of scrollable text is
+          // exactly the kind of thing that silently drops the tail of the
+          // selection -- copy the whole constant directly instead, so what
+          // gets pasted into the SQL editor always matches this file exactly.
+          FilledButton.icon(
+            icon: const Icon(Icons.copy_outlined),
+            label: const Text('Copy All SQL'),
+            onPressed: () async {
+              await Clipboard.setData(const ClipboardData(text: _kAdditionalSql));
+              if (dialogCtx.mounted) {
+                ScaffoldMessenger.of(dialogCtx)
+                    .showSnackBar(const SnackBar(content: Text('Full SQL copied to clipboard')));
+              }
+            },
+          ),
         ],
       ),
     );
