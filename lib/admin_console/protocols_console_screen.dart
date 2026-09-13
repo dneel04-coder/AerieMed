@@ -56,6 +56,8 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
   bool _dragging = false;
   bool _uploading = false;
   String _categoryFilter = 'medical';
+  bool _selecting = false;
+  final Set<String> _selectedIds = {};
 
   List<ProtocolEntry> get _filtered => _protocols.where((p) => p.category == _categoryFilter).toList();
 
@@ -544,6 +546,94 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
     _load();
   }
 
+  void _toggleSelecting() {
+    setState(() {
+      _selecting = !_selecting;
+      _selectedIds.clear();
+    });
+  }
+
+  void _toggleSelected(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  /// Pushes every currently-selected protocol to one organization in one
+  /// action -- clears any existing team/specific-user narrowing on each so
+  /// they end up plainly org-wide, matching what picking "Organization" for
+  /// a single protocol already does.
+  Future<void> _bulkPushToOrg() async {
+    final isSuperAdmin = widget.role == 'super_admin';
+    _orgs = await _fetchOrgs(SupabaseService.client);
+    if (!mounted) return;
+    var selectedOrgId = widget.orgId;
+    final count = _selectedIds.length;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('Push $count Protocol${count == 1 ? '' : 's'} to Organization'),
+          content: SizedBox(
+            width: 420,
+            child: isSuperAdmin
+                ? (_orgs.isEmpty
+                    ? Text('No organizations yet — create one from the Organizations tab.',
+                        style: TextStyle(color: Colors.grey[600]))
+                    : DropdownButtonFormField<String>(
+                        initialValue: selectedOrgId,
+                        decoration: const InputDecoration(labelText: 'Organization', border: OutlineInputBorder(), isDense: true),
+                        items: _orgs.map((o) => DropdownMenuItem(value: o.id, child: Text(o.name))).toList(),
+                        onChanged: (v) => setDialogState(() => selectedOrgId = v),
+                      ))
+                : Text('Visible to everyone in ${widget.orgName.isEmpty ? 'your organization' : widget.orgName}.'),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: selectedOrgId == null ? null : () => Navigator.pop(ctx, true),
+              child: const Text('Push'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted || selectedOrgId == null) return;
+
+    setState(() => _uploading = true);
+    final ids = _selectedIds.toList();
+    var failures = 0;
+    for (final id in ids) {
+      try {
+        await ProtocolSyncService.instance.updateProtocolTargeting(
+          id,
+          targetUserIds: null,
+          targetTeamId: null,
+          isPersonal: false,
+          orgId: selectedOrgId,
+        );
+      } catch (_) {
+        failures++;
+      }
+    }
+    if (mounted) {
+      final orgLabel = _orgs.where((o) => o.id == selectedOrgId).firstOrNull?.name ?? widget.orgName;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(failures == 0
+            ? 'Pushed ${ids.length} protocol${ids.length == 1 ? '' : 's'} to "$orgLabel"'
+            : 'Pushed ${ids.length - failures}/${ids.length} to "$orgLabel" ($failures failed)'),
+        backgroundColor: failures == 0 ? null : Colors.orange,
+      ));
+      setState(() { _uploading = false; _selecting = false; _selectedIds.clear(); });
+    }
+    _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     return DropTarget(
@@ -555,18 +645,51 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(widget.role == 'org_admin' && widget.orgName.isNotEmpty
-              ? 'Protocols — ${widget.orgName}'
-              : 'Protocols'),
-          actions: [
-            if (_filtered.isNotEmpty)
-              IconButton(
-                icon: const Icon(Icons.delete_sweep_outlined),
-                tooltip: 'Delete All',
-                onPressed: _uploading ? null : _confirmDeleteAll,
-              ),
-            IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
-          ],
+          title: Text(_selecting
+              ? '${_selectedIds.length} selected'
+              : (widget.role == 'org_admin' && widget.orgName.isNotEmpty
+                  ? 'Protocols — ${widget.orgName}'
+                  : 'Protocols')),
+          leading: _selecting
+              ? IconButton(icon: const Icon(Icons.close), tooltip: 'Cancel', onPressed: _toggleSelecting)
+              : null,
+          actions: _selecting
+              ? [
+                  TextButton(
+                    onPressed: () => setState(() {
+                      if (_selectedIds.length == _filtered.length) {
+                        _selectedIds.clear();
+                      } else {
+                        _selectedIds
+                          ..clear()
+                          ..addAll(_filtered.map((p) => p.id));
+                      }
+                    }),
+                    child: Text(_selectedIds.length == _filtered.length ? 'Select None' : 'Select All'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: _selectedIds.isEmpty || _uploading ? null : _bulkPushToOrg,
+                    icon: const Icon(Icons.corporate_fare),
+                    label: const Text('Push to Organization'),
+                  ),
+                  const SizedBox(width: 16),
+                ]
+              : [
+                  if (_filtered.isNotEmpty)
+                    IconButton(
+                      icon: const Icon(Icons.checklist_outlined),
+                      tooltip: 'Select multiple',
+                      onPressed: _toggleSelecting,
+                    ),
+                  if (_filtered.isNotEmpty)
+                    IconButton(
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                      tooltip: 'Delete All',
+                      onPressed: _uploading ? null : _confirmDeleteAll,
+                    ),
+                  IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
+                ],
         ),
         body: Column(children: [
           Padding(
@@ -620,29 +743,35 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
                         itemCount: _filtered.length,
                         itemBuilder: (_, i) {
                           final p = _filtered[i];
+                          final selected = _selectedIds.contains(p.id);
                           return Card(
                             child: ListTile(
-                              leading: Icon(_scopeIcon(p),
-                                  color: p.targetTeamId != null || p.targetUserIds != null
-                                      ? Colors.orange
-                                      : (p.orgId != null ? Colors.teal : Colors.blueGrey)),
+                              onTap: _selecting ? () => _toggleSelected(p.id) : null,
+                              leading: _selecting
+                                  ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(p.id))
+                                  : Icon(_scopeIcon(p),
+                                      color: p.targetTeamId != null || p.targetUserIds != null
+                                          ? Colors.orange
+                                          : (p.orgId != null ? Colors.teal : Colors.blueGrey)),
                               title: Text(p.name),
                               subtitle: Text('${_scopeLabel(p)} • v${p.version} • ${p.updatedBy}'),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.edit_outlined),
-                                    tooltip: 'Edit Recipients',
-                                    onPressed: () => _confirmEditRecipients(p),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete_outline, color: Colors.red),
-                                    tooltip: 'Delete',
-                                    onPressed: () => _confirmDelete(p),
-                                  ),
-                                ],
-                              ),
+                              trailing: _selecting
+                                  ? null
+                                  : Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(Icons.edit_outlined),
+                                          tooltip: 'Edit Recipients',
+                                          onPressed: () => _confirmEditRecipients(p),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                          tooltip: 'Delete',
+                                          onPressed: () => _confirmDelete(p),
+                                        ),
+                                      ],
+                                    ),
                             ),
                           );
                         },
