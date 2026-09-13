@@ -1050,14 +1050,44 @@ class _AccountUpgradeScreenState extends State<AccountUpgradeScreen> {
   final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
   final _confirmPasswordCtrl = TextEditingController();
+  final _joinCodeCtrl = TextEditingController();
   bool _saving = false;
+  String? _resolvedOrgName;
+  bool _resolvingCode = false;
 
   @override
   void dispose() {
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
     _confirmPasswordCtrl.dispose();
+    _joinCodeCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _resolveJoinCode() async {
+    final code = _joinCodeCtrl.text.trim();
+    if (code.isEmpty) {
+      setState(() => _resolvedOrgName = null);
+      return;
+    }
+    setState(() => _resolvingCode = true);
+    final ok = await SupabaseService.ensureInitialized();
+    if (!mounted) return;
+    if (!ok) {
+      setState(() { _resolvingCode = false; _resolvedOrgName = null; });
+      return;
+    }
+    try {
+      final rows = await SupabaseService.client!
+          .rpc('resolve_join_code', params: {'p_code': code}) as List;
+      if (!mounted) return;
+      setState(() {
+        _resolvedOrgName = rows.isEmpty ? null : (rows.first['org_name'] as String?);
+        _resolvingCode = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() { _resolvingCode = false; _resolvedOrgName = null; });
+    }
   }
 
   Future<void> _upgrade() async {
@@ -1094,6 +1124,7 @@ class _AccountUpgradeScreenState extends State<AccountUpgradeScreen> {
         password: password,
         data: {
           'device_user_id': widget.profile.userId,
+          'join_code': _joinCodeCtrl.text.trim(),
           'name': widget.profile.name,
           'callsign': widget.profile.callsign,
         },
@@ -1158,6 +1189,34 @@ class _AccountUpgradeScreenState extends State<AccountUpgradeScreen> {
               decoration: const InputDecoration(
                   labelText: 'Confirm Password *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock_outline)),
             ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _joinCodeCtrl,
+              textCapitalization: TextCapitalization.characters,
+              autocorrect: false,
+              enableSuggestions: false,
+              onChanged: (_) => _resolveJoinCode(),
+              decoration: InputDecoration(
+                labelText: 'Organization Join Code',
+                hintText: 'Optional — ask your organization admin',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.groups_outlined),
+                suffixIcon: _resolvingCode
+                    ? const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)))
+                    : null,
+              ),
+            ),
+            if (_resolvedOrgName != null) ...[
+              const SizedBox(height: 6),
+              Text('Joining: $_resolvedOrgName',
+                  style: TextStyle(fontSize: 12, color: cs.primary, fontWeight: FontWeight.w600)),
+            ] else if (_joinCodeCtrl.text.trim().isNotEmpty && !_resolvingCode) ...[
+              const SizedBox(height: 6),
+              const Text('Code not recognized — check with your organization admin.',
+                  style: TextStyle(fontSize: 12, color: Colors.red)),
+            ],
             const SizedBox(height: 24),
             FilledButton(
               onPressed: _saving ? null : _upgrade,

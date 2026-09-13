@@ -409,13 +409,19 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
   }
 
   Future<void> _confirmEditRecipients(ProtocolEntry p) async {
-    var scope = p.targetTeamId != null
-        ? _ProtocolScope.team
-        : p.targetUserIds != null
-            ? _ProtocolScope.users
-            : _ProtocolScope.everyone;
+    _orgs = await _fetchOrgs(SupabaseService.client);
+    if (!mounted) return;
+    final isSuperAdmin = widget.role == 'super_admin';
+    var scope = p.orgId != null
+        ? _ProtocolScope.orgWide
+        : p.targetTeamId != null
+            ? _ProtocolScope.team
+            : p.targetUserIds != null
+                ? _ProtocolScope.users
+                : _ProtocolScope.everyone;
     Team? selectedTeam = p.targetTeamId == null ? null : _teams.where((t) => t.id == p.targetTeamId).firstOrNull;
     final selectedUsers = <String>{...?p.targetUserIds};
+    var selectedOrgId = p.orgId ?? widget.orgId;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -427,14 +433,37 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
             child: SingleChildScrollView(
               child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
                 SegmentedButton<_ProtocolScope>(
-                  segments: const [
-                    ButtonSegment(value: _ProtocolScope.everyone, label: Text('Everyone'), icon: Icon(Icons.public)),
-                    ButtonSegment(value: _ProtocolScope.team, label: Text('Team'), icon: Icon(Icons.groups)),
-                    ButtonSegment(value: _ProtocolScope.users, label: Text('Specific Users'), icon: Icon(Icons.person_pin_circle_outlined)),
+                  segments: [
+                    if (isSuperAdmin)
+                      const ButtonSegment(value: _ProtocolScope.everyone, label: Text('Everyone'), icon: Icon(Icons.public)),
+                    ButtonSegment(
+                        value: _ProtocolScope.orgWide,
+                        label: Text(isSuperAdmin ? 'Organization' : 'My Organization'),
+                        icon: const Icon(Icons.corporate_fare)),
+                    const ButtonSegment(value: _ProtocolScope.team, label: Text('Team'), icon: Icon(Icons.groups)),
+                    const ButtonSegment(value: _ProtocolScope.users, label: Text('Specific Users'), icon: Icon(Icons.person_pin_circle_outlined)),
                   ],
                   selected: {scope},
                   onSelectionChanged: (s) => setDialogState(() => scope = s.first),
                 ),
+                if (scope == _ProtocolScope.orgWide) ...[
+                  const SizedBox(height: 12),
+                  if (isSuperAdmin)
+                    _orgs.isEmpty
+                        ? Text('No organizations yet — create one from the Organizations tab.',
+                            style: TextStyle(color: Colors.grey[600]))
+                        : DropdownButtonFormField<String>(
+                            initialValue: selectedOrgId,
+                            decoration: const InputDecoration(labelText: 'Organization', border: OutlineInputBorder(), isDense: true),
+                            items: _orgs.map((o) => DropdownMenuItem(value: o.id, child: Text(o.name))).toList(),
+                            onChanged: (v) => setDialogState(() => selectedOrgId = v),
+                          )
+                  else
+                    Text(
+                      'Visible to everyone in ${widget.orgName.isEmpty ? 'your organization' : widget.orgName}.',
+                      style: TextStyle(color: Colors.grey[600]),
+                    ),
+                ],
                 if (scope == _ProtocolScope.team) ...[
                   const SizedBox(height: 12),
                   if (_teams.isEmpty)
@@ -484,7 +513,8 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
             TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
             FilledButton(
               onPressed: (scope == _ProtocolScope.team && selectedTeam == null) ||
-                      (scope == _ProtocolScope.users && selectedUsers.isEmpty)
+                      (scope == _ProtocolScope.users && selectedUsers.isEmpty) ||
+                      (scope == _ProtocolScope.orgWide && selectedOrgId == null)
                   ? null
                   : () => Navigator.pop(ctx, true),
               child: const Text('Save'),
@@ -500,6 +530,8 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
         p.id,
         targetUserIds: scope == _ProtocolScope.users ? selectedUsers.toList() : null,
         targetTeamId: scope == _ProtocolScope.team ? selectedTeam?.id : null,
+        isPersonal: false,
+        orgId: scope == _ProtocolScope.orgWide ? selectedOrgId : null,
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Updated recipients for "${p.name}"')));

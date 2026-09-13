@@ -444,13 +444,22 @@ class ProtocolSyncService {
     String id, {
     List<String>? targetUserIds,
     String? targetTeamId,
+    bool? isPersonal,
+    String? orgId,
   }) async {
     final client = await _client();
     if (client == null) return;
-    await client.from('protocols').update({
+    final update = <String, dynamic>{
       'target_user_ids': targetUserIds,
       'target_team_id': targetTeamId,
-    }).eq('id', id);
+    };
+    // Only touch org scoping when the caller explicitly passes isPersonal --
+    // existing callers that don't know about orgs leave it untouched.
+    if (isPersonal != null) {
+      update['is_personal'] = isPersonal;
+      update['org_id'] = isPersonal ? null : orgId;
+    }
+    await client.from('protocols').update(update).eq('id', id);
   }
 
   Future<void> toggleActive(String id, bool active) async {
@@ -3915,7 +3924,19 @@ begin
       values (device_uid, new.id, resolved_org, coalesce(meta->>'name', ''), coalesce(meta->>'callsign', ''))
     on conflict (user_id) do update
       set auth_user_id = excluded.auth_user_id,
-          org_id = coalesce(user_profiles.org_id, excluded.org_id);
+          -- Every pre-existing profile was backfilled to Legacy in Phase 1,
+          -- so a plain coalesce() here would never let an upgrading user's
+          -- join code actually take effect (the old value is never null).
+          -- Only adopt the newly resolved org while the row is still at
+          -- Legacy/unassigned -- once a super_admin (or an earlier join
+          -- code) has placed someone in a real org, a resubmitted code
+          -- during a later upgrade shouldn't silently move them elsewhere.
+          org_id = case
+            when user_profiles.org_id is null
+              or user_profiles.org_id = '00000000-0000-0000-0000-000000000001'
+              then excluded.org_id
+            else user_profiles.org_id
+          end;
   else
     insert into user_profiles (user_id, auth_user_id, org_id, name, callsign)
       values (new.id::text, new.id, resolved_org, coalesce(meta->>'name', ''), coalesce(meta->>'callsign', ''));
