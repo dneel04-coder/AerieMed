@@ -251,6 +251,86 @@ class _OrgManagementScreenState extends State<OrgManagementScreen> {
     }
   }
 
+  /// Directly assigns any roster member into this org -- role is left
+  /// untouched (stays 'member' for a regular user), only org_id changes.
+  /// Separate from _assignAdmin, which also grants org_admin.
+  Future<void> _addMember(_Org org) async {
+    final searchCtrl = TextEditingController();
+    final picked = await showDialog<_RosterUser>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final query = searchCtrl.text.trim().toLowerCase();
+          final candidates = _roster
+              .where((u) => u.orgId != org.id)
+              .where((u) => u.display.toLowerCase().contains(query))
+              .toList();
+          return AlertDialog(
+            title: Text('Add User — ${org.name}'),
+            content: SizedBox(
+              width: 420,
+              height: 420,
+              child: Column(children: [
+                TextField(
+                  controller: searchCtrl,
+                  decoration: const InputDecoration(hintText: 'Search by name or callsign…', prefixIcon: Icon(Icons.search), isDense: true, border: OutlineInputBorder()),
+                  onChanged: (_) => setDialogState(() {}),
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: candidates.isEmpty
+                      ? Center(child: Text('No users found.', style: TextStyle(color: Colors.grey[600])))
+                      : ListView.builder(
+                          itemCount: candidates.length,
+                          itemBuilder: (_, i) {
+                            final u = candidates[i];
+                            return ListTile(
+                              title: Text(u.display),
+                              subtitle: Text(u.role == 'member' ? 'Member' : u.role == 'org_admin' ? 'Org Admin' : 'Super Admin'),
+                              onTap: () => Navigator.pop(ctx, u),
+                            );
+                          },
+                        ),
+                ),
+              ]),
+            ),
+            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel'))],
+          );
+        },
+      ),
+    );
+    if (picked == null || !mounted) return;
+    final client = SupabaseService.client;
+    if (client == null) return;
+    try {
+      await client.from('user_profiles').update({'org_id': org.id}).eq('user_id', picked.userId);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added ${picked.display} to ${org.name}.')));
+      }
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not add user: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  /// Moves a member back to the shared Legacy/Unassigned bucket -- doesn't
+  /// touch role, so revoking an org_admin's org membership entirely should
+  /// be done via _revokeAdmin first.
+  Future<void> _removeFromOrg(_RosterUser user) async {
+    final client = SupabaseService.client;
+    if (client == null) return;
+    try {
+      await client.from('user_profiles').update({'org_id': '00000000-0000-0000-0000-000000000001'}).eq('user_id', user.userId);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not remove user: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -273,6 +353,7 @@ class _OrgManagementScreenState extends State<OrgManagementScreen> {
                   itemBuilder: (_, i) {
                     final org = _orgs[i];
                     final admins = _roster.where((u) => u.orgId == org.id && u.role == 'org_admin').toList();
+                    final members = _roster.where((u) => u.orgId == org.id && u.role == 'member').toList();
                     final codes = _codesByOrg[org.id] ?? const <_JoinCode>[];
                     final expanded = _expanded.contains(org.id);
                     return Card(
@@ -283,7 +364,7 @@ class _OrgManagementScreenState extends State<OrgManagementScreen> {
                           title: Text(org.name),
                           subtitle: Text(org.isDefault
                               ? 'Default bucket for users without a real organization'
-                              : '${admins.length} admin(s) • ${codes.where((c) => c.isActive).length} active join code(s)'),
+                              : '${members.length} member(s) • ${admins.length} admin(s) • ${codes.where((c) => c.isActive).length} active join code(s)'),
                           trailing: IconButton(
                             icon: Icon(expanded ? Icons.expand_less : Icons.expand_more),
                             onPressed: () => setState(() {
@@ -344,6 +425,30 @@ class _OrgManagementScreenState extends State<OrgManagementScreen> {
                                       leading: const Icon(Icons.admin_panel_settings_outlined),
                                       title: Text(a.display),
                                       trailing: TextButton(onPressed: () => _revokeAdmin(a), child: const Text('Revoke')),
+                                    )),
+                              const SizedBox(height: 16),
+                              Row(children: [
+                                Text('Members', style: Theme.of(context).textTheme.titleSmall),
+                                const Spacer(),
+                                OutlinedButton.icon(
+                                  onPressed: () => _addMember(org),
+                                  icon: const Icon(Icons.person_add_alt_outlined),
+                                  label: const Text('Add User'),
+                                ),
+                              ]),
+                              const SizedBox(height: 8),
+                              if (members.isEmpty)
+                                Text('No members yet.', style: TextStyle(color: Colors.grey[600]))
+                              else
+                                ...members.map((m) => ListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: const Icon(Icons.person_outline),
+                                      title: Text(m.display),
+                                      trailing: TextButton(
+                                        onPressed: () => _removeFromOrg(m),
+                                        child: const Text('Remove'),
+                                      ),
                                     )),
                             ]),
                           ),
