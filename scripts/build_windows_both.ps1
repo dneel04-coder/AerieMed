@@ -10,19 +10,33 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# Copies the CONTENTS of the freshly built Release folder into $dest,
+# never the folder itself -- Copy-Item -Recurse "Release" "$dest" nests a
+# Release\ subfolder inside $dest instead of overwriting in place whenever
+# $dest already exists (e.g. Remove-Item below silently failed because the
+# old .exe was still running and locked), leaving a broken top-level exe
+# with no data\ folder next to it that fails to launch at all. Failing
+# loudly here beats silently shipping that.
+function Copy-BuildOutput([string]$dest) {
+  Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+  if (Test-Path $dest) {
+    throw "Could not remove $dest -- is resqruck.exe still running from a previous test? Close it and try again."
+  }
+  New-Item -ItemType Directory -Force -Path $dest | Out-Null
+  Copy-Item -Path "build/windows/x64/runner/Release/*" -Destination $dest -Recurse -Force
+}
+
 Write-Host "Building field app (lib/main.dart)..."
 flutter build windows --release
 if ($LASTEXITCODE -ne 0) { throw "Field app build failed" }
-Remove-Item -Recurse -Force "dist/field-app-windows" -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path "dist" | Out-Null
-Copy-Item -Recurse "build/windows/x64/runner/Release" "dist/field-app-windows"
+Copy-BuildOutput "dist/field-app-windows"
 Write-Host "-> dist/field-app-windows/resqruck.exe"
 
 Write-Host "Building Command Console (lib/main_admin.dart)..."
 flutter build windows --release -t lib/main_admin.dart
 if ($LASTEXITCODE -ne 0) { throw "Command Console build failed" }
-Remove-Item -Recurse -Force "dist/command-console-windows" -ErrorAction SilentlyContinue
-Copy-Item -Recurse "build/windows/x64/runner/Release" "dist/command-console-windows"
+Copy-BuildOutput "dist/command-console-windows"
 Write-Host "-> dist/command-console-windows/resqruck.exe"
 
 Write-Host "Done. Both apps are named resqruck.exe -- keep them in their separate dist/ folders."
