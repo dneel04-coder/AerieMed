@@ -216,7 +216,7 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
                   selected: {scope},
                   onSelectionChanged: (s) => setDialogState(() => scope = s.first),
                 ),
-                if (scope == _ProtocolScope.orgWide) ...[
+                if (scope != _ProtocolScope.everyone) ...[
                   const SizedBox(height: 12),
                   if (isSuperAdmin)
                     _orgs.isEmpty
@@ -224,11 +224,15 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
                             style: TextStyle(color: Colors.grey[600]))
                         : DropdownButtonFormField<String>(
                             initialValue: selectedOrgId,
-                            decoration: const InputDecoration(labelText: 'Organization', border: OutlineInputBorder(), isDense: true),
+                            decoration: InputDecoration(
+                              labelText: scope == _ProtocolScope.orgWide ? 'Organization' : 'Organization (required)',
+                              border: const OutlineInputBorder(),
+                              isDense: true,
+                            ),
                             items: _orgs.map((o) => DropdownMenuItem(value: o.id, child: Text(o.name))).toList(),
                             onChanged: (v) => setDialogState(() => selectedOrgId = v),
                           )
-                  else
+                  else if (scope == _ProtocolScope.orgWide)
                     Text(
                       'Visible to everyone in ${widget.orgName.isEmpty ? 'your organization' : widget.orgName}.',
                       style: TextStyle(color: Colors.grey[600]),
@@ -284,7 +288,7 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
             FilledButton(
               onPressed: (scope == _ProtocolScope.team && selectedTeam == null) ||
                       (scope == _ProtocolScope.users && selectedUsers.isEmpty) ||
-                      (scope == _ProtocolScope.orgWide && selectedOrgId == null)
+                      (scope != _ProtocolScope.everyone && selectedOrgId == null)
                   ? null
                   : () => Navigator.pop(ctx, true),
               child: const Text('Push'),
@@ -306,7 +310,10 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
           targetUserIds: scope == _ProtocolScope.users ? selectedUsers.toList() : null,
           targetTeamId: scope == _ProtocolScope.team ? selectedTeam?.id : null,
           category: category,
-          orgId: scope == _ProtocolScope.orgWide ? selectedOrgId : null,
+          // Team/Specific-Users targeting narrows WITHIN an org's own
+          // protocols, it isn't an alternative to org scoping -- only a
+          // true "Everyone" broadcast (super_admin only) has no org at all.
+          orgId: scope == _ProtocolScope.everyone ? null : selectedOrgId,
         );
       }
       if (mounted) {
@@ -448,7 +455,7 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
                   selected: {scope},
                   onSelectionChanged: (s) => setDialogState(() => scope = s.first),
                 ),
-                if (scope == _ProtocolScope.orgWide) ...[
+                if (scope != _ProtocolScope.everyone) ...[
                   const SizedBox(height: 12),
                   if (isSuperAdmin)
                     _orgs.isEmpty
@@ -456,11 +463,15 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
                             style: TextStyle(color: Colors.grey[600]))
                         : DropdownButtonFormField<String>(
                             initialValue: selectedOrgId,
-                            decoration: const InputDecoration(labelText: 'Organization', border: OutlineInputBorder(), isDense: true),
+                            decoration: InputDecoration(
+                              labelText: scope == _ProtocolScope.orgWide ? 'Organization' : 'Organization (required)',
+                              border: const OutlineInputBorder(),
+                              isDense: true,
+                            ),
                             items: _orgs.map((o) => DropdownMenuItem(value: o.id, child: Text(o.name))).toList(),
                             onChanged: (v) => setDialogState(() => selectedOrgId = v),
                           )
-                  else
+                  else if (scope == _ProtocolScope.orgWide)
                     Text(
                       'Visible to everyone in ${widget.orgName.isEmpty ? 'your organization' : widget.orgName}.',
                       style: TextStyle(color: Colors.grey[600]),
@@ -516,7 +527,7 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
             FilledButton(
               onPressed: (scope == _ProtocolScope.team && selectedTeam == null) ||
                       (scope == _ProtocolScope.users && selectedUsers.isEmpty) ||
-                      (scope == _ProtocolScope.orgWide && selectedOrgId == null)
+                      (scope != _ProtocolScope.everyone && selectedOrgId == null)
                   ? null
                   : () => Navigator.pop(ctx, true),
               child: const Text('Save'),
@@ -533,7 +544,7 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
         targetUserIds: scope == _ProtocolScope.users ? selectedUsers.toList() : null,
         targetTeamId: scope == _ProtocolScope.team ? selectedTeam?.id : null,
         isPersonal: false,
-        orgId: scope == _ProtocolScope.orgWide ? selectedOrgId : null,
+        orgId: scope == _ProtocolScope.everyone ? null : selectedOrgId,
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Updated recipients for "${p.name}"')));

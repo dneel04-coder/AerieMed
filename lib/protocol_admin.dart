@@ -3920,41 +3920,48 @@ select resqruck_auto_migrate();
 -- by that org's admin (or you, for your own personal protocol).
 drop policy if exists "public_access" on protocols;
 
-do \$\$ begin
-  create policy "protocols_select" on protocols for select using (
-    is_super_admin()
-    or (is_personal = false and org_id = current_user_org_id())
-    or (is_personal = true and owner_user_id = current_user_id_text())
-  );
-exception when duplicate_object then null; end \$\$;
+-- Explicit drop-then-create (not the create-and-swallow-duplicate_object
+-- pattern used elsewhere in this file) because these bodies are expected to
+-- need revisions as the org system matures -- e.g. this exact update, which
+-- adds "org_id is null" as a genuine broadcast-to-everyone case. The
+-- swallow-duplicate pattern would silently keep the OLD policy body on a
+-- second run, since CREATE POLICY errors (and gets caught) if one by that
+-- name already exists.
+drop policy if exists "protocols_select" on protocols;
+create policy "protocols_select" on protocols for select using (
+  is_super_admin()
+  -- org_id is null + is_personal false = a genuine "Everyone" broadcast
+  -- (super_admin-only to create, via the Console's "Everyone" scope) --
+  -- without this, NULL = current_user_org_id() is never true in SQL, so
+  -- broadcasts would otherwise be invisible to everyone but super_admin.
+  or (is_personal = false and (org_id is null or org_id = current_user_org_id()))
+  or (is_personal = true and owner_user_id = current_user_id_text())
+);
 
-do \$\$ begin
-  create policy "protocols_insert" on protocols for insert with check (
-    is_super_admin()
-    or (is_personal = false and is_org_admin(org_id))
-    or (is_personal = true and owner_user_id = current_user_id_text())
-  );
-exception when duplicate_object then null; end \$\$;
+drop policy if exists "protocols_insert" on protocols;
+create policy "protocols_insert" on protocols for insert with check (
+  is_super_admin()
+  or (is_personal = false and org_id is not null and is_org_admin(org_id))
+  or (is_personal = true and owner_user_id = current_user_id_text())
+);
 
-do \$\$ begin
-  create policy "protocols_update" on protocols for update using (
-    is_super_admin()
-    or (is_personal = false and is_org_admin(org_id))
-    or (is_personal = true and owner_user_id = current_user_id_text())
-  ) with check (
-    is_super_admin()
-    or (is_personal = false and is_org_admin(org_id))
-    or (is_personal = true and owner_user_id = current_user_id_text())
-  );
-exception when duplicate_object then null; end \$\$;
+drop policy if exists "protocols_update" on protocols;
+create policy "protocols_update" on protocols for update using (
+  is_super_admin()
+  or (is_personal = false and org_id is not null and is_org_admin(org_id))
+  or (is_personal = true and owner_user_id = current_user_id_text())
+) with check (
+  is_super_admin()
+  or (is_personal = false and org_id is not null and is_org_admin(org_id))
+  or (is_personal = true and owner_user_id = current_user_id_text())
+);
 
-do \$\$ begin
-  create policy "protocols_delete" on protocols for delete using (
-    is_super_admin()
-    or (is_personal = false and is_org_admin(org_id))
-    or (is_personal = true and owner_user_id = current_user_id_text())
-  );
-exception when duplicate_object then null; end \$\$;
+drop policy if exists "protocols_delete" on protocols;
+create policy "protocols_delete" on protocols for delete using (
+  is_super_admin()
+  or (is_personal = false and org_id is not null and is_org_admin(org_id))
+  or (is_personal = true and owner_user_id = current_user_id_text())
+);
 
 -- ── Auth wiring: link a real Supabase Auth signup to a user_profiles row ──────
 -- Fires once per new auth.users row. If the client passed device_user_id in
