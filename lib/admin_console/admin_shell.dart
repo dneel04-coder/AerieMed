@@ -48,6 +48,7 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
   final _activeIncident = ActiveIncidentController();
 
   bool get _isSuperAdmin => widget.role == 'super_admin';
+  bool get _canManageOrg => widget.role == 'super_admin' || widget.role == 'org_admin';
 
   @override
   void dispose() {
@@ -67,8 +68,12 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
       const NavigationRailDestination(icon: Icon(Icons.assignment_outlined), selectedIcon: Icon(Icons.assignment), label: Text('Reports')),
       const NavigationRailDestination(icon: Icon(Icons.how_to_reg_outlined), selectedIcon: Icon(Icons.how_to_reg), label: Text('Access Requests')),
       const NavigationRailDestination(icon: Icon(Icons.menu_book_outlined), selectedIcon: Icon(Icons.menu_book), label: Text('Protocols')),
-      if (_isSuperAdmin)
-        const NavigationRailDestination(icon: Icon(Icons.corporate_fare_outlined), selectedIcon: Icon(Icons.corporate_fare), label: Text('Organizations')),
+      if (_canManageOrg)
+        NavigationRailDestination(
+          icon: const Icon(Icons.corporate_fare_outlined),
+          selectedIcon: const Icon(Icons.corporate_fare),
+          label: Text(_isSuperAdmin ? 'Organizations' : 'My Org'),
+        ),
       const NavigationRailDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: Text('Settings')),
     ];
 
@@ -82,7 +87,7 @@ class _AdminShellScreenState extends State<AdminShellScreen> {
       ReportsConsoleScreen(incident: _activeIncident.incident),
       const AccessRequestsScreen(),
       ProtocolsConsoleScreen(role: widget.role, orgId: widget.orgId, orgName: widget.orgName),
-      if (_isSuperAdmin) const OrgManagementScreen(),
+      if (_canManageOrg) OrgManagementScreen(role: widget.role, orgId: widget.orgId),
       SettingsScreen(onSignOut: widget.onSignOut),
     ];
 

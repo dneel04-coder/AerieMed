@@ -31,12 +31,20 @@ String _generateJoinCode() {
   return List.generate(8, (_) => _kCodeAlphabet[rng.nextInt(_kCodeAlphabet.length)]).join();
 }
 
-/// Super-admin-only: create organizations, generate/revoke their join
-/// codes, and assign roster members as org_admin for a specific org. This
-/// is the manual-assignment workflow the org-scoping plan calls for --
-/// there is no self-service "first signup becomes admin" path anywhere.
+/// Create organizations, generate/revoke their join codes, and manage
+/// membership (add/remove users, assign/revoke org_admin) -- the manual
+/// workflow the org-scoping plan calls for; there is no self-service
+/// "first signup becomes admin" path anywhere. A super_admin sees and can
+/// create/manage every organization; an org_admin only ever sees their own
+/// (no "New Organization" action, no visibility into anyone else's org) --
+/// this is also how an org_admin removes someone's protocol access when
+/// they leave the team: Members -> Remove sends them back to the shared
+/// Legacy/Unassigned bucket, which the protocols RLS policy no longer
+/// matches against their old organization.
 class OrgManagementScreen extends StatefulWidget {
-  const OrgManagementScreen({super.key});
+  final String role;
+  final String? orgId;
+  const OrgManagementScreen({super.key, required this.role, required this.orgId});
 
   @override
   State<OrgManagementScreen> createState() => _OrgManagementScreenState();
@@ -55,6 +63,8 @@ class _OrgManagementScreenState extends State<OrgManagementScreen> {
     _load();
   }
 
+  bool get _isSuperAdmin => widget.role == 'super_admin';
+
   Future<void> _load() async {
     setState(() => _loading = true);
     final client = SupabaseService.client;
@@ -71,6 +81,11 @@ class _OrgManagementScreenState extends State<OrgManagementScreen> {
             isDefault: m['is_default'] as bool? ?? false,
           );
         }).toList();
+        // An org_admin only ever manages their own organization -- never
+        // sees another org exists, let alone its roster or join codes.
+        if (!_isSuperAdmin) {
+          orgs = orgs.where((o) => o.id == widget.orgId).toList();
+        }
       } catch (_) {}
       try {
         final rows = await client.from('user_profiles').select('user_id, name, callsign, role, org_id') as List;
@@ -92,6 +107,9 @@ class _OrgManagementScreenState extends State<OrgManagementScreen> {
         _orgs = orgs;
         _roster = roster;
         _loading = false;
+        // An org_admin only ever has one card to look at -- skip the extra
+        // tap to expand it.
+        if (!_isSuperAdmin) _expanded.addAll(orgs.map((o) => o.id));
       });
     }
     for (final org in orgs) {
@@ -335,18 +353,20 @@ class _OrgManagementScreenState extends State<OrgManagementScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Organizations'),
+        title: Text(_isSuperAdmin ? 'Organizations' : 'My Organization'),
         actions: [
           IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
           const SizedBox(width: 8),
-          FilledButton.icon(onPressed: _createOrg, icon: const Icon(Icons.add), label: const Text('New Organization')),
+          if (_isSuperAdmin)
+            FilledButton.icon(onPressed: _createOrg, icon: const Icon(Icons.add), label: const Text('New Organization')),
           const SizedBox(width: 16),
         ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _orgs.isEmpty
-              ? Center(child: Text('No organizations yet.', style: TextStyle(color: Colors.grey[600])))
+              ? Center(child: Text(_isSuperAdmin ? 'No organizations yet.' : 'Your organization could not be loaded.',
+                  style: TextStyle(color: Colors.grey[600])))
               : ListView.builder(
                   padding: const EdgeInsets.all(16),
                   itemCount: _orgs.length,
