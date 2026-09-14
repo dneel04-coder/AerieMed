@@ -3385,6 +3385,11 @@ begin
   alter table if exists user_profiles add column if not exists resource_type text default '';
   alter table if exists user_profiles add column if not exists team_id uuid references teams(id);
 
+  -- company: free-text company/affiliation collected at signup (and in the
+  -- access-request flow) for admin visibility, independent of the real
+  -- org_id assignment a join code or manual admin action provides.
+  alter table if exists user_profiles add column if not exists company text default '';
+
   -- deployment_status: where someone is relative to an incident assignment —
   -- Standby / In Transit / On Mission / Off Duty. Independent of incident
   -- membership: people can be on standby with assets pre-staged, or moving
@@ -3893,6 +3898,63 @@ language sql stable security definer set search_path = public as \$\$
   limit 1;
 \$\$;
 grant execute on function resolve_join_code(text) to anon, authenticated;
+
+-- Run the migration once right here (not just leaving it for the app's own
+-- next-launch RPC call), now that organizations/org_join_codes both exist
+-- above -- so org_id/is_personal/owner_user_id etc. are guaranteed to be
+-- real columns on user_profiles/teams/protocols before the restrictive
+-- protocols policies just below reference them. A bare CREATE POLICY
+-- expression is validated immediately against the catalog, unlike this
+-- function's own plpgsql body, so on a truly fresh database those columns
+-- must already exist before that point in this same script run.
+select resqruck_auto_migrate();
+
+-- ── Lock down protocols to actual org membership ──────────────────────────────
+-- This is the real security boundary the org/join-code system exists for:
+-- until now "protocols" stayed on its original permissive policy (using
+-- (true)) for the whole rollout, so anyone -- including a user with no
+-- organization at all -- could read every organization's protocols. Now
+-- that real accounts + org assignment are live end to end, replace it with
+-- actual per-org enforcement: visible only if it's your own org's org-wide
+-- protocol, your own personal one, or you're a super_admin; writable only
+-- by that org's admin (or you, for your own personal protocol).
+drop policy if exists "public_access" on protocols;
+
+do \$\$ begin
+  create policy "protocols_select" on protocols for select using (
+    is_super_admin()
+    or (is_personal = false and org_id = current_user_org_id())
+    or (is_personal = true and owner_user_id = current_user_id_text())
+  );
+exception when duplicate_object then null; end \$\$;
+
+do \$\$ begin
+  create policy "protocols_insert" on protocols for insert with check (
+    is_super_admin()
+    or (is_personal = false and is_org_admin(org_id))
+    or (is_personal = true and owner_user_id = current_user_id_text())
+  );
+exception when duplicate_object then null; end \$\$;
+
+do \$\$ begin
+  create policy "protocols_update" on protocols for update using (
+    is_super_admin()
+    or (is_personal = false and is_org_admin(org_id))
+    or (is_personal = true and owner_user_id = current_user_id_text())
+  ) with check (
+    is_super_admin()
+    or (is_personal = false and is_org_admin(org_id))
+    or (is_personal = true and owner_user_id = current_user_id_text())
+  );
+exception when duplicate_object then null; end \$\$;
+
+do \$\$ begin
+  create policy "protocols_delete" on protocols for delete using (
+    is_super_admin()
+    or (is_personal = false and is_org_admin(org_id))
+    or (is_personal = true and owner_user_id = current_user_id_text())
+  );
+exception when duplicate_object then null; end \$\$;
 
 -- ── Auth wiring: link a real Supabase Auth signup to a user_profiles row ──────
 -- Fires once per new auth.users row. If the client passed device_user_id in

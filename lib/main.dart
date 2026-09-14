@@ -187,8 +187,8 @@ class _ResQruckAppState extends State<ResQruckApp> {
               : _accessStatus != null
                   ? AccessPendingScreen(
                       userId: _deviceUserId,
-                      onApproved: () {
-                        if (mounted) setState(() => _accessStatus = null);
+                      onDone: () {
+                        if (mounted) setState(() { _accessStatus = null; _loggedIn = true; });
                       },
                     )
                   : LoginScreen(onLoggedIn: () {

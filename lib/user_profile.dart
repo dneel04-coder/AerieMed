@@ -15,9 +15,9 @@ class UserProfile {
   static const _kRopeRescue      = 'profile_rope_rescue';
   static const _kLoggedIn        = 'profile_logged_in';
   static const _kUserId          = 'tac_user_id';
-  static const _kAccessValidated   = 'profile_access_validated';
   static const _kPurchaseUnlocked  = 'profile_purchase_unlocked';
   static const _kEmail           = 'profile_email';
+  static const _kCompany         = 'profile_company';
 
   final String userId;
   String name;
@@ -26,6 +26,7 @@ class UserProfile {
   bool rt130;
   bool ropeRescue;
   String email;
+  String company;
 
   UserProfile({
     required this.userId,
@@ -35,6 +36,7 @@ class UserProfile {
     this.rt130 = false,
     this.ropeRescue = false,
     this.email = '',
+    this.company = '',
   });
 
   String get displayCallsign => callsign.isNotEmpty ? callsign : name;
@@ -60,6 +62,7 @@ class UserProfile {
       rt130: prefs.getBool(_kRt130) ?? false,
       ropeRescue: prefs.getBool(_kRopeRescue) ?? false,
       email: prefs.getString(_kEmail) ?? '',
+      company: prefs.getString(_kCompany) ?? '',
     );
   }
 
@@ -71,6 +74,7 @@ class UserProfile {
     await prefs.setBool(_kRt130, rt130);
     await prefs.setBool(_kRopeRescue, ropeRescue);
     if (email.isNotEmpty) await prefs.setString(_kEmail, email);
+    if (company.isNotEmpty) await prefs.setString(_kCompany, company);
     if (stayLoggedIn) await prefs.setBool(_kLoggedIn, true);
     // Keep tac_callsign in sync — used by Tac Map, calendar, and cert uploads.
     await prefs.setString('tac_callsign', displayCallsign);
@@ -94,16 +98,6 @@ class UserProfile {
     } catch (_) {}
   }
 
-  static Future<bool> isAccessValidated() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(_kAccessValidated) ?? false;
-  }
-
-  static Future<void> markAccessValidated() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kAccessValidated, true);
-  }
-
   static Future<bool> isUnlocked() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_kPurchaseUnlocked) ?? false;
@@ -125,6 +119,7 @@ class UserProfile {
         'cert_level': certLevel,
         'rt130': rt130,
         'rope_rescue': ropeRescue,
+        'company': company,
         'updated_at': DateTime.now().toIso8601String(),
       }, onConflict: 'user_id');
     } catch (_) {}
@@ -196,6 +191,30 @@ class UserProfile {
       return null;
     }
   }
+
+  /// Name/email/company submitted with this device's access request, if
+  /// any -- used by CreatePasswordScreen once approved, so it can create
+  /// the real account without asking the user to re-enter everything.
+  static Future<({String name, String email, String company})?> fetchAccessRequestDetails(String userId) async {
+    final ok = await SupabaseService.ensureInitialized();
+    if (!ok) return null;
+    try {
+      final rows = await SupabaseService.client!
+          .from('access_requests')
+          .select('name, email, company')
+          .eq('user_id', userId)
+          .limit(1);
+      if ((rows as List).isEmpty) return null;
+      final r = rows.first;
+      return (
+        name: r['name'] as String? ?? '',
+        email: r['email'] as String? ?? '',
+        company: r['company'] as String? ?? '',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 
@@ -207,8 +226,19 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
+/// Derives "First L." from a first/last name -- the fallback callsign used
+/// whenever someone doesn't set one explicitly.
+String fallbackCallsign(String firstName, String lastName) {
+  final first = firstName.trim();
+  final last = lastName.trim();
+  final initial = last.isNotEmpty ? '${last[0].toUpperCase()}.' : '';
+  return [first, initial].where((s) => s.isNotEmpty).join(' ');
+}
+
 class _LoginScreenState extends State<LoginScreen> {
-  late final TextEditingController _nameCtrl;
+  late final TextEditingController _firstNameCtrl;
+  late final TextEditingController _lastNameCtrl;
+  late final TextEditingController _companyCtrl;
   late final TextEditingController _callsignCtrl;
   late final TextEditingController _codeCtrl;
   late final TextEditingController _emailCtrl;
@@ -220,7 +250,6 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _ropeRescue = false;
   bool _stayLoggedIn = true;
   bool _saving = false;
-  bool _accessValidated = false;
   UserProfile? _existing;
 
   // Most people only ever see this screen once (on first install) since
@@ -234,7 +263,9 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
-    _nameCtrl = TextEditingController();
+    _firstNameCtrl = TextEditingController();
+    _lastNameCtrl = TextEditingController();
+    _companyCtrl = TextEditingController();
     _callsignCtrl = TextEditingController();
     _codeCtrl = TextEditingController();
     _emailCtrl = TextEditingController();
@@ -314,7 +345,6 @@ class _LoginScreenState extends State<LoginScreen> {
         email: email,
       );
       await profile.save(stayLoggedIn: _stayLoggedIn);
-      await UserProfile.markAccessValidated();
       if (mounted) widget.onLoggedIn();
     } on Exception catch (e) {
       if (mounted) {
@@ -326,41 +356,95 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _loadExisting() async {
-    final results = await Future.wait([
-      UserProfile.load(),
-      UserProfile.isAccessValidated(),
-    ]);
-    final p = results[0] as UserProfile;
-    final validated = results[1] as bool;
+    final p = await UserProfile.load();
     if (!mounted) return;
+    final nameParts = p.name.trim().split(RegExp(r'\s+'));
     setState(() {
       _existing = p;
-      _nameCtrl.text = p.name;
+      _firstNameCtrl.text = nameParts.isNotEmpty ? nameParts.first : '';
+      _lastNameCtrl.text = nameParts.length > 1 ? nameParts.skip(1).join(' ') : '';
+      _companyCtrl.text = p.company;
       _callsignCtrl.text = p.callsign;
       _certLevel = p.certLevel;
       _rt130 = p.rt130;
       _ropeRescue = p.ropeRescue;
-      _accessValidated = validated;
     });
   }
 
-  Future<void> _save() async {
-    final name = _nameCtrl.text.trim();
-    if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Full name is required.')));
+  /// Sends First/Last Name, Email, and Company to the admin for review --
+  /// no password yet, since that's only collected once approved (see
+  /// CreatePasswordScreen). This is the path a blank Organization Code
+  /// takes on Continue.
+  Future<void> _submitAccessRequest() async {
+    final firstName = _firstNameCtrl.text.trim();
+    final lastName = _lastNameCtrl.text.trim();
+    if (firstName.isEmpty || lastName.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('First and last name are required.')));
       return;
     }
-    final callsign = _callsignCtrl.text.trim();
-    if (callsign.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Callsign is required.')));
+    final email = _emailCtrl.text.trim();
+    if (email.isEmpty || !email.contains('@')) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('A valid email is required.')));
+      return;
+    }
+    final company = _companyCtrl.text.trim();
+    if (company.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Company name is required.')));
+      return;
+    }
+    setState(() => _saving = true);
+    final ok = await SupabaseService.ensureInitialized();
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Cannot reach server. Check your connection.'), backgroundColor: Colors.red));
+      setState(() => _saving = false);
+      return;
+    }
+    final profile = _existing ?? await UserProfile.load();
+    if (!mounted) return;
+    try {
+      await SupabaseService.client!.from('access_requests').insert({
+        'user_id': profile.userId,
+        'name': '$firstName $lastName',
+        'company': company,
+        'email': email,
+      });
+      await PushNotificationService.instance.initialize(profile.userId);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Could not submit request: $e'), backgroundColor: Colors.red));
+        setState(() => _saving = false);
+      }
+      return;
+    }
+    if (!mounted) return;
+    Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => AccessPendingScreen(userId: profile.userId, onDone: widget.onLoggedIn)));
+  }
+
+  Future<void> _save() async {
+    final firstName = _firstNameCtrl.text.trim();
+    final lastName = _lastNameCtrl.text.trim();
+    if (firstName.isEmpty || lastName.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('First and last name are required.')));
       return;
     }
     final email = _emailCtrl.text.trim();
     if (email.isEmpty || !email.contains('@')) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('A valid email is required.')));
+      return;
+    }
+    final company = _companyCtrl.text.trim();
+    if (company.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Company name is required.')));
       return;
     }
     final password = _passwordCtrl.text;
@@ -374,14 +458,21 @@ class _LoginScreenState extends State<LoginScreen> {
           const SnackBar(content: Text('Passwords do not match.')));
       return;
     }
+    final name = '$firstName $lastName';
+    final explicitCallsign = _callsignCtrl.text.trim();
+    final callsign = explicitCallsign.isNotEmpty ? explicitCallsign : fallbackCallsign(firstName, lastName);
     setState(() => _saving = true);
 
     final ok0 = await SupabaseService.ensureInitialized();
-    if (ok0) {
+    // Only run the collision/restore check for an explicitly-typed callsign
+    // -- two different people can easily share an auto-derived "First L.",
+    // and offering to "restore" a stranger's profile in that case would be
+    // actively wrong, not just unnecessary.
+    if (ok0 && explicitCallsign.isNotEmpty) {
       final taken = await UserProfile.callsignTaken(
-          callsign, excludeUserId: _existing?.userId ?? '');
+          explicitCallsign, excludeUserId: _existing?.userId ?? '');
       if (taken) {
-        final existingProfile = await UserProfile.fetchByCallsign(callsign);
+        final existingProfile = await UserProfile.fetchByCallsign(explicitCallsign);
         if (!mounted) return;
         if (existingProfile == null) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -411,9 +502,11 @@ class _LoginScreenState extends State<LoginScreen> {
         );
         if (restore != true || !mounted) return;
         await UserProfile.adoptUserId(existingProfile.userId);
+        final restoredParts = existingProfile.name.trim().split(RegExp(r'\s+'));
         setState(() {
           _existing = existingProfile;
-          _nameCtrl.text = existingProfile.name;
+          _firstNameCtrl.text = restoredParts.isNotEmpty ? restoredParts.first : '';
+          _lastNameCtrl.text = restoredParts.length > 1 ? restoredParts.skip(1).join(' ') : '';
           _callsignCtrl.text = existingProfile.callsign;
           _certLevel = existingProfile.certLevel;
           _rt130 = existingProfile.rt130;
@@ -423,15 +516,10 @@ class _LoginScreenState extends State<LoginScreen> {
     }
     if (!mounted) return;
 
-    // Validate access code on first login.
-    if (!_accessValidated) {
-      final code = _codeCtrl.text.trim().toUpperCase();
-      if (code.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Access code is required.')));
-        setState(() => _saving = false);
-        return;
-      }
+    // Access code is optional -- only validated/redeemed if the user
+    // actually entered one (paywall-bypass perk, unrelated to org access).
+    final code = _codeCtrl.text.trim().toUpperCase();
+    if (code.isNotEmpty) {
       final ok = await SupabaseService.ensureInitialized();
       if (!mounted) return;
       if (!ok) {
@@ -458,29 +546,25 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
       final bypass = (rows.first['bypass_paywall'] as bool?) ?? false;
-      // Notify admin of the new user.
-      final callsign = _callsignCtrl.text.trim();
       try {
         await client.from('admin_alerts').insert({
           'type': 'access',
           'title': 'New User: $name',
-          'callsign': callsign.isNotEmpty ? callsign : name,
-          'body': 'User $name${callsign.isNotEmpty ? ' ($callsign)' : ''} '
-              'joined using access code $code',
+          'callsign': callsign,
+          'body': 'User $name ($callsign) joined using access code $code',
         });
       } catch (_) {}
-      await UserProfile.markAccessValidated();
       // Apple Guideline 3.1.1: on iOS, paid content must unlock only through
       // StoreKit — an access code (even one entered here at login, not on
       // the paywall itself) must never be able to bypass payment.
       if (bypass && !Platform.isIOS) await UserProfile.markUnlocked();
-      setState(() => _accessValidated = true);
     }
 
     // Create the real Supabase Auth account. device_user_id lets the
     // handle_new_auth_user trigger link this onto the SAME profile row
     // (existing or freshly-adopted-via-restore above) instead of creating a
-    // duplicate; join_code (optional) assigns org membership server-side.
+    // duplicate; join_code assigns org membership server-side -- _save is
+    // only reachable once a join code has resolved to a real org.
     final deviceUserId = (_existing?.userId.isNotEmpty ?? false)
         ? _existing!.userId
         : (await UserProfile.load()).userId;
@@ -523,6 +607,7 @@ class _LoginScreenState extends State<LoginScreen> {
       rt130: _rt130,
       ropeRescue: _ropeRescue,
       email: email,
+      company: company,
     );
     await profile.save(stayLoggedIn: _stayLoggedIn);
 
@@ -535,7 +620,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
-    _nameCtrl.dispose();
+    _firstNameCtrl.dispose();
+    _lastNameCtrl.dispose();
+    _companyCtrl.dispose();
     _callsignCtrl.dispose();
     _codeCtrl.dispose();
     _emailCtrl.dispose();
@@ -587,6 +674,12 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Widget _buildSignUpForm(ColorScheme cs) {
+    final hasCode = _joinCodeCtrl.text.trim().isNotEmpty;
+    final codeValid = _resolvedOrgName != null;
+    // With a code entered, Continue only ever tries to create the account
+    // (blocked until it resolves); with no code, it always means "request
+    // access" -- clearing the code field is how you switch back to that.
+    final canSubmit = !_saving && (hasCode ? codeValid : true);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             Icon(Icons.medical_services_outlined, size: 72, color: cs.primary),
             const SizedBox(height: 10),
@@ -599,32 +692,26 @@ class _LoginScreenState extends State<LoginScreen> {
                 style: TextStyle(color: cs.onSurfaceVariant)),
             const SizedBox(height: 32),
 
-            // Name
             TextField(
-              controller: _nameCtrl,
+              controller: _firstNameCtrl,
               textCapitalization: TextCapitalization.words,
               decoration: const InputDecoration(
-                labelText: 'Full Name *',
+                labelText: 'First Name *',
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.person_outline),
               ),
             ),
             const SizedBox(height: 14),
-
-            // Callsign
             TextField(
-              controller: _callsignCtrl,
-              textCapitalization: TextCapitalization.characters,
+              controller: _lastNameCtrl,
+              textCapitalization: TextCapitalization.words,
               decoration: const InputDecoration(
-                labelText: 'Callsign *',
-                hintText: 'Must be unique — no one else can use this',
+                labelText: 'Last Name *',
                 border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.radio),
+                prefixIcon: Icon(Icons.person_outline),
               ),
             ),
             const SizedBox(height: 14),
-
-            // Email + password — the real Supabase Auth account.
             TextField(
               controller: _emailCtrl,
               keyboardType: TextInputType.emailAddress,
@@ -634,36 +721,29 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             const SizedBox(height: 14),
             TextField(
-              controller: _passwordCtrl,
-              obscureText: true,
+              controller: _companyCtrl,
+              textCapitalization: TextCapitalization.words,
               decoration: const InputDecoration(
-                labelText: 'Password *',
-                hintText: 'At least 6 characters',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.lock_outline),
-              ),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: _confirmPasswordCtrl,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Confirm Password *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock_outline)),
+                labelText: 'Company Name *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.business_outlined)),
             ),
             const SizedBox(height: 14),
 
-            // Org join code — optional. Leaving it blank lands the user in
-            // the shared Legacy/Unassigned org, where they can still create
-            // their own personal protocols.
+            // Org join code — determines which of the two paths below this
+            // screen takes: blank means "request access" (sent to admin,
+            // no password yet); a code that resolves means "create the
+            // account now" (password fields appear immediately below).
             TextField(
               controller: _joinCodeCtrl,
               textCapitalization: TextCapitalization.characters,
               autocorrect: false,
               enableSuggestions: false,
-              onChanged: (_) => _resolveJoinCode(),
+              onChanged: (_) {
+                _resolveJoinCode();
+                setState(() {});
+              },
               decoration: InputDecoration(
-                labelText: 'Organization Join Code',
-                hintText: 'Optional — ask your organization admin',
+                labelText: 'Organization Code',
+                hintText: "Leave blank if you don't have one yet",
                 border: const OutlineInputBorder(),
                 prefixIcon: const Icon(Icons.groups_outlined),
                 suffixIcon: _resolvingCode
@@ -673,94 +753,107 @@ class _LoginScreenState extends State<LoginScreen> {
                     : null,
               ),
             ),
-            if (_resolvedOrgName != null) ...[
+            if (hasCode && codeValid) ...[
               const SizedBox(height: 6),
               Text('Joining: $_resolvedOrgName',
                   style: TextStyle(fontSize: 12, color: cs.primary, fontWeight: FontWeight.w600)),
-            ] else if (_joinCodeCtrl.text.trim().isNotEmpty && !_resolvingCode) ...[
+            ] else if (hasCode && !_resolvingCode) ...[
               const SizedBox(height: 6),
-              const Text('Code not recognized — check with your organization admin.',
+              const Text('Code not recognized — check with your organization admin, or clear this field to request access instead.',
                   style: TextStyle(fontSize: 12, color: Colors.red)),
+            ] else if (!hasCode) ...[
+              const SizedBox(height: 6),
+              Text(
+                "No code? We'll send your name, email, and company to an admin for approval.",
+                style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+              ),
             ],
-            const SizedBox(height: 14),
 
-            // Access code — required on first login only
-            if (!_accessValidated) ...[
+            if (hasCode && codeValid) ...[
+              const SizedBox(height: 14),
+              TextField(
+                controller: _passwordCtrl,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Password *',
+                  hintText: 'At least 6 characters',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.lock_outline),
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _confirmPasswordCtrl,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Confirm Password *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock_outline)),
+              ),
+              const SizedBox(height: 14),
+
+              // Access code — optional paywall-bypass perk, unrelated to
+              // organization membership.
               TextField(
                 controller: _codeCtrl,
                 textCapitalization: TextCapitalization.characters,
                 autocorrect: false,
                 enableSuggestions: false,
-                decoration: InputDecoration(
-                  labelText: 'Access Code *',
-                  hintText: 'Contact your administrator for a code',
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.vpn_key_outlined),
-                  filled: true,
-                  fillColor: cs.primaryContainer.withValues(alpha: 0.3),
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'A one-time access code is required to activate your account.',
-                style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-              ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton(
-                  onPressed: () async {
-                    final profile = _existing ?? await UserProfile.load();
-                    if (!mounted) return;
-                    await Navigator.push(context, MaterialPageRoute(
-                        builder: (_) => RequestAccessScreen(
-                              userId: profile.userId,
-                              nameHint: _nameCtrl.text.trim(),
-                              callsignHint: _callsignCtrl.text.trim(),
-                              onApproved: () => setState(() => _accessValidated = true),
-                            )));
-                  },
-                  child: const Text("Don't have a code? Request Access"),
+                decoration: const InputDecoration(
+                  labelText: 'Access Code',
+                  hintText: 'Optional',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.vpn_key_outlined),
                 ),
               ),
               const SizedBox(height: 14),
-            ],
 
-            // Cert level
-            DropdownButtonFormField<String>(
-              value: _certLevel,
-              decoration: const InputDecoration(
-                labelText: 'Certification Level',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.workspace_premium),
+              TextField(
+                controller: _callsignCtrl,
+                textCapitalization: TextCapitalization.characters,
+                decoration: InputDecoration(
+                  labelText: 'Callsign',
+                  hintText: _firstNameCtrl.text.trim().isEmpty
+                      ? 'Optional'
+                      : 'Optional — defaults to "${fallbackCallsign(_firstNameCtrl.text, _lastNameCtrl.text)}"',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.radio),
+                ),
               ),
-              items: kCertLevels
-                  .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                  .toList(),
-              onChanged: (v) { if (v != null) setState(() => _certLevel = v); },
-            ),
-            const SizedBox(height: 14),
+              const SizedBox(height: 14),
 
-            // Checkboxes
-            Card(
-              margin: EdgeInsets.zero,
-              child: Column(children: [
-                CheckboxListTile(
-                  value: _rt130,
-                  onChanged: (v) => setState(() => _rt130 = v ?? false),
-                  title: const Text('RT-130 Certified'),
-                  secondary: const Icon(Icons.local_fire_department),
-                  dense: true,
+              DropdownButtonFormField<String>(
+                initialValue: _certLevel,
+                decoration: const InputDecoration(
+                  labelText: 'Certification Level',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.workspace_premium),
                 ),
-                const Divider(height: 1),
-                CheckboxListTile(
-                  value: _ropeRescue,
-                  onChanged: (v) => setState(() => _ropeRescue = v ?? false),
-                  title: const Text('Rope Rescue Technician'),
-                  secondary: const Icon(Icons.safety_divider),
-                  dense: true,
-                ),
-              ]),
-            ),
+                items: kCertLevels
+                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .toList(),
+                onChanged: (v) { if (v != null) setState(() => _certLevel = v); },
+              ),
+              const SizedBox(height: 14),
+              Card(
+                margin: EdgeInsets.zero,
+                child: Column(children: [
+                  CheckboxListTile(
+                    value: _rt130,
+                    onChanged: (v) => setState(() => _rt130 = v ?? false),
+                    title: const Text('RT-130 Certified'),
+                    secondary: const Icon(Icons.local_fire_department),
+                    dense: true,
+                  ),
+                  const Divider(height: 1),
+                  CheckboxListTile(
+                    value: _ropeRescue,
+                    onChanged: (v) => setState(() => _ropeRescue = v ?? false),
+                    title: const Text('Rope Rescue Technician'),
+                    secondary: const Icon(Icons.safety_divider),
+                    dense: true,
+                  ),
+                ]),
+              ),
+            ],
             const SizedBox(height: 14),
 
             // Stay logged in
@@ -777,11 +870,11 @@ class _LoginScreenState extends State<LoginScreen> {
             const SizedBox(height: 24),
 
             FilledButton(
-              onPressed: _saving ? null : _save,
+              onPressed: !canSubmit ? null : (hasCode ? _save : _submitAccessRequest),
               child: _saving
                   ? const SizedBox(width: 20, height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Text('Continue'),
+                  : Text(hasCode ? 'Create Account' : 'Request Access'),
             ),
             const SizedBox(height: 8),
             TextButton(
@@ -805,157 +898,15 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-/// Self-serve alternative to an admin-issued access code: submit name/
-/// callsign/company/email for review instead. Nothing about the purchase
-/// flow is reachable until an admin approves the request (see
-/// AccessPendingScreen and the access_requests schema/triggers).
-class RequestAccessScreen extends StatefulWidget {
-  final String userId;
-  final String nameHint;
-  final String callsignHint;
-  final VoidCallback onApproved;
-  const RequestAccessScreen({
-    super.key,
-    required this.userId,
-    required this.onApproved,
-    this.nameHint = '',
-    this.callsignHint = '',
-  });
-
-  @override
-  State<RequestAccessScreen> createState() => _RequestAccessScreenState();
-}
-
-class _RequestAccessScreenState extends State<RequestAccessScreen> {
-  late final TextEditingController _nameCtrl;
-  late final TextEditingController _callsignCtrl;
-  final _companyCtrl = TextEditingController();
-  final _emailCtrl = TextEditingController();
-  bool _submitting = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _nameCtrl = TextEditingController(text: widget.nameHint);
-    _callsignCtrl = TextEditingController(text: widget.callsignHint);
-  }
-
-  @override
-  void dispose() {
-    _nameCtrl.dispose();
-    _callsignCtrl.dispose();
-    _companyCtrl.dispose();
-    _emailCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    final name = _nameCtrl.text.trim();
-    if (name.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Full name is required.')));
-      return;
-    }
-    setState(() => _submitting = true);
-    final ok = await SupabaseService.ensureInitialized();
-    if (!mounted) return;
-    if (!ok) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Cannot reach server. Check your connection.'),
-          backgroundColor: Colors.red));
-      setState(() => _submitting = false);
-      return;
-    }
-    try {
-      await SupabaseService.client!.from('access_requests').insert({
-        'user_id': widget.userId,
-        'name': name,
-        'callsign': _callsignCtrl.text.trim(),
-        'company': _companyCtrl.text.trim(),
-        'email': _emailCtrl.text.trim(),
-      });
-      // Register this device for a push notification the moment an admin
-      // decides, before login/purchase even exist for this user yet.
-      await PushNotificationService.instance.initialize(widget.userId);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Could not submit request: $e'), backgroundColor: Colors.red));
-        setState(() => _submitting = false);
-      }
-      return;
-    }
-    if (!mounted) return;
-    Navigator.pushReplacement(context, MaterialPageRoute(
-        builder: (_) => AccessPendingScreen(userId: widget.userId, onApproved: widget.onApproved)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Request Access')),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            const Text(
-              "Tell us who you are and we'll review your request. "
-              "You'll be notified as soon as it's approved.",
-            ),
-            const SizedBox(height: 20),
-            TextField(
-              controller: _nameCtrl,
-              textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                  labelText: 'Full Name *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.person_outline)),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: _callsignCtrl,
-              textCapitalization: TextCapitalization.characters,
-              decoration: const InputDecoration(
-                  labelText: 'Callsign', border: OutlineInputBorder(), prefixIcon: Icon(Icons.radio)),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: _companyCtrl,
-              decoration: const InputDecoration(
-                  labelText: 'Company / Affiliation',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.business_outlined)),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: _emailCtrl,
-              keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(
-                  labelText: 'Email (optional, for follow-up)',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.email_outlined)),
-            ),
-            const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _submitting ? null : _submit,
-              child: _submitting
-                  ? const SizedBox(width: 20, height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Text('Submit Request'),
-            ),
-          ]),
-        ),
-      ),
-    );
-  }
-}
-
 /// Shown while a self-serve access request is pending, and again on relaunch
 /// (see main.dart) until it's decided. Denied requests stay here with no
-/// path forward to login/paywall; approved ones hand control back to
-/// LoginScreen via onApproved.
+/// path forward; once approved, pushes CreatePasswordScreen to finish
+/// setting up the real account -- onDone only fires once that's actually
+/// complete, not just at the moment of approval.
 class AccessPendingScreen extends StatefulWidget {
   final String userId;
-  final VoidCallback onApproved;
-  const AccessPendingScreen({super.key, required this.userId, required this.onApproved});
+  final VoidCallback onDone;
+  const AccessPendingScreen({super.key, required this.userId, required this.onDone});
 
   @override
   State<AccessPendingScreen> createState() => _AccessPendingScreenState();
@@ -977,13 +928,12 @@ class _AccessPendingScreenState extends State<AccessPendingScreen> {
     if (!mounted) return;
     setState(() { _status = status; _checking = false; });
     if (status == 'approved') {
-      await UserProfile.markAccessValidated();
-      if (!mounted) return;
-      widget.onApproved();
-      // When pushed from RequestAccessScreen this reveals LoginScreen
-      // underneath; when used as main.dart's root widget there's nothing to
-      // pop — onApproved() alone makes the parent swap away from this screen.
-      if (Navigator.canPop(context)) Navigator.pop(context);
+      final done = await Navigator.push<bool>(context,
+          MaterialPageRoute(builder: (_) => CreatePasswordScreen(userId: widget.userId)));
+      if (done == true && mounted) {
+        widget.onDone();
+        if (Navigator.canPop(context)) Navigator.pop(context);
+      }
     }
   }
 
@@ -1029,13 +979,195 @@ class _AccessPendingScreenState extends State<AccessPendingScreen> {
   }
 }
 
+/// Final step once an admin approves a self-serve access request: create
+/// the real account. Name/email/company were already sent with the
+/// request, so this only asks for a password (and an optional callsign,
+/// same fallback-to-"First L." rule as everywhere else) -- fetched fresh
+/// from access_requests rather than threaded through several screens'
+/// local state, so this works correctly even if the app was fully closed
+/// while the request sat pending.
+class CreatePasswordScreen extends StatefulWidget {
+  final String userId;
+  const CreatePasswordScreen({super.key, required this.userId});
+
+  @override
+  State<CreatePasswordScreen> createState() => _CreatePasswordScreenState();
+}
+
+class _CreatePasswordScreenState extends State<CreatePasswordScreen> {
+  final _passwordCtrl = TextEditingController();
+  final _confirmPasswordCtrl = TextEditingController();
+  final _callsignCtrl = TextEditingController();
+  bool _loading = true;
+  bool _saving = false;
+  String _name = '';
+  String _email = '';
+  String _company = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final details = await UserProfile.fetchAccessRequestDetails(widget.userId);
+    if (!mounted) return;
+    setState(() {
+      _name = details?.name ?? '';
+      _email = details?.email ?? '';
+      _company = details?.company ?? '';
+      _loading = false;
+    });
+  }
+
+  @override
+  void dispose() {
+    _passwordCtrl.dispose();
+    _confirmPasswordCtrl.dispose();
+    _callsignCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final password = _passwordCtrl.text;
+    if (password.length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Password must be at least 6 characters.')));
+      return;
+    }
+    if (password != _confirmPasswordCtrl.text) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Passwords do not match.')));
+      return;
+    }
+    if (_email.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not find your original request. Contact your administrator.'),
+          backgroundColor: Colors.red));
+      return;
+    }
+    setState(() => _saving = true);
+    final ok = await SupabaseService.ensureInitialized();
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Cannot reach server. Check your connection and try again.'),
+          backgroundColor: Colors.red));
+      setState(() => _saving = false);
+      return;
+    }
+    final nameParts = _name.trim().split(RegExp(r'\s+'));
+    final firstName = nameParts.isNotEmpty ? nameParts.first : '';
+    final lastName = nameParts.length > 1 ? nameParts.skip(1).join(' ') : '';
+    final explicitCallsign = _callsignCtrl.text.trim();
+    final callsign = explicitCallsign.isNotEmpty ? explicitCallsign : fallbackCallsign(firstName, lastName);
+    try {
+      // No join_code here -- an approved-with-no-code user lands in the
+      // shared Legacy org, same as anyone else without one; a super_admin
+      // can move them into a real org afterward from the Organizations tab.
+      await SupabaseService.client!.auth.signUp(
+        email: _email,
+        password: password,
+        data: {'device_user_id': widget.userId, 'name': _name, 'callsign': callsign},
+      );
+    } on Exception catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Could not create your account: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5)));
+        setState(() => _saving = false);
+      }
+      return;
+    }
+    final profile = UserProfile(
+      userId: widget.userId,
+      name: _name,
+      callsign: callsign,
+      email: _email,
+      company: _company,
+    );
+    await profile.save(stayLoggedIn: true);
+    await profile.syncToSupabase();
+    if (mounted) Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: SafeArea(
+        child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  Icon(Icons.check_circle_outline, size: 72, color: cs.primary),
+                  const SizedBox(height: 10),
+                  Text('Access Approved', textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Welcome${_name.isEmpty ? '' : ', $_name'}! Create a password to finish setting up your account.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: cs.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 32),
+                  TextField(
+                    controller: _passwordCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Password *',
+                      hintText: 'At least 6 characters',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.lock_outline),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _confirmPasswordCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                        labelText: 'Confirm Password *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock_outline)),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _callsignCtrl,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: const InputDecoration(
+                      labelText: 'Callsign',
+                      hintText: 'Optional — defaults to your first name + last initial',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.radio),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  FilledButton(
+                    onPressed: _saving ? null : _submit,
+                    child: _saving
+                        ? const SizedBox(width: 20, height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Finish Setup'),
+                  ),
+                ]),
+              ),
+      ),
+    );
+  }
+}
+
 /// One-time migration path for installs that already have a local profile
 /// (created before real Supabase Auth existed) but no Auth session yet.
 /// Shown once per launch by main.dart until the user upgrades. Deliberately
-/// has an unconditional "Skip for now" -- while the app's RLS policies stay
-/// permissive (see the phased rollout plan), skipping costs nothing
-/// functionally, so a field user is never blocked from their cached
-/// protocols by this screen. Only asks for email + password since
+/// has an unconditional "Skip for now" -- previously this was safe because
+/// RLS on protocols stayed permissive during the phased rollout, but that
+/// has since been flipped to actually restrictive (see the org-scoping
+/// plan's Phase 4) -- someone who skips this now sees zero protocols until
+/// they either come back and finish this, or an admin handles it for them.
+/// Kept unconditional anyway: a hard block here, mid-incident, with no
+/// escape hatch, is worse than a clear "sign in to see updated protocols"
+/// state elsewhere in the app. Only asks for email + password since
 /// everything else is already known from the existing local profile.
 class AccountUpgradeScreen extends StatefulWidget {
   final UserProfile profile;
