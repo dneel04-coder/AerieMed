@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show SupabaseClient;
 import '../protocol_admin.dart' show ProtocolSyncService, ProtocolEntry, SupabaseService;
@@ -647,6 +648,11 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final scaffold = _buildScaffold(context);
+    // desktop_drop has no web implementation -- drag-and-drop upload is a
+    // desktop-only nicety, "Browse files" (file_picker, which does support
+    // web) covers the same action everywhere.
+    if (kIsWeb) return scaffold;
     return DropTarget(
       onDragEntered: (_) => setState(() => _dragging = true),
       onDragExited: (_) => setState(() => _dragging = false),
@@ -654,7 +660,12 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
         setState(() => _dragging = false);
         _handleDrop(details);
       },
-      child: Scaffold(
+      child: scaffold,
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context) {
+    return Scaffold(
         appBar: AppBar(
           title: Text(_selecting
               ? '${_selectedIds.length} selected'
@@ -789,7 +800,6 @@ class _ProtocolsConsoleScreenState extends State<ProtocolsConsoleScreen> {
                       ),
           ),
         ]),
-      ),
-    );
+      );
   }
 }
