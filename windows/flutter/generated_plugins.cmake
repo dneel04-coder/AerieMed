@@ -5,15 +5,18 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   app_links
   battery_plus
+  connectivity_plus
   desktop_drop
   file_selector_windows
   firebase_core
+  flutter_libserialport
   geolocator_windows
   permission_handler_windows
   printing
   screen_retriever_windows
   share_plus
   speech_to_text_windows
+  universal_ble
   url_launcher_windows
   window_manager
 )

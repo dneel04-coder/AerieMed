@@ -1,0 +1,42 @@
+# AerieMed / ResQruck — T-Beam Supreme (tbeam-s3-core) Meshtastic config template.
+#
+# Apply with:  meshtastic --configure hardware/tbeam-supreme/config.yaml
+#
+# This is stock Meshtastic configuration — no custom firmware. Replace the PSK
+# with your team's shared 256-bit key (openssl rand -base64 32) before applying.
+# DO NOT commit the real key.
+
+owner: ResQruck Field
+owner_short: RQ
+
+config:
+  lora:
+    region: US            # US | EU_868 | EU_433 | ANZ | ... match antenna + local law
+    modem_preset: LONG_FAST
+    hop_limit: 3
+    tx_enabled: true
+    sx126x_rx_boosted_gain: true
+  device:
+    role: CLIENT
+    node_info_broadcast_secs: 10800
+  position:
+    gps_mode: ENABLED
+    position_broadcast_secs: 120
+    position_broadcast_smart_enabled: true
+    broadcast_smart_minimum_distance: 100
+    broadcast_smart_minimum_interval_secs: 30
+  power:
+    is_power_saving: false
+  bluetooth:
+    enabled: true
+    mode: FIXED_PIN
+    fixed_pin: 123456
+
+channels:
+  - index: 0
+    role: PRIMARY
+    settings:
+      name: AerieMed
+      psk: base64:REPLACE_WITH_TEAM_KEY
+      uplink_enabled: false
+      downlink_enabled: false

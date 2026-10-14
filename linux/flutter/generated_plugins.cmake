@@ -5,6 +5,7 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   desktop_drop
   file_selector_linux
+  flutter_libserialport
   gtk
   printing
   screen_retriever_linux
